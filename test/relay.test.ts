@@ -634,3 +634,32 @@ test("a message of a new run with the same seq as a message pushed before on thi
     await t.close();
   }
 });
+
+test("a scan pushes again a message that still waits long after its push on the same connection", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "unacked", repo: "/Users/me/code/app" };
+  const message = {
+    id: "m-unacked",
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text: "The ack of this one failed.",
+    createdAt: "2026-11-23T12:00:00Z",
+  };
+  // The message keeps waiting (its ack never lands).
+  const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [{ spec, message }] };
+  const t = await startRelay({ agentBackend: backend, pendingScanMs: 50, resendAfterMs: 400 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    const start = Date.now();
+    await agent.next("message");
+    await sleep(250);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0, "no push again before resendAfterMs");
+    await agent.next("message", undefined, 3000);
+    assert.ok(Date.now() - start >= 350);
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});

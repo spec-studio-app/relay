@@ -52,6 +52,8 @@ export interface AgentHubOptions {
    * consistent, so the scan at the welcome can miss a message.
    */
   pendingScanMs?: number;
+  /** A scan pushes again a message that still waits this long after its push (60 seconds when not given). */
+  resendAfterMs?: number;
 }
 
 export const DEFAULT_PENDING_SCAN_MS = 60_000;
@@ -83,8 +85,11 @@ export class AgentHub {
   private readonly hashes = new WeakMap<WebSocket, string>();
   /** The timer of each version 2 socket that looks for waiting messages again. */
   private readonly scanners = new WeakMap<WebSocket, NodeJS.Timeout>();
-  /** The messages pushed on each socket, so a push goes once per connection. */
-  private readonly pushed = new WeakMap<WebSocket, Set<string>>();
+  /**
+   * The messages pushed on each socket (message ID -> monotonic time in ms), so
+   * a push goes once, until a scan finds it still waiting after resendAfterMs.
+   */
+  private readonly pushed = new WeakMap<WebSocket, Map<string, number>>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.expectedHash = options.agentSecretSha256 ? Buffer.from(options.agentSecretSha256, "hex") : null;
@@ -343,23 +348,29 @@ export class AgentHub {
     if (!backend) return;
     try {
       const waiting = await backend.pendingForMac();
-      for (const { spec, message } of waiting) this.pushTo(ws, spec, message);
+      // A message that still waits long after its push (for example, the ack of
+      // its delivered failed) goes again. The agent answers delivered again for
+      // a message that it already has.
+      const resendAfter = this.options.resendAfterMs ?? DEFAULT_PENDING_SCAN_MS;
+      for (const { spec, message } of waiting) this.pushTo(ws, spec, message, resendAfter);
     } catch {
       this.options.log({ event: "push_pending_failed" });
     }
   }
 
-  private pushTo(ws: WebSocket, spec: SpecAddress, message: Message): void {
+  private pushTo(ws: WebSocket, spec: SpecAddress, message: Message, resendAfterMs?: number): void {
     if (this.versions.get(ws) !== WIRE_VERSION) return;
     let pushed = this.pushed.get(ws);
     if (!pushed) {
-      pushed = new Set();
+      pushed = new Map();
       this.pushed.set(ws, pushed);
     }
     // The message ID: a new run of the same slug starts its seqs at 1 again.
     const key = message.id;
-    if (pushed.has(key)) return;
-    pushed.add(key);
+    const at = pushed.get(key);
+    const now = performance.now();
+    if (at !== undefined && (resendAfterMs === undefined || now - at < resendAfterMs)) return;
+    pushed.set(key, now);
     this.send(ws, { type: "message", spec: wireSpec(spec, true), seq: message.seq, message });
   }
 
