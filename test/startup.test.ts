@@ -95,6 +95,54 @@ test("R2.S1: on Temporal Cloud the relay prints each missing attribute with its 
   assert.equal(admin.added.length, 0);
 });
 
+test("R2.S1: Temporal Cloud with mTLS (a *.tmprl.cloud address) also prints the attributes and does not register", async () => {
+  const { isTemporalCloud } = await import("../src/startup.js");
+  const pemCert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const pemKey = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+  const config = testConfig({
+    TEMPORAL_ADDRESS: "acct.studio.tmprl.cloud:7233",
+    TEMPORAL_NAMESPACE: "acct.studio",
+    TEMPORAL_TLS_CERT: pemCert,
+    TEMPORAL_TLS_KEY: pemKey,
+  });
+  assert.equal(config.temporal.auth, "mtls");
+  assert.equal(isTemporalCloud(config.temporal), true);
+  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "temporal.example.com:7233" }).temporal), false);
+  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "eu-west-1.aws.api.temporal.io:7233", TEMPORAL_API_KEY: "k" }).temporal), true);
+
+  const admin = new FakeAdmin();
+  admin.namespaces.add("acct.studio");
+  const printed: string[] = [];
+  await assert.rejects(
+    runStartupChecks({ config, admin, configClient: unusedClient, bucket: null, log: () => {}, print: (t) => printed.push(t) }),
+    /search attributes/,
+  );
+  const text = printed.join("\n");
+  for (const a of REQUIRED_SEARCH_ATTRIBUTES) assert.match(text, new RegExp(`${a.name} \\(${a.type}\\)`));
+  assert.match(text, /tcld namespace search-attributes add/);
+  assert.equal(admin.added.length, 0);
+
+  // A missing namespace on Cloud with mTLS: the relay names it and does not register it.
+  await assert.rejects(
+    runStartupChecks({ config, admin: new FakeAdmin(), configClient: unusedClient, bucket: null, log: () => {}, print: () => {} }),
+    /namespace acct\.studio does not exist/,
+  );
+});
+
+test("a self-hosted Temporal that refuses the register prints the attributes with their types", async () => {
+  const admin = new FakeAdmin();
+  admin.addSearchAttributes = async () => {
+    throw new Error("PermissionDenied");
+  };
+  const printed: string[] = [];
+  await assert.rejects(
+    runStartupChecks({ config: testConfig(), admin, configClient: unusedClient, bucket: null, log: () => {}, print: (t) => printed.push(t) }),
+    /cannot register the search attributes/,
+  );
+  const text = printed.join("\n");
+  for (const a of REQUIRED_SEARCH_ATTRIBUTES) assert.match(text, new RegExp(`${a.name} \\(${a.type}\\)`));
+});
+
 test("a missing namespace: self-hosted registers it (30 days), Temporal Cloud stops and names it", async () => {
   const h = await harness(env);
   try {

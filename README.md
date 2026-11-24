@@ -60,7 +60,7 @@ tcld namespace search-attributes add -n <namespace>.<account> --sa "RepoKey=Keyw
 # ... one line for each attribute
 ```
 
-3. Set `TEMPORAL_ADDRESS` to `<namespace>.<account>.tmprl.cloud:7233` (or the regional API key endpoint), `TEMPORAL_NAMESPACE` to `<namespace>.<account>`, and `TEMPORAL_API_KEY`.
+3. Set `TEMPORAL_ADDRESS` to `<namespace>.<account>.tmprl.cloud:7233` (or the regional API key endpoint), `TEMPORAL_NAMESPACE` to `<namespace>.<account>`, and `TEMPORAL_API_KEY`. For mTLS instead of an API key, set `TEMPORAL_TLS_CERT` and `TEMPORAL_TLS_KEY`. The relay knows Temporal Cloud from the API key or from a `*.tmprl.cloud` address. On Temporal Cloud it never registers a namespace or search attributes: it prints each missing attribute with its type and stops.
 
 ### Self-hosted Temporal
 

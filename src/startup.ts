@@ -119,8 +119,36 @@ export function pairingText(config: Config, code: string): string {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * True for Temporal Cloud: an API key, or an address at *.tmprl.cloud (mTLS or
+ * API key). Temporal Cloud does not let the relay register a namespace or
+ * search attributes.
+ */
+export function isTemporalCloud(t: Config["temporal"]): boolean {
+  if (t.auth === "api-key") return true;
+  const host = t.address.replace(/^[a-z]+:\/\//i, "").replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
+  return host === "tmprl.cloud" || host.endsWith(".tmprl.cloud");
+}
+
+function missingAttributesText(namespace: string, missing: Array<{ name: string; type: string }>, cloud: boolean): string {
+  return [
+    `The namespace ${namespace} does not have these search attributes:`,
+    ...missing.map((a) => `  ${a.name} (${a.type})`),
+    ...(cloud
+      ? [
+          `Add them in Temporal Cloud (Namespace > Search attributes), or with tcld:`,
+          ...missing.map((a) => `  tcld namespace search-attributes add -n ${namespace} --sa "${a.name}=${a.type}"`),
+        ]
+      : [
+          `Add them with the temporal CLI:`,
+          ...missing.map((a) => `  temporal operator search-attribute create --namespace ${namespace} --name ${a.name} --type ${a.type}`),
+        ]),
+    `Then start the relay again.`,
+  ].join("\n");
+}
+
 async function checkNamespace(o: StartupOptions): Promise<void> {
-  const { namespace, auth } = o.config.temporal;
+  const { namespace } = o.config.temporal;
   let exists: boolean;
   try {
     exists = await o.admin.namespaceExists(namespace);
@@ -128,7 +156,7 @@ async function checkNamespace(o: StartupOptions): Promise<void> {
     throw new StartupError("The relay cannot reach Temporal. Check TEMPORAL_ADDRESS and the Temporal auth settings.");
   }
   if (exists) return;
-  if (auth === "api-key") {
+  if (isTemporalCloud(o.config.temporal)) {
     throw new StartupError(
       `The Temporal namespace ${namespace} does not exist. Make it in Temporal Cloud, or correct TEMPORAL_NAMESPACE.`,
     );
@@ -142,7 +170,7 @@ async function checkNamespace(o: StartupOptions): Promise<void> {
 }
 
 async function checkSearchAttributes(o: StartupOptions): Promise<void> {
-  const { namespace, auth } = o.config.temporal;
+  const { namespace } = o.config.temporal;
   const delay = o.retryDelayMs ?? 1000;
   let have: Set<string> | null = null;
   // A namespace that was just registered can take some seconds to be ready.
@@ -156,22 +184,14 @@ async function checkSearchAttributes(o: StartupOptions): Promise<void> {
   }
   const missing = REQUIRED_SEARCH_ATTRIBUTES.filter((a) => !have!.has(a.name));
   if (missing.length === 0) return;
-  if (auth === "api-key") {
-    const lines = missing.map((a) => `  ${a.name} (${a.type})`);
-    o.print(
-      [
-        `The namespace ${namespace} does not have these search attributes:`,
-        ...lines,
-        `Add them in Temporal Cloud (Namespace > Search attributes), or with tcld:`,
-        ...missing.map((a) => `  tcld namespace search-attributes add -n ${namespace} --sa "${a.name}=${a.type}"`),
-        `Then start the relay again.`,
-      ].join("\n"),
-    );
+  if (isTemporalCloud(o.config.temporal)) {
+    o.print(missingAttributesText(namespace, missing, true));
     throw new StartupError(`The namespace ${namespace} does not have the search attributes of the relay.`);
   }
   try {
     await o.admin.addSearchAttributes(namespace, missing);
   } catch {
+    o.print(missingAttributesText(namespace, missing, false));
     throw new StartupError(`The relay cannot register the search attributes in the namespace ${namespace}.`);
   }
   o.log({ event: "search_attributes_registered", count: missing.length });
