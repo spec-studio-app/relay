@@ -719,3 +719,54 @@ test("a state frame that fails on a Temporal error is tried again until it appli
     await t.close();
   }
 });
+
+test("a repeated post of a sign-in that worked gets the same redirect, not an error", async () => {
+  const t = await startRelay();
+  try {
+    const { request } = await openLogin(t.base);
+    const first = await postLogin(t.base, request, PASSWORD);
+    assert.equal(first.status, 302);
+    const again = await postLogin(t.base, request, PASSWORD);
+    assert.equal(again.status, 302);
+    assert.equal(again.headers.get("location"), first.headers.get("location"));
+  } finally {
+    await t.close();
+  }
+});
+
+test("two posts of one sign-in sent at once both get the one redirect", async () => {
+  const t = await startRelay();
+  try {
+    const { request } = await openLogin(t.base);
+    const [a, b] = await Promise.all([postLogin(t.base, request, PASSWORD), postLogin(t.base, request, PASSWORD)]);
+    assert.deepEqual([a.status, b.status], [302, 302]);
+    assert.equal(a.headers.get("location"), b.headers.get("location"));
+  } finally {
+    await t.close();
+  }
+});
+
+test("the sign-in pages turn off the button after the first submit, with a nonce in the CSP", async () => {
+  const { newPayloadKeys } = await import("../src/codec.js");
+  const { parsePayloadKeys } = await import("../src/config.js");
+  const t = await startRelay({ codecDataKeys: parsePayloadKeys(newPayloadKeys()).data });
+  try {
+    for (const res of [await fetchLoginPage(t.base), await fetch(`${t.base}/codec/signin`)]) {
+      const csp = res.headers.get("content-security-policy") ?? "";
+      const html = await res.text();
+      const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+      assert.ok(nonce, `no script nonce in: ${csp}`);
+      assert.match(csp, /default-src 'none'/);
+      assert.ok(html.includes(`<script nonce="${nonce}">`));
+      assert.match(html, /Signing in…/);
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+async function fetchLoginPage(base: string): Promise<Response> {
+  const { request } = await openLogin(base);
+  // openLogin consumed the page; post a wrong password to get the page again with its headers.
+  return postLogin(base, request, "wrong password");
+}
