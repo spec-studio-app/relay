@@ -109,7 +109,7 @@ export const FINISHED_GRACE_MS = 60 * 60 * 1000;
 /** The send validator's refusal for a spec that no longer exists on the Mac. */
 export const DROPPED_TEXT = "The spec no longer exists on the Mac.";
 
-/** Why a message for the Mac went back to Claude AI when line 1 of a new spec with the same slug came. */
+/** Why a message for the Mac went back to Claude AI when the first sync of a new spec with the same slug came. */
 export const RECREATED_TEXT = "The spec was made again on the Mac, as a new spec with the same slug. Send the message again.";
 
 /** The validators' refusal while a finished spec's workflow removes its data and ends. */

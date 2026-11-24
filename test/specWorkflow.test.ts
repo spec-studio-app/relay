@@ -454,17 +454,24 @@ test("line 1 while the old run removes its data fails, so the agent sends it aga
   }
 });
 
-test("a state update on a finished run changes nothing", async () => {
+test("a state update on a merged run in its grace period applies; on a dropped run it changes nothing", async () => {
   const h = await harness(env, { graceMs: 60_000 });
   try {
     const spec = specAddress(REPO, "finished-state");
     await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
     assert.equal(await h.mirror.refresh(spec, { state: showJson({ status: "blocked" }), turn: { turn: "you", needsYou: true } }), true);
     await h.mirror.sync(spec, { line: 2, event: { kind: "stage", to: "merged" }, state: showJson({ stage: "merged" }), turn: null });
-    assert.equal(await h.mirror.refresh(spec, { state: showJson({ stage: "build" }), turn: null }), false);
-    const state = await h.mirror.state(spec);
-    assert.equal((state?.state as Record<string, unknown>).stage, "merged");
+    // The agent counts a state frame as delivered: a merged spec takes it.
+    assert.equal(await h.mirror.refresh(spec, { state: showJson({ stage: "merged", status: "idle" }), turn: null }), true);
+    let state = await h.mirror.state(spec);
+    assert.equal((state?.state as Record<string, unknown>).status, "idle");
+    assert.equal(state?.finished, true);
     assert.equal(state?.line, 2);
+
+    await h.mirror.gone(spec);
+    assert.equal(await h.mirror.refresh(spec, { state: showJson({ stage: "build" }), turn: null }), false);
+    state = await h.mirror.state(spec);
+    assert.equal((state?.state as Record<string, unknown>).stage, "merged");
   } finally {
     await h.close();
   }
@@ -647,6 +654,58 @@ test("R2.S4: a first sync that starts above line 1 starts a finished spec again,
     assert.notEqual((await handle.describe()).runId, oldRun);
     state = await h.mirror.state(done);
     assert.equal(state?.line, 50);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a batch with no new line still applies its state", async () => {
+  const h = await harness(env);
+  try {
+    const spec = specAddress(REPO, "old-lines");
+    await h.mirror.sync(spec, { lines: notes(1, 47), state: showJson(), turn: null });
+    // The synced answer was lost; the stage changed; the agent sends 41 to 47 again with the new state.
+    assert.deepEqual(await h.mirror.sync(spec, { lines: notes(41, 47), state: showJson({ stage: "build" }), turn: { turn: "you", needsYou: true } }), {
+      line: 47,
+      applied: false,
+    });
+    const state = await h.mirror.state(spec);
+    assert.equal((state?.state as Record<string, unknown>).stage, "build");
+    assert.deepEqual(state?.turn, { turn: "you", needsYou: true });
+    assert.equal(state?.line, 47);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a first sync of the same merged spec sent again does not reset it; a dropped spec that comes back without a state keeps its state", async () => {
+  const h = await harness(env, { graceMs: 60_000 });
+  try {
+    const spec = specAddress(REPO, "same-merged");
+    const merged = showJson({ stage: "merged", createdAt: "2026-11-01T00:00:00Z" });
+    const lines = [...notes(1, 9), { line: 10, event: { kind: "stage", to: "merged" } }];
+    await h.mirror.sync(spec, { first: true, lines, state: merged, turn: null });
+    assert.equal((await h.mirror.state(spec))?.finished, true);
+    // The same first sync again (a lost answer): no reset.
+    assert.deepEqual(await h.mirror.sync(spec, { first: true, lines, state: merged, turn: null }), { line: 10, applied: false });
+    let state = await h.mirror.state(spec);
+    assert.equal(state?.finished, true);
+    assert.equal(state?.events.length, 10);
+    assert.equal((state?.state as Record<string, unknown>).stage, "merged");
+
+    // A new spec with the same slug has another createdAt: the run resets.
+    const fresh = showJson({ stage: "spec", title: "Other", createdAt: "2026-11-20T00:00:00Z" });
+    assert.deepEqual(await h.mirror.sync(spec, { first: true, lines: notes(1, 3), state: fresh, turn: null }), { line: 3, applied: true });
+    state = await h.mirror.state(spec);
+    assert.equal(state?.finished, false);
+    assert.equal((state?.state as Record<string, unknown>).title, "Other");
+
+    // Dropped, then the folder comes back with a first sync and no state: the run resets and keeps its state.
+    await h.mirror.gone(spec);
+    assert.deepEqual(await h.mirror.sync(spec, { first: true, lines: notes(1, 3) }), { line: 3, applied: true });
+    state = await h.mirror.state(spec);
+    assert.equal(state?.dropped, false);
+    assert.equal((state?.state as Record<string, unknown>).title, "Other");
   } finally {
     await h.close();
   }

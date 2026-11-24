@@ -4,6 +4,7 @@ import {
   condition,
   continueAsNew,
   defineQuery,
+  patched,
   defineUpdate,
   proxyActivities,
   setHandler,
@@ -132,7 +133,7 @@ export interface StateInput {
 /**
  * The agent's state frame: the state and the turn changed with no new activity
  * line (for example, the turn moved). It replaces them; the line cursor and the
- * events stay. A finished run ignores it.
+ * events stay. A dropped run ignores it; a merged run in its grace period takes it.
  */
 export const stateUpdate = defineUpdate<{ applied: boolean }, [StateInput, Bound]>("state");
 
@@ -165,6 +166,20 @@ function attachmentsOf(value: unknown): Attachment[] | undefined {
       sha256: String(a.sha256 ?? ""),
       ...(typeof a.error === "string" && a.error ? { error: a.error } : {}),
     }));
+}
+
+/**
+ * True when a first sync on a finished run belongs to another spec with the
+ * same slug: the run was dropped (the folder came back), or the frame's state
+ * has another `createdAt`. A first sync of the same merged spec sent again
+ * (a lost answer, or a first sync in more frames) does not reset the run.
+ */
+function isOtherSpec(s: SpecWorkflowState, sync: SyncInput): boolean {
+  if (s.dropped) return true;
+  const was = s.state?.createdAt;
+  const now = sync.state?.createdAt;
+  if (typeof was !== "string" || typeof now !== "string") return true;
+  return was !== now;
 }
 
 export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
@@ -250,7 +265,10 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
 
   setHandler(syncUpdate, (sync) => {
     const lines = syncLines(sync);
-    if (lines.length > 0 && startsSpec(sync) && s.finished && s.line >= 1) {
+    // A single-line input of wire version 2, from a history written before
+    // version 3: it keeps the old rules, so its replay stays the same.
+    const legacy = !Array.isArray(sync.lines);
+    if (lines.length > 0 && startsSpec(sync) && s.finished && s.line >= 1 && (legacy || isOtherSpec(s, sync))) {
       // The first sync on a finished run (merged or dropped, in its grace
       // period): the spec was made again on the Mac with the same slug (a new
       // spec, or the folder came back). Start it as a new spec. The main loop
@@ -258,14 +276,26 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       bounceMacMessages(RECREATED_TEXT, sync.at);
       s.finished = false;
       s.dropped = false;
-      s.state = null;
-      s.turn = null;
+      // A frame with no state keeps the run's last one: the agent sends no
+      // state that it sent before on this connection.
+      s.state = legacy ? null : (sync.state ?? s.state);
+      s.turn = legacy ? null : sync.turn !== undefined ? sync.turn : s.turn;
       s.events = [];
       s.line = 0;
       s.syncedAt = null;
     }
     const fresh = lines.filter((l) => l.line > s.line);
-    if (fresh.length === 0) return { line: s.line, applied: false };
+    if (fresh.length === 0) {
+      // No new line, but a state: the agent counts it as delivered once the
+      // relay answers synced, so apply it (a dropped spec keeps its last state).
+      if (!legacy && sync.state && !s.dropped) {
+        s.state = sync.state;
+        if (sync.turn !== undefined) s.turn = sync.turn;
+        s.syncedAt = sync.at;
+        changed();
+      }
+      return { line: s.line, applied: false };
+    }
     s.syncedAt = sync.at;
     if (sync.repo) s.spec.repo = sync.repo;
     if (sync.state) s.state = sync.state;
@@ -341,7 +371,10 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   }, { validator: (_: AckInput, b: Bound) => open(b) });
 
   setHandler(stateUpdate, (input) => {
-    if (s.finished) return { applied: false };
+    // A merged spec in its grace period takes a new state too: the agent counts
+    // a state frame as delivered, so its later sync frames leave the state out.
+    // Histories from before this rule keep it (the patch marker).
+    if (s.dropped || (s.finished && !patched("state-on-finished-run"))) return { applied: false };
     s.state = input.state;
     s.turn = input.turn;
     // The age that offline reads show is the age of this state.

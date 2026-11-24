@@ -25,7 +25,7 @@
 //   agent -> relay: {"type":"state","spec":{"repoKey":"...","slug":"..."},"state":{...},"turn":{...}|null}
 //     The state (`studio show --json`) or the turn changed with no new activity
 //     line. The relay replaces the mirror's state and turn of a spec whose
-//     workflow runs and is not finished, after the earlier sync frames of that
+//     workflow runs and is not dropped, after the earlier sync frames of that
 //     spec. No answer frame.
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -526,7 +526,8 @@ export class AgentHub {
   /**
    * Apply a state frame after the earlier frames of its spec. When Temporal
    * fails, keep it and try again every stateRetryMs, until it applies, a newer
-   * state or sync frame of the spec comes, or the agent disconnects.
+   * state frame or a sync frame with a state comes for the spec, or the agent
+   * disconnects.
    */
   private applyState(entry: StateEntry): void {
     const backend = this.options.backend!;
