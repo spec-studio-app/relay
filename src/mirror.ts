@@ -151,10 +151,15 @@ export class Mirror {
   }
 
   /** Messages for Claude AI after the cursor. Waits up to waitMs for a new one. */
-  read(spec: { repoKey: string; slug: string }, after: number | undefined, waitMs: number): Promise<ReadResult> {
+  read(
+    spec: { repoKey: string; slug: string },
+    after: number | undefined,
+    waitMs: number,
+    unreadOnly = false,
+  ): Promise<ReadResult> {
     return this.update(
       spec,
-      () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs }] }),
+      () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs, unreadOnly }] }),
       waitMs + UPDATE_TIMEOUT_MS,
     );
   }

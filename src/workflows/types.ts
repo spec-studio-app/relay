@@ -27,7 +27,9 @@ export interface SpecAddress {
 }
 
 export interface Attachment {
-  objectKey: string;
+  /** Missing when the upload failed: then `error` says why. */
+  objectKey?: string;
+  error?: string;
   filename: string;
   contentType: string;
   size: number;

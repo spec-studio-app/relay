@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import bcrypt from "bcryptjs";
 import { WebSocket } from "ws";
-import { createRelay, type Relay } from "../src/server.js";
+import { createRelay, type Relay, type RelayConfig } from "../src/server.js";
 import type { LogEntry } from "../src/log.js";
 import type { AgentBackend } from "../src/backend.js";
 import type { OfflineReader } from "../src/offline.js";
@@ -29,6 +29,7 @@ export async function startRelay(
     now?: () => Date;
     agentBackend?: AgentBackend;
     offline?: OfflineReader;
+    localTools?: RelayConfig["localTools"];
     /** Set to null for no legacy secret. */
     legacySecretSha256?: string | null;
   } = {},
@@ -44,6 +45,7 @@ export async function startRelay(
     agentSecretSha256: options.legacySecretSha256 === null ? undefined : (options.legacySecretSha256 ?? AGENT_SECRET_SHA256),
     agentBackend: options.agentBackend,
     offline: options.offline,
+    localTools: options.localTools,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,

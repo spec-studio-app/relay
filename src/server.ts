@@ -9,10 +9,14 @@ import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelconte
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { AgentHub } from "./agent.js";
 import { SingleUserProvider } from "./oauth.js";
-import { TOOLS } from "./tools.js";
+import { LOCAL_TOOLS, TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
-import { OFFLINE_READ_TOOLS, type OfflineReader } from "./offline.js";
+import { OFFLINE_READ_TOOLS, type OfflineReader, type ToolText } from "./offline.js";
+
+export interface LocalTools {
+  answer(tool: string, args: Record<string, unknown>): Promise<ToolText>;
+}
 
 import { DEFAULT_CALL_TIMEOUT_MS } from "./config.js";
 
@@ -38,6 +42,8 @@ export interface RelayConfig {
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
+  /** The tools that the relay answers itself (send_message, read_messages, ...). */
+  localTools?: (hub: AgentHub) => LocalTools;
 }
 
 export interface Relay {
@@ -72,6 +78,8 @@ export function createRelay(config: RelayConfig): Relay {
     now: () => new Date(),
     log,
   });
+
+  const localTools = config.localTools?.(hub);
 
   const app = express();
   // Traefik is the one proxy in front of the relay.
@@ -111,7 +119,7 @@ export function createRelay(config: RelayConfig): Relay {
 
   app.post("/mcp", bearer, express.json({ limit: "1mb" }), async (req: Request, res: Response) => {
     // Stateless: one server and one transport for each request.
-    const server = buildMcpServer(hub, log, config.offline);
+    const server = buildMcpServer(hub, log, config.offline, localTools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       void transport.close();
@@ -158,7 +166,7 @@ export function createRelay(config: RelayConfig): Relay {
   };
 }
 
-function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader): McpServer {
+function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, localTools?: LocalTools): McpServer {
   const server = new McpServer({ name: "spec-studio", version: "0.1.0" });
   for (const tool of TOOLS) {
     server.registerTool(
@@ -176,6 +184,23 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader): Mc
         };
       },
     );
+  }
+  if (localTools) {
+    for (const tool of LOCAL_TOOLS) {
+      server.registerTool(
+        tool.name,
+        { title: tool.title, description: tool.description, inputSchema: tool.inputSchema },
+        async (args: Record<string, unknown>) => {
+          const start = Date.now();
+          const result = await localTools.answer(tool.name, args ?? {});
+          log({ event: "tool_call", tool: tool.name, ok: result.ok, ms: Date.now() - start });
+          return {
+            content: [{ type: "text" as const, text: result.text }],
+            ...(result.ok ? {} : { isError: true }),
+          };
+        },
+      );
+    }
   }
   return server;
 }

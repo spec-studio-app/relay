@@ -14,7 +14,7 @@ import {
   sleep,
   startRelay,
 } from "./helpers.js";
-import { TOOLS } from "../src/tools.js";
+import { LOCAL_TOOLS, TOOLS } from "../src/tools.js";
 import { redirectAllowed } from "../src/oauth.js";
 
 test("R5.S1: an MCP call without a token gets 401 and nothing goes to the agent", async () => {
@@ -261,7 +261,7 @@ test("R5.S3: the logs hold no agent secret, password, code or token", async () =
 
 test("R7.S1: each tool description is in short STE sentences with the Spec Studio terms", () => {
   const texts: string[] = [];
-  for (const tool of TOOLS) {
+  for (const tool of [...TOOLS, ...LOCAL_TOOLS]) {
     texts.push(tool.description);
     for (const schema of Object.values(tool.inputSchema)) {
       if (schema.description) texts.push(schema.description);

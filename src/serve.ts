@@ -12,6 +12,7 @@ import { Mirror } from "./mirror.js";
 import { ConfigStore } from "./configStore.js";
 import { temporalAgentBackend } from "./backend.js";
 import { OfflineTools } from "./offline.js";
+import { MessageTools } from "./messages.js";
 
 export const TEMPORAL_UNREACHABLE =
   "The relay cannot reach Temporal. Check TEMPORAL_ADDRESS and the Temporal auth settings (TEMPORAL_AUTH, TEMPORAL_API_KEY, TEMPORAL_TLS_CERT, TEMPORAL_TLS_KEY).";
@@ -54,6 +55,7 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     log,
     agentBackend: temporalAgentBackend({ mirror, configStore }),
     offline: new OfflineTools({ mirror, configStore }),
+    localTools: (hub) => new MessageTools({ mirror, push: (spec, message) => hub.pushMessage(spec, message) }),
   });
   const server = createServer(relay.app);
   relay.attach(server);

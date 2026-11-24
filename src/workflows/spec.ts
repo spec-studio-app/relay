@@ -57,6 +57,8 @@ export interface AckInput {
 export interface ReadInput {
   /** Return the messages with a seq above this cursor. */
   after?: number;
+  /** Return only the unread messages (above the highest seq that any read returned). */
+  unreadOnly?: boolean;
   /** Wait this long for a new message when none is there. */
   waitMs?: number;
 }
@@ -90,11 +92,13 @@ function attachmentsOf(value: unknown): Attachment[] | undefined {
   return value
     .filter((a): a is Record<string, unknown> => typeof a === "object" && a !== null)
     .map((a) => ({
-      objectKey: String(a.objectKey ?? ""),
+      // An attachment that the agent could not upload has no objectKey, and an error.
+      ...(typeof a.objectKey === "string" && a.objectKey ? { objectKey: a.objectKey } : {}),
       filename: String(a.filename ?? ""),
       contentType: String(a.contentType ?? "application/octet-stream"),
       size: Number(a.size ?? 0),
       sha256: String(a.sha256 ?? ""),
+      ...(typeof a.error === "string" && a.error ? { error: a.error } : {}),
     }));
 }
 
@@ -213,7 +217,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   });
 
   setHandler(readUpdate, async (read) => {
-    const after = read.after ?? 0;
+    const after = read.unreadOnly ? s.coordinator.readUpTo : (read.after ?? 0);
     const newest = () => s.coordinator.nextSeq - 1;
     if (newest() <= after && (read.waitMs ?? 0) > 0) {
       await condition(() => newest() > after, Math.min(read.waitMs ?? 0, MAX_WAIT_MS));

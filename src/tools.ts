@@ -90,3 +90,45 @@ export const TOOLS: ToolDefinition[] = [
 ];
 
 export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
+
+/**
+ * The tools that the relay answers itself, from Temporal, with the Mac online
+ * or offline. The relay registers them only when it has Temporal.
+ */
+export const LOCAL_TOOLS: ToolDefinition[] = [
+  {
+    name: "send_message",
+    title: "Send a message to a spec",
+    description:
+      "Send a message to the session of a spec. The relay keeps the message until the Mac takes it. " +
+      "Spec Studio then types the message into the terminal of the spec at a safe point. " +
+      "The result gives the sequence number of the message at once, also when the Mac is offline. " +
+      "A message does not answer a question or a permission prompt of the session.",
+    inputSchema: {
+      repo,
+      slug,
+      text: z.string().min(1).max(20_000).describe("The text of the message, in Markdown."),
+      replyTo: z.string().min(1).optional().describe("The ID of the message that this message answers."),
+    },
+  },
+  {
+    name: "read_messages",
+    title: "Read the messages from specs",
+    description:
+      "Read the messages that the sessions of specs sent with studio message. " +
+      "With a slug, the result gives the messages of that spec after the cursor, with the stage of the spec. " +
+      "Keep the cursor of the result and give it as after in the next call. " +
+      "Without a slug, the result gives the unread messages of all specs. " +
+      "When no message is there, the call waits up to 20 seconds for a new message.",
+    inputSchema: {
+      repo: repo.optional().describe("The path of the repo on the Mac. Give it with the slug, or alone to read one repo."),
+      slug: slug.optional(),
+      after: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("The cursor: the sequence number of the last message that you read. Use it only with a slug."),
+    },
+  },
+];

@@ -14,7 +14,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
 import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
-import type { SpecAddress } from "./workflows/types.js";
+import type { Message, SpecAddress } from "./workflows/types.js";
 
 export interface CallResult {
   ok: boolean;
@@ -62,6 +62,8 @@ export class AgentHub {
   private readonly versions = new WeakMap<WebSocket, number>();
   /** Sync lines of one spec apply in order: one promise chain per spec. */
   private readonly syncChains = new Map<string, Promise<void>>();
+  /** The messages pushed on each socket, so a push goes once per connection. */
+  private readonly pushed = new WeakMap<WebSocket, Set<string>>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.expectedHash = options.agentSecretSha256 ? Buffer.from(options.agentSecretSha256, "hex") : null;
@@ -224,6 +226,10 @@ export class AgentHub {
       this.sync(ws, m);
       return;
     }
+    if (m.type === "delivered") {
+      this.delivered(ws, m);
+      return;
+    }
     if (m.type !== "result" || typeof m.id !== "string") {
       this.options.log({ event: "agent_bad_message" });
       return;
@@ -256,8 +262,50 @@ export class AgentHub {
     void this.afterWelcome(ws);
   }
 
-  /** Work to do after a welcome (pushes of waiting messages). */
-  protected async afterWelcome(_ws: WebSocket): Promise<void> {}
+  /** After a welcome: push every message that waits for the Mac, in seq order per spec. */
+  private async afterWelcome(ws: WebSocket): Promise<void> {
+    const backend = this.options.backend;
+    if (!backend) return;
+    try {
+      const waiting = await backend.pendingForMac();
+      for (const { spec, message } of waiting) this.pushTo(ws, spec, message);
+    } catch {
+      this.options.log({ event: "push_pending_failed" });
+    }
+  }
+
+  private pushTo(ws: WebSocket, spec: SpecAddress, message: Message): void {
+    if (this.versions.get(ws) !== WIRE_VERSION) return;
+    let pushed = this.pushed.get(ws);
+    if (!pushed) {
+      pushed = new Set();
+      this.pushed.set(ws, pushed);
+    }
+    const key = `${spec.repoKey}/${spec.slug}#${message.seq}`;
+    if (pushed.has(key)) return;
+    pushed.add(key);
+    this.send(ws, { type: "message", spec: wireSpec(spec, true), seq: message.seq, message });
+  }
+
+  /** Push a new message to the Mac when a version 2 agent is connected. */
+  pushMessage(spec: SpecAddress, message: Message): boolean {
+    const ws = this.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.versions.get(ws) !== WIRE_VERSION) return false;
+    this.pushTo(ws, spec, message);
+    return true;
+  }
+
+  private delivered(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    const spec = parseSpec(m.spec);
+    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec || typeof m.seq !== "number") {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const error = typeof m.error === "string" && m.error ? m.error.slice(0, 500) : undefined;
+    this.options.log({ event: "message_delivered", ok: error === undefined });
+    backend.ack(spec, m.seq, error).catch(() => this.options.log({ event: "ack_failed" }));
+  }
 
   private sync(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
@@ -375,8 +423,8 @@ export function parseSpec(value: unknown): SpecAddress | null {
   return { repoKey, slug, ...(typeof repo === "string" && repo ? { repo } : {}) };
 }
 
-function wireSpec(spec: SpecAddress): { repoKey: string; slug: string } {
-  return { repoKey: spec.repoKey, slug: spec.slug };
+function wireSpec(spec: SpecAddress, withRepo = false): SpecAddress {
+  return { repoKey: spec.repoKey, slug: spec.slug, ...(withRepo && spec.repo ? { repo: spec.repo } : {}) };
 }
 
 function parseTurn(value: unknown): { turn: string; needsYou: boolean } | null {
