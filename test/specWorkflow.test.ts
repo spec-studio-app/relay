@@ -50,7 +50,7 @@ test("R3.S1: the first sync starts the workflow; the state and the search attrib
     assert.equal(state.spec.repo, REPO);
     assert.equal(state.events.length, 1);
 
-    const handle = h.clients.data.workflow.getHandle(specWorkflowId(spec.repoKey, "dark-mode"));
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "dark-mode"));
     const sa = await eventually(async () => {
       const d = await handle.describe();
       return d.typedSearchAttributes.get(SA.Stage) === "plan" ? d.typedSearchAttributes : null;
@@ -118,7 +118,7 @@ test("R3.S3: a merged line with empty inboxes completes the workflow and removes
       state: showJson({ stage: "merged", status: "idle" }),
       turn: null,
     });
-    const handle = h.clients.data.workflow.getHandle(specWorkflowId(spec.repoKey, "shipped"));
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "shipped"));
     await handle.result();
     assert.equal((await handle.describe()).status.name, "COMPLETED");
     assert.equal([...h.bucket.objects.keys()].filter((k) => k.startsWith(prefix)).length, 0);
@@ -137,7 +137,7 @@ test("a finished spec with a message for the Mac stays open until the Mac takes 
     await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
     const { seq } = await h.mirror.send(spec, { text: "Wait." });
     await h.mirror.sync(spec, { line: 2, event: { kind: "dropped" }, state: null, turn: null });
-    const handle = h.clients.data.workflow.getHandle(specWorkflowId(spec.repoKey, "dropped-later"));
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "dropped-later"));
     assert.equal((await handle.describe()).status.name, "RUNNING");
     await h.mirror.ack(spec, seq);
     await handle.result();
@@ -150,7 +150,7 @@ test("R3.S4: with the update limit at 3, the workflow continues as new and keeps
   const h = await harness(env, { updateLimit: 3 });
   try {
     const spec = specAddress(REPO, "long");
-    const handle = h.clients.data.workflow.getHandle(specWorkflowId(spec.repoKey, "long"));
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "long"));
     await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
     const firstRun = (await handle.describe()).runId;
     await h.mirror.send(spec, { text: "Use the old icon." });
@@ -178,5 +178,28 @@ test("R3.S4: with the update limit at 3, the workflow continues as new and keeps
     assert.equal((await h.mirror.sync(spec, { line: 2, event: {}, state: null, turn: null })).applied, false);
   } finally {
     await h.close();
+  }
+});
+
+test("two deploys on one namespace keep separate workflows for the same repo and slug", async () => {
+  const a = await harness(env);
+  const b = await harness(env);
+  try {
+    const spec = specAddress(REPO, "same-slug");
+    await a.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson({ title: "From A" }), turn: null });
+    await b.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson({ title: "From B" }), turn: null });
+    await b.mirror.send(spec, { text: "Only for B." });
+    const stateA = await a.mirror.state(spec);
+    const stateB = await b.mirror.state(spec);
+    assert.equal(stateA?.deployId, a.deployId);
+    assert.equal((stateA?.state as Record<string, unknown>).title, "From A");
+    assert.equal(stateA?.mac.messages.length, 0);
+    assert.equal(stateB?.deployId, b.deployId);
+    assert.equal((stateB?.state as Record<string, unknown>).title, "From B");
+    assert.equal(stateB?.mac.messages.length, 1);
+    assert.equal(specWorkflowId(a.deployId, spec.repoKey, "same-slug"), `spec-${a.deployId}-${spec.repoKey}-same-slug`);
+  } finally {
+    await a.close();
+    await b.close();
   }
 });

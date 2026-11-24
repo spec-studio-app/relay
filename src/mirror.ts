@@ -91,13 +91,13 @@ export class Mirror {
   }
 
   private handle(spec: { repoKey: string; slug: string }) {
-    return this.o.client.workflow.getHandle(specWorkflowId(spec.repoKey, spec.slug));
+    return this.o.client.workflow.getHandle(specWorkflowId(this.o.deployId, spec.repoKey, spec.slug));
   }
 
   /** Apply one activity line. The first line starts the workflow. */
   async sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult> {
     const startWorkflowOperation = new WithStartWorkflowOperation(specWorkflow, {
-      workflowId: specWorkflowId(spec.repoKey, spec.slug),
+      workflowId: specWorkflowId(this.o.deployId, spec.repoKey, spec.slug),
       taskQueue: this.o.taskQueue,
       args: [initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT)],
       workflowIdConflictPolicy: "USE_EXISTING",

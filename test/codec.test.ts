@@ -78,7 +78,7 @@ test("a namespace writer without the payload keys cannot give the workflows inpu
     await assert.rejects(
       within(
         plainClient.workflow
-          .getHandle(specWorkflowId(spec.repoKey, spec.slug))
+          .getHandle(specWorkflowId(h.deployId, spec.repoKey, spec.slug))
           .executeUpdate(sendUpdate, { args: [{ id: "x", text: "typed into the terminal", at: new Date().toISOString() }] }),
       ),
     );
@@ -122,7 +122,7 @@ test("R10.S1: the raw history of a spec workflow and the relay-config workflow h
       print: () => {},
     });
 
-    for (const workflowId of [specWorkflowId(spec.repoKey, spec.slug), relayConfigWorkflowId(h.deployId)]) {
+    for (const workflowId of [specWorkflowId(h.deployId, spec.repoKey, spec.slug), relayConfigWorkflowId(h.deployId)]) {
       const raw = await env.connection.workflowService.getWorkflowExecutionHistory({
         namespace: "default",
         execution: { workflowId },
@@ -179,7 +179,7 @@ test("R10.S2, R10.S3: a signed-in decode from UI_ORIGIN shows spec payloads as J
   try {
     const spec = specAddress("/Users/me/code/codec", "decode-me");
     await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: { title: "Decode me" }, turn: null });
-    const specPayload = await firstInput(specWorkflowId(spec.repoKey, spec.slug));
+    const specPayload = await firstInput(specWorkflowId(h.deployId, spec.repoKey, spec.slug));
     const configPayload = await firstInput(relayConfigWorkflowId(h.deployId));
 
     // No sign-in: 401, and the payloads stay hidden.

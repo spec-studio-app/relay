@@ -206,7 +206,7 @@ PAYLOAD_KEYS=data:data-2:<new>,data:data-1:<old>,config:config-1:<key>
 
 ## What the relay keeps in Temporal
 
-- One workflow per spec, with the ID `spec-<repoKey>-<slug>`. `repoKey` is the first 12 hex characters of the SHA-256 of the home repo path. It holds the last state of the spec, the turn, the last 20 activity events, the messages that wait for the Mac and the messages for Claude AI. It ends when the spec is merged or dropped and no message waits. The retention period of the namespace then removes its history.
+- One workflow per spec, with the ID `spec-<deployId>-<repoKey>-<slug>`. `deployId` is `DEPLOY_ID`, so two relays on one namespace never share a spec workflow. `repoKey` is the first 12 hex characters of the SHA-256 of the home repo path. It holds the last state of the spec, the turn, the last 20 activity events, the messages that wait for the Mac and the messages for Claude AI. It ends when the spec is merged or dropped and no message waits. The retention period of the namespace then removes its history.
 - One workflow per deploy, `relay-config-<DEPLOY_ID>`: the hashes of the agent secrets, of the pairing code and of the OAuth tokens, the OAuth clients, and the repos from the last connection of the Mac.
 
 The relay itself keeps no state, so a restart loses no message and no sign-in.

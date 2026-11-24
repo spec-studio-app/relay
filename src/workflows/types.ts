@@ -116,8 +116,12 @@ export function initialSpecState(deployId: string, spec: SpecAddress, updateLimi
   };
 }
 
-export function specWorkflowId(repoKey: string, slug: string): string {
-  return `spec-${repoKey}-${slug}`;
+/**
+ * The ID of a spec workflow. The deploy ID is in it, so two relays on one
+ * namespace never share a spec workflow.
+ */
+export function specWorkflowId(deployId: string, repoKey: string, slug: string): string {
+  return `spec-${deployId}-${repoKey}-${slug}`;
 }
 
 export function relayConfigWorkflowId(deployId: string): string {
