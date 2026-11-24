@@ -287,3 +287,27 @@ test("while a finished spec removes its data, new updates are refused with a cle
     await h.close();
   }
 });
+
+test("a line after the workflow completed answers synced and starts no new run", async () => {
+  const h = await harness(env, { graceMs: 200 });
+  try {
+    const spec = specAddress(REPO, "after-end");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
+    await h.mirror.sync(spec, { line: 2, event: { kind: "stage", to: "merged" }, state: showJson({ stage: "merged" }), turn: null });
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "after-end"));
+    await handle.result();
+    const runId = (await handle.describe()).runId;
+    // A cleanup line after the merge, then the same line again (the agent crashed before synced).
+    for (let i = 0; i < 2; i++) {
+      assert.deepEqual(
+        await h.mirror.sync(spec, { line: 3, event: { kind: "worktree-removed" }, state: showJson({ stage: "merged" }), turn: null }),
+        { line: 3, applied: false },
+      );
+    }
+    const now = await handle.describe();
+    assert.equal(now.runId, runId);
+    assert.equal(now.status.name, "COMPLETED");
+  } finally {
+    await h.close();
+  }
+});

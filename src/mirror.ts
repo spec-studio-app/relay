@@ -1,6 +1,12 @@
 // The relay's side of the spec workflows: sync lines, messages and reads.
 import { createHash, randomUUID } from "node:crypto";
-import { WithStartWorkflowOperation, WorkflowNotFoundError, WorkflowUpdateFailedError, type Client } from "@temporalio/client";
+import {
+  WithStartWorkflowOperation,
+  WorkflowExecutionAlreadyStartedError,
+  WorkflowNotFoundError,
+  WorkflowUpdateFailedError,
+  type Client,
+} from "@temporalio/client";
 import {
   ackUpdate,
   readUpdate,
@@ -121,6 +127,9 @@ export class Mirror {
         initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT, this.o.graceMs ?? FINISHED_GRACE_MS),
       ],
       workflowIdConflictPolicy: "USE_EXISTING",
+      // A spec whose workflow completed (merged or dropped, then ended) gets no
+      // new empty run for a late line. A failed or terminated run may restart.
+      workflowIdReusePolicy: "ALLOW_DUPLICATE_FAILED_ONLY",
     });
     try {
       return await withTimeout(
@@ -131,8 +140,11 @@ export class Mirror {
         UPDATE_TIMEOUT_MS,
       );
     } catch (error) {
-      // The finished spec's workflow is ending: the line changes nothing more.
-      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      // The finished spec's workflow is ending, or it completed: the line
+      // changes nothing more, so the agent may drop it.
+      if (isClosingRefusal(error) || error instanceof WorkflowExecutionAlreadyStartedError) {
+        return { line: input.line, applied: false };
+      }
       throw error;
     }
   }
