@@ -219,11 +219,23 @@ export async function runStartupChecks(o: StartupOptions): Promise<StartupResult
 }
 
 /** Make a new pairing code (the command `relay pair-code`). */
-export async function makePairCode(configClient: Client, deployId: string): Promise<string> {
+export async function makePairCode(configClient: Client, deployId: string, timeoutMs = 15_000): Promise<string> {
   const code = newPairCode();
   const handle = configClient.workflow.getHandle(relayConfigWorkflowId(deployId));
-  await handle.executeUpdate(setPairCodeUpdate, {
-    args: [{ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }],
+  // The relay's own worker applies the update: without a running relay, no answer comes.
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
   });
+  try {
+    await Promise.race([
+      handle.executeUpdate(setPairCodeUpdate, {
+        args: [{ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }],
+      }),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   return code;
 }

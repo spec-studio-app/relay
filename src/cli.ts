@@ -34,10 +34,12 @@ async function pairCode(): Promise<void> {
   try {
     code = await makePairCode(clients.config, config.deployId);
   } catch {
-    throw new StartupError("The relay cannot make a pairing code. Start the relay once, then try again.");
+    void connection.close().catch(() => undefined);
+    throw new StartupError("The relay cannot make a pairing code. Check that the relay runs with the same settings, then try again.");
   }
   process.stdout.write(pairingText(config, code) + "\n");
   await connection.close();
+  process.exit(0);
 }
 
 function keys(): void {

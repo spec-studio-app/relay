@@ -203,3 +203,13 @@ test("pairing codes: the format and the hash ignore case and dashes", () => {
   assert.equal(pairCodeHash(code), pairCodeHash(code.toLowerCase().replace(/-/g, " ")));
   assert.notEqual(pairCodeHash(code), pairCodeHash(newPairCode()));
 });
+
+test("relay pair-code fails in time when no relay runs (no worker answers the update)", async () => {
+  const { makePairCode } = await import("../src/startup.js");
+  const client = {
+    workflow: { getHandle: () => ({ executeUpdate: () => new Promise(() => {}) }) },
+  } as unknown as Client;
+  const started = Date.now();
+  await assert.rejects(makePairCode(client, "d", 200), /timeout/);
+  assert.ok(Date.now() - started < 2000);
+});
