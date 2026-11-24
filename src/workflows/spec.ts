@@ -172,14 +172,17 @@ function attachmentsOf(value: unknown): Attachment[] | undefined {
  * True when a first sync on a finished run belongs to another spec with the
  * same slug: the run was dropped (the folder came back), or the frame's state
  * has another `createdAt`. A first sync of the same merged spec sent again
- * (a lost answer, or a first sync in more frames) does not reset the run.
+ * (a lost answer, or a first sync in more frames), or one with no state,
+ * does not reset a merged run.
  */
 function isOtherSpec(s: SpecWorkflowState, sync: SyncInput): boolean {
   if (s.dropped) return true;
   const was = s.state?.createdAt;
   const now = sync.state?.createdAt;
-  if (typeof was !== "string" || typeof now !== "string") return true;
-  return was !== now;
+  // With no createdAt in the frame (studio show failed, so the state is null)
+  // there is no proof of a new spec: keep the run.
+  if (typeof now !== "string") return false;
+  return typeof was !== "string" || was !== now;
 }
 
 export async function specWorkflow(input: SpecWorkflowState): Promise<void> {

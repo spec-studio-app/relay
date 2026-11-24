@@ -244,8 +244,9 @@ export class Mirror {
 
   /**
    * The agent's state frame: replace the state and the turn of a running spec
-   * that is not finished. An unknown spec gets no new run; a finished or closing
-   * run ignores it. True when the workflow applied it.
+   * that is not dropped (a merged spec in its grace period takes it too). An
+   * unknown spec gets no new run; a dropped or closing run ignores it. True
+   * when the workflow applied it.
    */
   async refresh(spec: { repoKey: string; slug: string }, input: Omit<StateInput, "at">): Promise<boolean> {
     try {

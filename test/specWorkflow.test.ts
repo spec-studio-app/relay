@@ -693,6 +693,10 @@ test("a first sync of the same merged spec sent again does not reset it; a dropp
     assert.equal(state?.events.length, 10);
     assert.equal((state?.state as Record<string, unknown>).stage, "merged");
 
+    // A first sync with a null state (studio show failed) is no proof of a new spec: no reset.
+    assert.deepEqual(await h.mirror.sync(spec, { first: true, lines: notes(1, 3), state: null, turn: null }), { line: 10, applied: false });
+    assert.equal((await h.mirror.state(spec))?.events.length, 10);
+
     // A new spec with the same slug has another createdAt: the run resets.
     const fresh = showJson({ stage: "spec", title: "Other", createdAt: "2026-11-20T00:00:00Z" });
     assert.deepEqual(await h.mirror.sync(spec, { first: true, lines: notes(1, 3), state: fresh, turn: null }), { line: 3, applied: true });
