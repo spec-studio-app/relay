@@ -379,3 +379,77 @@ test("a new spec with the slug of a completed one starts a new run at line 1; a 
     await h.close();
   }
 });
+
+test("line 1 on a finished run in its grace period starts it again as a new spec", async () => {
+  const h = await harness(env, { graceMs: 60_000 });
+  try {
+    const spec = specAddress(REPO, "back-again");
+    for (let line = 1; line <= 5; line++) {
+      await h.mirror.sync(spec, { line, event: { kind: "note", text: `old ${line}` }, state: showJson({ title: "Old" }), turn: null });
+    }
+    const { message } = await h.mirror.send(spec, { text: "For the old spec." });
+    await h.mirror.gone(spec);
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "back-again"));
+    const runId = (await handle.describe()).runId;
+
+    // The folder came back: the agent sends from line 1 again, to the same open run.
+    assert.deepEqual(
+      await h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: showJson({ title: "New" }), turn: null }),
+      { line: 1, applied: true },
+    );
+    assert.deepEqual(await h.mirror.sync(spec, { line: 2, event: { kind: "note" }, state: showJson({ title: "New" }), turn: null }), {
+      line: 2,
+      applied: true,
+    });
+    assert.equal((await handle.describe()).runId, runId);
+    const state = await h.mirror.state(spec);
+    assert.equal(state?.finished, false);
+    assert.equal(state?.dropped, false);
+    assert.equal(state?.line, 2);
+    assert.deepEqual(state?.events.map((e) => e.line), [1, 2]);
+    assert.equal((state?.state as Record<string, unknown>).title, "New");
+    assert.ok(state?.coordinator.messages.some((m) => m.replyTo === message.id));
+    // The spec takes messages again, and line 1 sent again is ignored now.
+    assert.equal((await h.mirror.send(spec, { text: "For the new spec." })).message.text, "For the new spec.");
+    assert.equal((await h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: null, turn: null })).applied, false);
+    // The run no longer ends: it is not finished.
+    await h.mirror.read(spec, undefined, 0);
+    assert.equal((await handle.describe()).status.name, "RUNNING");
+  } finally {
+    await h.close();
+  }
+});
+
+test("line 1 while the old run removes its data fails, so the agent sends it again and it starts a new run", async () => {
+  const h = await harness(env, { graceMs: 200 });
+  let release!: () => void;
+  let started!: () => void;
+  const removing = new Promise<void>((resolve) => (started = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const remove = h.bucket.removePrefix.bind(h.bucket);
+  h.bucket.removePrefix = async (prefix: string) => {
+    started();
+    await gate;
+    return remove(prefix);
+  };
+  try {
+    const spec = specAddress(REPO, "closing-recreated");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
+    await h.mirror.gone(spec);
+    await removing;
+    await assert.rejects(h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: showJson({ title: "New" }), turn: null }), SpecClosingError);
+    release();
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "closing-recreated"));
+    await handle.result();
+    assert.deepEqual(
+      await h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: showJson({ title: "New" }), turn: null }),
+      { line: 1, applied: true },
+    );
+    const state = await h.mirror.state(spec);
+    assert.ok(!state?.dropped);
+    assert.equal((state?.state as Record<string, unknown>).title, "New");
+  } finally {
+    release();
+    await h.close();
+  }
+});

@@ -136,8 +136,13 @@ export class Mirror {
     try {
       return await this.syncWith(spec, input, "ALLOW_DUPLICATE_FAILED_ONLY");
     } catch (error) {
-      // The finished spec's workflow is ending: the line changes nothing more.
-      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      if (isClosingRefusal(error)) {
+        // Line 1 of a new spec with the same slug: the old run ends now, so the
+        // agent must send the line again (then it starts a new run).
+        if (input.line === 1) throw new SpecClosingError();
+        // The finished spec's workflow is ending: the line changes nothing more.
+        return { line: input.line, applied: false };
+      }
       if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error;
     }
     // The spec's workflow completed. Line 1 is the first line of a new spec
@@ -147,7 +152,7 @@ export class Mirror {
     try {
       return await this.syncWith(spec, input, "ALLOW_DUPLICATE");
     } catch (error) {
-      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      if (isClosingRefusal(error)) throw new SpecClosingError();
       throw error;
     }
   }

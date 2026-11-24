@@ -16,6 +16,7 @@ import type { Activities } from "../activities.js";
 import {
   CLOSING_TEXT,
   DROPPED_TEXT,
+  RECREATED_TEXT,
   COORDINATOR_KEEP,
   EVENT_LIMIT,
   FINISHED_GRACE_MS,
@@ -169,7 +170,37 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
 
   setHandler(stateQuery, () => s);
 
+  /** Tell Claude AI that the Mac will not take the messages that wait for it. */
+  const bounceMacMessages = (reason: string, at: string) => {
+    for (const message of s.mac.messages) {
+      addForCoordinator({
+        id: uuid4(),
+        from: "session",
+        spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
+        stage: mirrorFields(s.state).stage,
+        text: `The Mac did not take the message: ${reason}`,
+        replyTo: message.id,
+        createdAt: at,
+      });
+    }
+    s.mac.messages = [];
+  };
+
   setHandler(syncUpdate, (sync) => {
+    if (sync.line === 1 && s.finished && s.line >= 1) {
+      // Line 1 on a finished run (merged or dropped, in its grace period): the
+      // spec was made again on the Mac with the same slug (a new spec, or the
+      // folder came back). Start it as a new spec. The main loop sees that the
+      // run is no longer finished, so the grace period ends.
+      bounceMacMessages(RECREATED_TEXT, sync.at);
+      s.finished = false;
+      s.dropped = false;
+      s.state = null;
+      s.turn = null;
+      s.events = [];
+      s.line = 0;
+      s.syncedAt = null;
+    }
     if (sync.line <= s.line) return { line: s.line, applied: false };
     s.line = sync.line;
     s.syncedAt = sync.at;
@@ -243,18 +274,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     s.dropped = true;
     s.finished = true;
     // The Mac can no longer take the messages that wait for it: tell Claude AI.
-    for (const message of s.mac.messages) {
-      addForCoordinator({
-        id: uuid4(),
-        from: "session",
-        spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
-        stage: mirrorFields(s.state).stage,
-        text: `The Mac did not take the message: ${DROPPED_TEXT}`,
-        replyTo: message.id,
-        createdAt: gone.at,
-      });
-    }
-    s.mac.messages = [];
+    bounceMacMessages(DROPPED_TEXT, gone.at);
     changed();
     return { dropped: true };
   }, { validator: (_: { at: string }) => refuseWhenClosing() });
