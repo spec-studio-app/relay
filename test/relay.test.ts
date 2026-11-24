@@ -571,7 +571,7 @@ test("a codec sign-in from a new browser sets the device cookie", async () => {
   }
 });
 
-test("while a version 2 agent is connected, the relay looks again for waiting messages that the welcome scan missed", async () => {
+test("while a current agent is connected, the relay looks again for waiting messages that the welcome scan missed", async () => {
   let scans = 0;
   const spec = { repoKey: "0123456789ab", slug: "late", repo: "/Users/me/code/app" };
   const message = {
@@ -591,7 +591,7 @@ test("while a version 2 agent is connected, the relay looks again for waiting me
   };
   const t = await startRelay({ agentBackend: backend, pendingScanMs: 150 });
   try {
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [] });
     await agent.next("welcome");
     const pushed = await agent.next("message");
     assert.equal(pushed.message.text, "Sent while visibility lagged.");
@@ -618,7 +618,7 @@ test("a message of a new run with the same seq as a message pushed before on thi
   const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [] };
   const t = await startRelay({ agentBackend: backend });
   try {
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [] });
     await agent.next("welcome");
     assert.equal(t.relay.hub.pushMessage(spec, message("old-run-1", "Old run.")), true);
     assert.equal((await agent.next("message")).message.text, "Old run.");
@@ -651,7 +651,7 @@ test("a scan pushes again a message that still waits long after its push on the 
   const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [{ spec, message }] };
   const t = await startRelay({ agentBackend: backend, pendingScanMs: 50, resendAfterMs: 400 });
   try {
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [] });
     await agent.next("welcome");
     const start = Date.now();
     await agent.next("message");
@@ -674,8 +674,9 @@ test("a state frame that fails on a Temporal error is tried again until it appli
     hello: async () => {},
     pendingForMac: async () => [],
     sync: async (_spec, input) => {
-      calls.push(`sync ${input.line}`);
-      return { line: input.line, applied: true };
+      const last = input.lines?.at(-1)?.line ?? 0;
+      calls.push(`sync ${last}`);
+      return { line: last, applied: true };
     },
     state: async (_spec, state) => {
       calls.push(`state ${state.status}`);
@@ -685,7 +686,7 @@ test("a state frame that fails on a Temporal error is tried again until it appli
   };
   const t = await startRelay({ agentBackend: backend, stateRetryMs: 100 });
   try {
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [] });
     await agent.next("welcome");
     agent.send({ type: "state", spec, state: { status: "blocked" }, turn: null });
     await sleep(600);
@@ -697,7 +698,7 @@ test("a state frame that fails on a Temporal error is tried again until it appli
     failures = 100;
     agent.send({ type: "state", spec, state: { status: "working" }, turn: null });
     await sleep(30);
-    agent.send({ type: "sync", spec, line: 1, event: { kind: "note" }, state: { status: "idle" }, turn: null });
+    agent.send({ type: "sync", spec, lines: [{ line: 1, event: { kind: "note" } }], state: { status: "idle" }, turn: null });
     await agent.next("synced");
     await sleep(400);
     assert.deepEqual(calls, ["state working", "sync 1"]);

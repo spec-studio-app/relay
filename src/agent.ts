@@ -4,9 +4,19 @@
 //   relay -> agent: {"type":"call","id":"<uuid>","tool":"<name>","arguments":{...}}
 //   agent -> relay: {"type":"result","id":"<same>","ok":true|false,"text":"<string>"}
 //   agent -> relay: {"type":"hello","version":1}   (optional, after connect)
-// Version 2 (wire.md in the spec): hello with repos, welcome, sync and synced,
-// message and delivered, upload-url and download-url, gone and gone-ok. A
-// version 1 agent gets tool calls only.
+// Version 3 (wire.md in the app's specs/studio-relay): hello with repos,
+// welcome, sync and synced, message and delivered, upload-url and
+// download-url, gone and gone-ok. An agent of an older version gets tool
+// calls only.
+//   agent -> relay: {"type":"sync","spec":{...},"first":true,"lines":[{"line":<n>,"event":{...}},...],"state":{...},"turn":{...}|null}
+//     The new activity lines of a spec from one drain, in ascending order.
+//     "first" only when the agent had no cursor for the spec (a short first
+//     sync: the last 20 lines and the earlier messages). "state" and "turn"
+//     only when they changed since the last frame on this connection; a frame
+//     without them keeps the mirror's. The workflow applies the frame as one
+//     update.
+//   relay -> agent: {"type":"synced","spec":{...},"line":<last line of the frame>}
+//     With an "error" field when the relay did not apply the lines.
 //   agent -> relay: {"type":"gone","spec":{"repoKey":"<12 hex>","slug":"<slug>"}}
 //     A spec that the agent synced no longer exists on the Mac.
 //   relay -> agent: {"type":"gone-ok","spec":{"repoKey":"...","slug":"..."}}
@@ -44,13 +54,13 @@ export interface AgentHubOptions {
   probeTimeoutMs: number;
   now: () => Date;
   log: Logger;
-  /** Temporal: the paired secrets and wire version 2. Without it no agent can connect. */
+  /** Temporal: the paired secrets and the wire version of the sync. Without it no agent can connect. */
   backend?: AgentBackend;
   relayVersion?: string;
   /** The longest wait for the secret check of an upgrade (10 seconds when not given). */
   authTimeoutMs?: number;
   /**
-   * While a version 2 agent is connected, look for messages that wait for the
+   * While a current agent is connected, look for messages that wait for the
    * Mac this often (60 seconds when not given). Visibility is eventually
    * consistent, so the scan at the welcome can miss a message.
    */
@@ -95,7 +105,7 @@ export class AgentHub {
   /** Monotonic time (ms) of the last frame from the agent. */
   private lastHeardMs = 0;
   private readonly pending = new Map<string, PendingCall>();
-  /** The wire version of each socket (1 until a version 2 hello). */
+  /** The wire version of each socket (1 until a hello of the current version). */
   private readonly versions = new WeakMap<WebSocket, number>();
   /** Sync lines of one spec apply in order: one promise chain per spec. */
   private readonly syncChains = new Map<string, Promise<void>>();
@@ -103,7 +113,7 @@ export class AgentHub {
   private readonly hashes = new WeakMap<WebSocket, string>();
   /** The newest state frame of each spec while it applies or waits for a retry. */
   private readonly latestStates = new Map<string, StateEntry>();
-  /** The timer of each version 2 socket that looks for waiting messages again. */
+  /** The timer of each current socket that looks for waiting messages again. */
   private readonly scanners = new WeakMap<WebSocket, NodeJS.Timeout>();
   /**
    * The messages pushed on each socket (message ID -> monotonic time in ms), so
@@ -342,6 +352,13 @@ export class AgentHub {
   private hello(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
     if (!backend || typeof m.version !== "number" || m.version < 2) return;
+    if (m.version < WIRE_VERSION) {
+      // An older agent (wire version 2 sends one line per sync frame) gets tool
+      // calls only: no welcome, so it does not sync. It tells its user that
+      // the relay and the app do not match.
+      this.options.log({ event: "agent_hello_old", version: m.version });
+      return;
+    }
     this.versions.set(ws, WIRE_VERSION);
     this.send(ws, { type: "welcome", version: WIRE_VERSION, relayVersion: this.options.relayVersion ?? RELAY_VERSION });
     const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
@@ -394,7 +411,7 @@ export class AgentHub {
     this.send(ws, { type: "message", spec: wireSpec(spec, true), seq: message.seq, message });
   }
 
-  /** Push a new message to the Mac when a version 2 agent is connected. */
+  /** Push a new message to the Mac when a current agent is connected. */
   pushMessage(spec: SpecAddress, message: Message): boolean {
     const ws = this.socket;
     if (!ws || ws.readyState !== WebSocket.OPEN || this.versions.get(ws) !== WIRE_VERSION) return false;
@@ -453,28 +470,30 @@ export class AgentHub {
       return;
     }
     const spec = parseSpec(m.spec);
-    const line = m.line;
-    if (!spec || typeof line !== "number" || !Number.isInteger(line) || line < 1 || !isObject(m.event)) {
+    const lines = parseLines(m.lines);
+    const hasState = "state" in m;
+    if (!spec || !lines || (hasState && !isObject(m.state) && m.state !== null)) {
       this.options.log({ event: "agent_bad_sync" });
-      if (spec && typeof line === "number") {
-        this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The sync frame is not valid." });
+      const last = lastLineNumber(m.lines);
+      if (spec && last !== null) {
+        this.send(ws, { type: "synced", spec: wireSpec(spec), line: last, error: "The sync frame is not valid." });
       }
       return;
     }
-    // The line carries the state of its time: a failed state frame before it is old now.
-    this.forgetState(specKey(spec));
+    const line = lines[lines.length - 1].line;
+    // The frame with a state carries the state of its time: a failed state frame before it is old now.
+    if (hasState) this.forgetState(specKey(spec));
     this.chain(spec, async () => {
       try {
         await backend.sync(spec, {
-          line,
-          event: m.event as Record<string, unknown>,
-          state: isObject(m.state) ? (m.state as Record<string, unknown>) : null,
-          turn: parseTurn(m.turn),
+          lines,
+          ...(m.first === true ? { first: true } : {}),
+          ...(hasState ? { state: isObject(m.state) ? (m.state as Record<string, unknown>) : null, turn: parseTurn(m.turn) } : {}),
         });
         this.send(ws, { type: "synced", spec: wireSpec(spec), line });
       } catch {
         this.options.log({ event: "sync_failed" });
-        this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The relay cannot apply the line now." });
+        this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The relay cannot apply the lines now." });
       }
     });
   }
@@ -642,4 +661,32 @@ function wireSpec(spec: SpecAddress, withRepo = false): SpecAddress {
 function parseTurn(value: unknown): { turn: string; needsYou: boolean } | null {
   if (!isObject(value) || typeof value.turn !== "string") return null;
   return { turn: value.turn, needsYou: value.needsYou === true };
+}
+
+/** The most lines that one sync frame may carry. The agent sends at most 200. */
+export const MAX_SYNC_LINES = 1000;
+
+/**
+ * The lines of a sync frame: at least one, each with an integer line number
+ * of 1 or more and an event object, in strictly ascending order. Null when
+ * the frame breaks a rule.
+ */
+export function parseLines(value: unknown): Array<{ line: number; event: Record<string, unknown> }> | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SYNC_LINES) return null;
+  const lines: Array<{ line: number; event: Record<string, unknown> }> = [];
+  for (const item of value) {
+    if (!isObject(item)) return null;
+    const { line, event } = item;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 1 || !isObject(event)) return null;
+    if (lines.length > 0 && line <= lines[lines.length - 1].line) return null;
+    lines.push({ line, event });
+  }
+  return lines;
+}
+
+/** The line number of the last entry of a frame's lines, for an error answer. Null when there is none. */
+function lastLineNumber(value: unknown): number | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const last = value[value.length - 1];
+  return isObject(last) && typeof last.line === "number" && Number.isInteger(last.line) ? last.line : null;
 }

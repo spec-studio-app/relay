@@ -49,7 +49,7 @@ export interface RelayConfig {
   /** The clock for the agent's last-seen and start times. */
   now?: () => Date;
   log?: Logger;
-  /** Temporal for the agent hub (wire version 2, paired secrets). */
+  /** Temporal for the agent hub (the agent wire version, paired secrets). */
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;

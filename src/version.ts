@@ -11,4 +11,4 @@ export const RELAY_VERSION: string = (() => {
 })();
 
 /** The agent wire version that this relay speaks. */
-export const WIRE_VERSION = 2;
+export const WIRE_VERSION = 3;

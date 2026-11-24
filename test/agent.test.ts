@@ -16,7 +16,7 @@ after(async () => {
 });
 
 const REPO = "/Users/me/code/app";
-const HELLO2 = { type: "hello", version: 2, agentVersion: "0.9.0", repos: [REPO, "/Users/me/code/site"] };
+const HELLO = { type: "hello", version: 3, agentVersion: "0.9.0", repos: [REPO, "/Users/me/code/site"] };
 const spec = (slug: string) => ({ repoKey: repoKeyOf(REPO), slug });
 
 test("R1.S1: a paired version 1 agent gets tool calls only: no welcome, sync or message frame", async () => {
@@ -44,17 +44,17 @@ test("R1.S1: a paired version 1 agent gets tool calls only: no welcome, sync or 
   }
 });
 
-test("a version 2 hello gets a welcome, and the relay keeps the repos with the time", async () => {
+test("a version 3 hello gets a welcome, and the relay keeps the repos with the time", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     const welcome = await agent.next("welcome");
-    assert.deepEqual(welcome, { type: "welcome", version: 2, relayVersion: RELAY_VERSION });
-    assert.equal(t.relay.hub.wireVersion, 2);
+    assert.deepEqual(welcome, { type: "welcome", version: 3, relayVersion: RELAY_VERSION });
+    assert.equal(t.relay.hub.wireVersion, 3);
     const repos = await eventually(() => h.configStore.repos());
-    assert.deepEqual(repos.repos, HELLO2.repos);
+    assert.deepEqual(repos.repos, HELLO.repos);
     assert.ok(Date.parse(repos.at) > Date.now() - 60_000);
     await agent.close();
   } finally {
@@ -63,21 +63,20 @@ test("a version 2 hello gets a welcome, and the relay keeps the repos with the t
   }
 });
 
-test("R4.S1, R4.S2, R4.S3: sync lines go to the workflow in order; a copy answers synced and changes nothing", async () => {
+test("R4.S1, R4.S2, R4.S3: sync frames go to the workflow in order; a copy answers synced and changes nothing", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     await agent.next("welcome");
     const state = { slug: "sync-me", title: "Sync me", stage: "plan", status: "working", statusNote: "Planning." };
-    // Three lines sent at once, with no wait: the relay applies them in order.
+    // Three frames sent at once, with no wait: the relay applies them in order.
     for (const line of [1, 2, 3]) {
       agent.send({
         type: "sync",
         spec: { ...spec("sync-me"), repo: REPO },
-        line,
-        event: { t: "2026-11-23T12:00:00Z", kind: "note", text: `line ${line}` },
+        lines: [{ line, event: { t: "2026-11-23T12:00:00Z", kind: "note", text: `line ${line}` } }],
         state,
         turn: { turn: "claude", needsYou: false },
       });
@@ -92,13 +91,19 @@ test("R4.S1, R4.S2, R4.S3: sync lines go to the workflow in order; a copy answer
     assert.equal(mirrored?.spec.repo, REPO);
 
     // The agent stopped before synced came back and sends line 3 again.
-    agent.send({ type: "sync", spec: spec("sync-me"), line: 3, event: { kind: "note", text: "line 3" }, state, turn: null });
+    agent.send({ type: "sync", spec: spec("sync-me"), lines: [{ line: 3, event: { kind: "note", text: "line 3" } }], state, turn: null });
     assert.equal((await agent.next("synced", (f) => f.line === 3)).error, undefined);
     assert.equal((await h.mirror.state(spec("sync-me")))?.events.length, 3);
 
     // A frame that is not valid gets an error.
-    agent.send({ type: "sync", spec: spec("sync-me"), line: 4, event: "not an object" });
+    agent.send({ type: "sync", spec: spec("sync-me"), lines: [{ line: 4, event: "not an object" }] });
     assert.match((await agent.next("synced", (f) => f.line === 4)).error, /not valid/);
+    // Lines out of order, and a line below 1, are not valid either; nothing applies.
+    agent.send({ type: "sync", spec: spec("sync-me"), lines: [{ line: 6, event: {} }, { line: 5, event: {} }] });
+    assert.match((await agent.next("synced", (f) => f.line === 5)).error, /not valid/);
+    agent.send({ type: "sync", spec: spec("sync-me"), lines: [{ line: 0, event: {} }] });
+    assert.match((await agent.next("synced", (f) => f.line === 0)).error, /not valid/);
+    assert.equal((await h.mirror.state(spec("sync-me")))?.line, 3);
     await agent.close();
   } finally {
     await t.close();
@@ -111,10 +116,10 @@ test("a gone frame marks the spec dropped and gets gone-ok; offline list_specs s
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     await agent.next("welcome");
     const state = { slug: "deleted-on-mac", title: "Deleted", stage: "build", status: "working" };
-    agent.send({ type: "sync", spec: { ...spec("deleted-on-mac"), repo: REPO }, line: 1, event: { kind: "note" }, state, turn: null });
+    agent.send({ type: "sync", spec: { ...spec("deleted-on-mac"), repo: REPO }, lines: [{ line: 1, event: { kind: "note" } }], state, turn: null });
     agent.send({ type: "gone", spec: spec("deleted-on-mac") });
     await agent.next("synced", (f) => f.line === 1);
     assert.deepEqual(await agent.next("gone-ok"), { type: "gone-ok", spec: spec("deleted-on-mac") });
@@ -151,10 +156,10 @@ test("a state frame replaces the state and the turn after the earlier lines, and
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     await agent.next("welcome");
     const base = { slug: "turns", title: "Turns", stage: "plan", status: "working", mode: "guided" };
-    agent.send({ type: "sync", spec: { ...spec("turns"), repo: REPO }, line: 1, event: { kind: "note" }, state: base, turn: { turn: "claude", needsYou: false } });
+    agent.send({ type: "sync", spec: { ...spec("turns"), repo: REPO }, lines: [{ line: 1, event: { kind: "note" } }], state: base, turn: { turn: "claude", needsYou: false } });
     // Sent at once: it applies after line 1.
     agent.send({
       type: "state",
@@ -180,7 +185,7 @@ test("a state frame replaces the state and the turn after the earlier lines, and
     assert.equal(sa.get(SA.Mode), "autopilot");
     assert.equal(sa.get(SA.SpecTitle), "Turns now");
     // The next line still applies after it.
-    agent.send({ type: "sync", spec: spec("turns"), line: 2, event: { kind: "note" }, state: base, turn: null });
+    agent.send({ type: "sync", spec: spec("turns"), lines: [{ line: 2, event: { kind: "note" } }], state: base, turn: null });
     assert.equal((await agent.next("synced", (f) => f.line === 2)).error, undefined);
 
     // A state frame for a spec with no workflow starts no run, and gets no answer.
@@ -200,11 +205,49 @@ test("a version 1 agent cannot send sync frames", async () => {
   const t = await h.relay();
   try {
     const agent = await connectAgent(t.base);
-    agent.send({ type: "sync", spec: spec("v1"), line: 1, event: {}, state: null, turn: null });
+    agent.send({ type: "sync", spec: spec("v1"), lines: [{ line: 1, event: {} }], state: null, turn: null });
     await sleep(300);
     assert.deepEqual(agent.frames, []);
     assert.equal(await h.mirror.state(spec("v1")), null);
     assert.ok(t.logs.some((e) => e.event === "agent_bad_message"));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R4.S2: a version 2 agent gets no welcome and cannot sync, but its tool calls work", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 2 });
+    agent.send({ type: "sync", spec: spec("old-app"), line: 1, event: { kind: "note" }, state: null, turn: null });
+    await sleep(300);
+    assert.deepEqual(agent.frames.filter((f) => f.type === "welcome" || f.type === "synced"), []);
+    assert.equal(await h.mirror.state(spec("old-app")), null);
+    assert.ok(t.logs.some((e) => e.event === "agent_hello_old"));
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R1.S1: one frame with seven lines answers synced with the last line", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    const lines = Array.from({ length: 7 }, (_, i) => ({ line: 41 + i, event: { kind: "note", text: `n${41 + i}` } }));
+    agent.send({ type: "sync", spec: { ...spec("seven"), repo: REPO }, first: true, lines, state: { title: "Seven", stage: "plan" }, turn: null });
+    assert.deepEqual(await agent.next("synced"), { type: "synced", spec: spec("seven"), line: 47 });
+    const mirrored = await h.mirror.state(spec("seven"));
+    assert.equal(mirrored?.line, 47);
+    assert.equal(mirrored?.events.length, 7);
+    await agent.close();
   } finally {
     await t.close();
     await h.close();

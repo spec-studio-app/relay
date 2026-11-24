@@ -33,14 +33,55 @@ import {
   type Turn,
 } from "./types.js";
 
-export interface SyncInput {
+/** One activity line of a sync batch. */
+export interface SyncLine {
   line: number;
   event: Record<string, unknown>;
-  state: Record<string, unknown> | null;
-  turn: Turn | null;
+}
+
+/**
+ * One sync frame of wire version 3: the new lines of a spec, in line order,
+ * with the state and the turn when they changed. A missing state or turn
+ * keeps the mirror's; `turn: null` means that the app does not run.
+ *
+ * The workflows that ran before version 3 have single-line updates (`line` and
+ * `event`) in their history: the handler reads them as a batch of one line, so
+ * their replay stays the same.
+ */
+export interface SyncInput {
+  lines?: SyncLine[];
+  /** The agent had no cursor for the spec: a finished run starts again as a new spec. */
+  first?: boolean;
+  /** Wire version 2: one line. */
+  line?: number;
+  event?: Record<string, unknown>;
+  state?: Record<string, unknown> | null;
+  turn?: Turn | null;
   /** The relay's time. */
   at: string;
   repo?: string;
+}
+
+/** The lines of a sync input, in the order they came. */
+export function syncLines(input: Pick<SyncInput, "lines" | "line" | "event">): SyncLine[] {
+  if (Array.isArray(input.lines)) return input.lines;
+  if (typeof input.line === "number" && input.event) return [{ line: input.line, event: input.event }];
+  return [];
+}
+
+/** The last line of a sync input, or 0 when it has none. */
+export function lastSyncLine(input: Pick<SyncInput, "lines" | "line" | "event">): number {
+  const lines = syncLines(input);
+  return lines.length > 0 ? lines[lines.length - 1].line : 0;
+}
+
+/**
+ * True when the input may start a spec again: the agent's first sync of the
+ * spec, or a batch that starts at line 1. Before the short first sync, line 1
+ * was the only sign of a new spec with the same slug.
+ */
+export function startsSpec(input: Pick<SyncInput, "lines" | "line" | "event" | "first">): boolean {
+  return input.first === true || syncLines(input)[0]?.line === 1;
 }
 
 export interface SyncResult {
@@ -208,11 +249,12 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   };
 
   setHandler(syncUpdate, (sync) => {
-    if (sync.line === 1 && s.finished && s.line >= 1) {
-      // Line 1 on a finished run (merged or dropped, in its grace period): the
-      // spec was made again on the Mac with the same slug (a new spec, or the
-      // folder came back). Start it as a new spec. The main loop sees that the
-      // run is no longer finished, so the grace period ends.
+    const lines = syncLines(sync);
+    if (lines.length > 0 && startsSpec(sync) && s.finished && s.line >= 1) {
+      // The first sync on a finished run (merged or dropped, in its grace
+      // period): the spec was made again on the Mac with the same slug (a new
+      // spec, or the folder came back). Start it as a new spec. The main loop
+      // sees that the run is no longer finished, so the grace period ends.
       bounceMacMessages(RECREATED_TEXT, sync.at);
       s.finished = false;
       s.dropped = false;
@@ -222,32 +264,36 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       s.line = 0;
       s.syncedAt = null;
     }
-    if (sync.line <= s.line) return { line: s.line, applied: false };
-    s.line = sync.line;
+    const fresh = lines.filter((l) => l.line > s.line);
+    if (fresh.length === 0) return { line: s.line, applied: false };
     s.syncedAt = sync.at;
     if (sync.repo) s.spec.repo = sync.repo;
     if (sync.state) s.state = sync.state;
-    s.turn = sync.turn;
-    s.events.push({ line: sync.line, event: sync.event });
-    if (s.events.length > EVENT_LIMIT) s.events.splice(0, s.events.length - EVENT_LIMIT);
-    const event = sync.event;
-    // A message that the inbox already has (a restored spec sends its old lines
-    // again after the reset of line 1) is not added a second time.
-    const knownMessage =
-      typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
-    if (event.kind === "message" && !knownMessage) {
-      addForCoordinator({
-        id: typeof event.id === "string" && event.id ? event.id : uuid4(),
-        from: "session",
-        spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
-        stage: typeof event.stage === "string" ? event.stage : mirrorFields(s.state).stage,
-        text: typeof event.text === "string" ? event.text : "",
-        ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),
-        ...(attachmentsOf(event.attachments) ? { attachments: attachmentsOf(event.attachments) } : {}),
-        createdAt: typeof event.t === "string" ? event.t : sync.at,
-      });
+    if (sync.turn !== undefined) s.turn = sync.turn;
+    for (const { line, event } of fresh) {
+      if (line <= s.line) continue;
+      s.line = line;
+      s.events.push({ line, event });
+      // A message that the inbox already has (a restored spec sends its old lines
+      // again after the reset of a first sync) is not added a second time.
+      const knownMessage =
+        typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
+      if (event.kind === "message" && !knownMessage) {
+        addForCoordinator({
+          id: typeof event.id === "string" && event.id ? event.id : uuid4(),
+          from: "session",
+          spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
+          stage: typeof event.stage === "string" ? event.stage : mirrorFields(s.state).stage,
+          text: typeof event.text === "string" ? event.text : "",
+          ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),
+          ...(attachmentsOf(event.attachments) ? { attachments: attachmentsOf(event.attachments) } : {}),
+          createdAt: typeof event.t === "string" ? event.t : sync.at,
+        });
+      }
+      if (isFinished(s, event)) s.finished = true;
     }
-    if (isFinished(s, event)) s.finished = true;
+    if (s.events.length > EVENT_LIMIT) s.events.splice(0, s.events.length - EVENT_LIMIT);
+    // One batch is one change: one memo and one search attribute upsert.
     changed();
     return { line: s.line, applied: true };
   }, { validator: (_: SyncInput, b: Bound) => open(b) });
