@@ -6,6 +6,7 @@ import { WebSocket } from "ws";
 import { createRelay, type Relay } from "../src/server.js";
 import type { LogEntry } from "../src/log.js";
 import type { AgentBackend } from "../src/backend.js";
+import type { OfflineReader } from "../src/offline.js";
 
 export const PASSWORD = "correct horse battery staple";
 export const AGENT_SECRET = "agent-secret-" + randomBytes(16).toString("hex");
@@ -27,6 +28,7 @@ export async function startRelay(
     probeTimeoutMs?: number;
     now?: () => Date;
     agentBackend?: AgentBackend;
+    offline?: OfflineReader;
     /** Set to null for no legacy secret. */
     legacySecretSha256?: string | null;
   } = {},
@@ -41,6 +43,7 @@ export async function startRelay(
     loginPasswordBcrypt: PASSWORD_BCRYPT,
     agentSecretSha256: options.legacySecretSha256 === null ? undefined : (options.legacySecretSha256 ?? AGENT_SECRET_SHA256),
     agentBackend: options.agentBackend,
+    offline: options.offline,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,

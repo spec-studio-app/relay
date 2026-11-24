@@ -35,6 +35,23 @@ export function specAddress(repo: string, slug: string): SpecAddress {
   return { repoKey: repoKeyOf(repo), slug, repo };
 }
 
+/** An update that gets no answer in this time fails (for example, when no worker runs). */
+export const UPDATE_TIMEOUT_MS = 30_000;
+
+export class TimeoutError extends Error {
+  constructor() {
+    super("Temporal did not answer in time.");
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new TimeoutError()), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export class SpecNotFoundError extends Error {
   constructor() {
     super("The relay has no synced spec with this repo and slug.");
@@ -85,10 +102,13 @@ export class Mirror {
       args: [initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT)],
       workflowIdConflictPolicy: "USE_EXISTING",
     });
-    return this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
-      args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
-      startWorkflowOperation,
-    });
+    return withTimeout(
+      this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
+        args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
+        startWorkflowOperation,
+      }),
+      UPDATE_TIMEOUT_MS,
+    );
   }
 
   /** The workflow's state, or null when the spec has no running workflow. */
@@ -101,9 +121,9 @@ export class Mirror {
     }
   }
 
-  private async update<T>(spec: { repoKey: string; slug: string }, run: () => Promise<T>): Promise<T> {
+  private async update<T>(spec: { repoKey: string; slug: string }, run: () => Promise<T>, ms = UPDATE_TIMEOUT_MS): Promise<T> {
     try {
-      return await run();
+      return await withTimeout(run(), ms);
     } catch (error) {
       if (error instanceof WorkflowNotFoundError) throw new SpecNotFoundError();
       const cause = (error as { cause?: unknown }).cause;
@@ -132,7 +152,11 @@ export class Mirror {
 
   /** Messages for Claude AI after the cursor. Waits up to waitMs for a new one. */
   read(spec: { repoKey: string; slug: string }, after: number | undefined, waitMs: number): Promise<ReadResult> {
-    return this.update(spec, () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs }] }));
+    return this.update(
+      spec,
+      () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs }] }),
+      waitMs + UPDATE_TIMEOUT_MS,
+    );
   }
 
   /**

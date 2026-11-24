@@ -19,6 +19,7 @@ import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows
 import { configTaskQueue } from "../src/temporal/connection.js";
 import { pairCodeHash } from "../src/startup.js";
 import { temporalAgentBackend } from "../src/backend.js";
+import { OfflineTools } from "../src/offline.js";
 import { startRelay, type TestRelay } from "./helpers.js";
 
 export const BCRYPT_FOR_CONFIG = "$2b$12$" + "a".repeat(53);
@@ -122,7 +123,11 @@ export async function harness(
       });
     },
     relay(relayOptions = {}) {
-      return startRelay({ agentBackend: temporalAgentBackend({ mirror, configStore }), ...relayOptions });
+      return startRelay({
+        agentBackend: temporalAgentBackend({ mirror, configStore }),
+        offline: new OfflineTools({ mirror, configStore }),
+        ...relayOptions,
+      });
     },
     startWorkers,
     async close() {

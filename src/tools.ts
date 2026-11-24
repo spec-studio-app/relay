@@ -26,7 +26,8 @@ export const TOOLS: ToolDefinition[] = [
     name: "list_repos",
     title: "List the repos",
     description:
-      "List the repos in Spec Studio, in sidebar order. Each repo shows its path on the Mac. Use the path as the repo argument of the other tools.",
+      "List the repos in Spec Studio, in sidebar order. Each repo shows its path on the Mac. Use the path as the repo argument of the other tools. " +
+      "When the Mac is offline, the list comes from the last connection of the Mac, and the result gives its time.",
     inputSchema: {},
   },
   {
@@ -35,7 +36,8 @@ export const TOOLS: ToolDefinition[] = [
     description:
       "List the open specs of Spec Studio. Each spec shows its title, slug, mode, stage, status, note and turn. " +
       "The list also shows whether the spec needs the user. " +
-      "When Spec Studio does not run, the turn comes from state.json, and the result says so.",
+      "When Spec Studio does not run, the turn comes from state.json, and the result says so. " +
+      "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync.",
     inputSchema: {
       repo: repo.optional().describe("Show only the specs of this repo. Give the path of the repo on the Mac."),
       all: z.boolean().optional().describe("Also show the specs that are merged or closed."),
@@ -47,7 +49,9 @@ export const TOOLS: ToolDefinition[] = [
     description:
       "Read one spec. The result shows the state of the spec: its stage, status, note, mode and PRs. " +
       "It also shows the turn of the spec and whether the spec needs the user. " +
-      "It also shows spec.md, plan.md when it exists, and the last 20 events of the activity.",
+      "It also shows spec.md, plan.md when it exists, and the last 20 events of the activity. " +
+      "When the Mac is offline, the result comes from the relay and shows the time of the last sync. " +
+      "Then spec.md and plan.md are not available.",
     inputSchema: { repo, slug },
   },
   {
@@ -57,7 +61,8 @@ export const TOOLS: ToolDefinition[] = [
       "Make a new spec in a repo with a title and a brief. The brief goes into spec.md. " +
       "The mode is autopilot or guided. Remote Control is on when you do not give a value. " +
       "Set start to true to start the session of the spec at once. " +
-      "The result gives the repo, the slug and the folder of the new spec.",
+      "The result gives the repo, the slug and the folder of the new spec. " +
+      "This tool fails at once when the Mac is offline.",
     inputSchema: {
       repo,
       title: z.string().min(1).describe("The title of the spec."),
@@ -78,7 +83,8 @@ export const TOOLS: ToolDefinition[] = [
     title: "Start a spec",
     description:
       "Start the session of an open spec. Spec Studio opens when it does not run. " +
-      "When the session of the spec runs, no second session starts, and the result says so.",
+      "When the session of the spec runs, no second session starts, and the result says so. " +
+      "This tool fails at once when the Mac is offline.",
     inputSchema: { repo, slug },
   },
 ];

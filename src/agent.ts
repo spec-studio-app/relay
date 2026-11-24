@@ -19,6 +19,8 @@ import type { SpecAddress } from "./workflows/types.js";
 export interface CallResult {
   ok: boolean;
   text: string;
+  /** True when the call did not reach the Mac because it is offline. */
+  offline?: boolean;
 }
 
 export interface AgentHubOptions {
@@ -326,7 +328,7 @@ export class AgentHub {
   /** Send one tool call to the agent and wait for its result. Never rejects. */
   async call(tool: string, args: Record<string, unknown>): Promise<CallResult> {
     const ws = await this.liveSocket();
-    if (!ws) return { ok: false, text: this.offlineText() };
+    if (!ws) return { ok: false, text: this.offlineText(), offline: true };
 
     const id = randomUUID();
     return new Promise<CallResult>((resolve) => {
@@ -343,7 +345,7 @@ export class AgentHub {
         if (!call) return;
         this.pending.delete(id);
         clearTimeout(call.timer);
-        resolve({ ok: false, text: this.offlineText() });
+        resolve({ ok: false, text: this.offlineText(), offline: true });
       });
     });
   }
