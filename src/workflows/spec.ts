@@ -279,9 +279,11 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       bounceMacMessages(RECREATED_TEXT, sync.at);
       s.finished = false;
       s.dropped = false;
-      // A frame with no state keeps the run's last one: the agent sends no
-      // state that it sent before on this connection.
-      s.state = legacy ? null : (sync.state ?? s.state);
+      // A frame with no state keeps the run's last one (the folder of a
+      // dropped spec came back), unless that state is merged: a merged state
+      // would finish the new spec at its first line.
+      const kept = mirrorFields(s.state).stage === "merged" ? null : s.state;
+      s.state = legacy ? null : (sync.state ?? kept);
       s.turn = legacy ? null : sync.turn !== undefined ? sync.turn : s.turn;
       s.events = [];
       s.line = 0;

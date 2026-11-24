@@ -714,3 +714,18 @@ test("a first sync of the same merged spec sent again does not reset it; a dropp
     await h.close();
   }
 });
+
+test("a first sync with no state on a merged then dropped run starts a new spec that is not finished", async () => {
+  const h = await harness(env, { graceMs: 60_000 });
+  try {
+    const spec = specAddress(REPO, "merged-dropped");
+    await h.mirror.sync(spec, { first: true, lines: [{ line: 1, event: { kind: "stage", to: "merged" } }], state: showJson({ stage: "merged" }), turn: null });
+    await h.mirror.gone(spec);
+    assert.deepEqual(await h.mirror.sync(spec, { first: true, lines: notes(1, 2), state: null, turn: null }), { line: 2, applied: true });
+    const state = await h.mirror.state(spec);
+    assert.equal(state?.finished, false);
+    assert.equal(state?.state, null);
+  } finally {
+    await h.close();
+  }
+});
