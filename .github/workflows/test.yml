@@ -1,0 +1,40 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The tests run a Temporal dev server from the Temporal CLI.
+      - name: Install the Temporal CLI
+        run: |
+          curl -sSf https://temporal.download/cli.sh | sh
+          echo "TEMPORAL_CLI=$HOME/.temporalio/bin/temporal" >> "$GITHUB_ENV"
+      - run: npm test
+      - uses: azure/setup-helm@v4
+      - name: Lint the chart
+        run: |
+          helm lint chart/relay \
+            --set publicUrl=https://relay.example.com \
+            --set temporal.address=temporal:7233 \
+            --set secrets.ownerPasswordHash=x \
+            --set secrets.payloadKeys=y
+          helm template relay chart/relay \
+            --set publicUrl=https://relay.example.com \
+            --set temporal.address=temporal:7233 \
+            --set secrets.ownerPasswordHash=x \
+            --set secrets.payloadKeys=y > /dev/null

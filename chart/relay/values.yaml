@@ -1,0 +1,84 @@
+# The relay keeps one agent connection from the Mac in its process.
+# Run one replica only.
+image:
+  repository: ghcr.io/spec-studio-app/relay
+  # Empty: the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# The public origin of the relay, for example https://relay.example.com.
+# It is the OAuth issuer. Claude AI connects to <publicUrl>/mcp.
+publicUrl: ""
+
+# A name for this deploy. Two relays on one Temporal namespace need two names.
+deployId: default
+
+temporal:
+  # host:port of the Temporal frontend, or of Temporal Cloud.
+  address: ""
+  namespace: default
+  # plain, tls, mtls or api-key. Empty: api-key when secrets.temporalApiKey is set,
+  # mtls when secrets.temporalTlsCert is set, else plain.
+  auth: ""
+  # Empty: relay-<deployId>.
+  taskQueue: ""
+
+bucket:
+  # An S3-compatible endpoint, for example https://<account>.r2.cloudflarestorage.com.
+  # Empty: no attachments.
+  endpoint: ""
+  name: ""
+  region: auto
+
+# The largest attachment, in bytes. Default 10 MB.
+attachmentMaxBytes: ""
+
+# The origin of the Temporal Web UI that may call the codec endpoints.
+uiOrigin: ""
+
+# Exact redirect URIs that OAuth clients may register, besides the defaults.
+extraRedirectUris: []
+
+# The secret values. Leave existingSecret empty and set these, or make your own
+# Secret with the same keys and give its name in existingSecret.
+existingSecret: ""
+secrets:
+  # bcrypt hash of the owner's password. Required.
+  ownerPasswordHash: ""
+  # From `relay keys`. Required. Keep a copy: the relay needs the same keys at each start.
+  payloadKeys: ""
+  temporalApiKey: ""
+  # PEM text of the client certificate and key (mtls).
+  temporalTlsCert: ""
+  temporalTlsKey: ""
+  bucketAccessKey: ""
+  bucketSecretKey: ""
+
+# Other environment variables, as a list of {name, value}.
+extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 8760
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

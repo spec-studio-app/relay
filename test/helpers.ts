@@ -3,13 +3,34 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import bcrypt from "bcryptjs";
 import { WebSocket } from "ws";
-import { createRelay, type Relay } from "../src/server.js";
+import { createRelay, type Relay, type RelayConfig } from "../src/server.js";
 import type { LogEntry } from "../src/log.js";
+import type { AgentBackend } from "../src/backend.js";
+import type { OfflineReader } from "../src/offline.js";
 
 export const PASSWORD = "correct horse battery staple";
 export const AGENT_SECRET = "agent-secret-" + randomBytes(16).toString("hex");
 const PASSWORD_BCRYPT = bcrypt.hashSync(PASSWORD, 4);
-const AGENT_SECRET_SHA256 = createHash("sha256").update(AGENT_SECRET).digest("hex");
+export const AGENT_SECRET_SHA256 = createHash("sha256").update(AGENT_SECRET).digest("hex");
+
+/** A backend for a relay with no Temporal: only the test agent's secret is paired. */
+function noTemporalBackend(): AgentBackend {
+  const none = () => Promise.reject(new Error("No Temporal in this test."));
+  return {
+    verifyAgent: async () => false,
+    hello: async () => {},
+    sync: none,
+    gone: none,
+    state: none,
+    ack: none,
+    pair: async () => false,
+    pairCodeValid: async () => false,
+    unpair: async () => false,
+    uploadUrl: none,
+    downloadUrl: async () => null,
+    pendingForMac: async () => [],
+  };
+}
 
 export interface TestRelay {
   relay: Relay;
@@ -20,7 +41,28 @@ export interface TestRelay {
 }
 
 export async function startRelay(
-  options: { callTimeoutMs?: number; pingIntervalMs?: number; probeTimeoutMs?: number; now?: () => Date } = {},
+  options: {
+    callTimeoutMs?: number;
+    pingIntervalMs?: number;
+    probeTimeoutMs?: number;
+    agentAuthTimeoutMs?: number;
+    pendingScanMs?: number;
+    resendAfterMs?: number;
+    stateRetryMs?: number;
+    now?: () => Date;
+    agentBackend?: AgentBackend;
+    offline?: OfflineReader;
+    localTools?: RelayConfig["localTools"];
+    oauthStore?: RelayConfig["oauthStore"];
+    mcpBodyLimit?: number;
+    codecDataKeys?: RelayConfig["codecDataKeys"];
+    uiOrigin?: string;
+    /**
+     * True (the default): the test agent's secret (AGENT_SECRET) counts as paired,
+     * beside the backend's own paired secrets. The Temporal harness pairs it for real.
+     */
+    testAgentPaired?: boolean;
+  } = {},
 ): Promise<TestRelay> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -30,10 +72,20 @@ export async function startRelay(
   const relay = createRelay({
     publicUrl: base,
     loginPasswordBcrypt: PASSWORD_BCRYPT,
-    agentSecretSha256: AGENT_SECRET_SHA256,
+    agentBackend: withTestAgent(options.agentBackend ?? noTemporalBackend(), options.testAgentPaired ?? true),
+    offline: options.offline,
+    localTools: options.localTools,
+    oauthStore: options.oauthStore,
+    mcpBodyLimit: options.mcpBodyLimit,
+    codecDataKeys: options.codecDataKeys,
+    uiOrigin: options.uiOrigin,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,
+    agentAuthTimeoutMs: options.agentAuthTimeoutMs,
+    pendingScanMs: options.pendingScanMs,
+    resendAfterMs: options.resendAfterMs,
+    stateRetryMs: options.stateRetryMs,
     now: options.now,
     log: (entry) => logs.push(entry),
   });
@@ -52,21 +104,59 @@ export async function startRelay(
   };
 }
 
+function withTestAgent(backend: AgentBackend, paired: boolean): AgentBackend {
+  if (!paired) return backend;
+  return { ...backend, verifyAgent: async (hash) => hash === AGENT_SECRET_SHA256 || (await backend.verifyAgent(hash)) };
+}
+
 export interface FakeAgent {
   ws: WebSocket;
+  /** The call frames. */
   received: Array<{ type: string; id: string; tool: string; arguments: Record<string, unknown> }>;
+  /** Every frame from the relay. */
+  frames: Array<Record<string, any>>;
+  send(frame: Record<string, unknown>): void;
+  /** Wait for the next frame of this type that passes the check. */
+  next(type: string, check?: (frame: Record<string, any>) => boolean, ms?: number): Promise<Record<string, any>>;
   /** Reply to each call with this function. Return undefined to never answer. */
   answer: ((call: { tool: string; arguments: Record<string, unknown> }) => { ok: boolean; text: string } | undefined) | null;
   close(): Promise<void>;
 }
 
-export async function connectAgent(base: string, secret = AGENT_SECRET): Promise<FakeAgent> {
+export async function connectAgent(
+  base: string,
+  secret = AGENT_SECRET,
+  hello: Record<string, unknown> = { type: "hello", version: 1 },
+): Promise<FakeAgent> {
   const ws = new WebSocket(base.replace(/^http/, "ws") + "/agent", {
     headers: { Authorization: `Bearer ${secret}` },
   });
   const agent: FakeAgent = {
     ws,
     received: [],
+    frames: [],
+    send: (frame) => ws.send(JSON.stringify(frame)),
+    next: (type, check = () => true, ms = 10_000) =>
+      new Promise((resolve, reject) => {
+        let index = 0;
+        const timer = setTimeout(() => {
+          clearInterval(poll);
+          reject(new Error(`No ${type} frame in time.`));
+        }, ms);
+        const poll = setInterval(() => {
+          for (; index < agent.frames.length; index++) {
+            const f = agent.frames[index];
+            if (f.type === type && check(f)) {
+              clearInterval(poll);
+              clearTimeout(timer);
+              agent.frames.splice(index, 1);
+              resolve(f);
+              return;
+            }
+          }
+          index = 0;
+        }, 10);
+      }),
     answer: null,
     close: () =>
       new Promise<void>((resolve) => {
@@ -77,13 +167,17 @@ export async function connectAgent(base: string, secret = AGENT_SECRET): Promise
   };
   ws.on("message", (data) => {
     const message = JSON.parse(data.toString());
+    if (message.type !== "call") {
+      agent.frames.push(message);
+      return;
+    }
     agent.received.push(message);
     const reply = agent.answer?.(message);
     if (reply) ws.send(JSON.stringify({ type: "result", id: message.id, ...reply }));
   });
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => {
-      ws.send(JSON.stringify({ type: "hello", version: 1 }));
+      ws.send(JSON.stringify(hello));
       resolve();
     });
     ws.once("unexpected-response", (_req, res) => reject(Object.assign(new Error("rejected"), { status: res.statusCode })));

@@ -14,9 +14,10 @@ import {
   sleep,
   startRelay,
 } from "./helpers.js";
-import { TOOLS } from "../src/tools.js";
-import { configFromEnv } from "../src/server.js";
+import { LOCAL_TOOLS, TOOLS } from "../src/tools.js";
 import { redirectAllowed } from "../src/oauth.js";
+import type { AgentBackend } from "../src/backend.js";
+import { connect, type Socket } from "node:net";
 
 test("R5.S1: an MCP call without a token gets 401 and nothing goes to the agent", async () => {
   const t = await startRelay();
@@ -262,7 +263,7 @@ test("R5.S3: the logs hold no agent secret, password, code or token", async () =
 
 test("R7.S1: each tool description is in short STE sentences with the Spec Studio terms", () => {
   const texts: string[] = [];
-  for (const tool of TOOLS) {
+  for (const tool of [...TOOLS, ...LOCAL_TOOLS]) {
     texts.push(tool.description);
     for (const schema of Object.values(tool.inputSchema)) {
       if (schema.description) texts.push(schema.description);
@@ -301,37 +302,27 @@ test("GET /healthz answers 200", async () => {
   }
 });
 
-test("the relay fails fast when a required value is missing", () => {
-  assert.throws(() => configFromEnv({}), /PUBLIC_URL, LOGIN_PASSWORD_BCRYPT, AGENT_SECRET_SHA256/);
-  assert.throws(
-    () =>
-      configFromEnv({
-        PUBLIC_URL: "https://studio-mcp.loomis.io",
-        LOGIN_PASSWORD_BCRYPT: "$2b$12$" + "a".repeat(53),
-        AGENT_SECRET_SHA256: "not-hex",
-      }),
-    /AGENT_SECRET_SHA256/,
-  );
-  const ok = configFromEnv({
-    PUBLIC_URL: "https://studio-mcp.loomis.io",
-    LOGIN_PASSWORD_BCRYPT: "$2b$12$" + "a".repeat(53),
-    AGENT_SECRET_SHA256: "a".repeat(64),
-  });
-  assert.equal(ok.port, 8760);
-  assert.equal(ok.relay.callTimeoutMs, 90000);
-});
-
 test("the relay pings the agent and a pong updates the last-seen time", async () => {
   let clock = new Date("2026-11-22T10:00:00.000Z");
   const t = await startRelay({ now: () => clock, pingIntervalMs: 30 });
+  const until = async (check: () => boolean, what: string) => {
+    const end = Date.now() + 5000;
+    while (!check()) {
+      if (Date.now() > end) throw new Error(`${what} did not happen in time.`);
+      await sleep(5);
+    }
+  };
   try {
     const agent = await connectAgent(t.base);
-    await sleep(20);
+    await until(() => t.relay.hub.connected, "the connection");
     clock = new Date("2026-11-22T10:05:00.000Z");
-    await sleep(120);
-    clock = new Date("2026-11-22T10:10:00.000Z");
+    // Wait for a ping after the clock moved; the agent's pong updates the last-seen time.
+    await new Promise<void>((resolve) => agent.ws.once("ping", () => resolve()));
+    await until(() => t.relay.hub.offlineText().includes("10:05:00.000Z"), "the pong");
     agent.ws.terminate();
-    await sleep(50);
+    await until(() => !t.relay.hub.connected, "the disconnect");
+    // After the disconnect, time goes on but the last-seen time stays.
+    clock = new Date("2026-11-22T10:10:00.000Z");
     assert.equal(t.relay.hub.offlineText(), "The Mac is offline. The relay last saw it at 2026-11-22T10:05:00.000Z.");
   } finally {
     await t.close();
@@ -421,10 +412,10 @@ test("registrations push out only clients that never signed in", async () => {
   const provider = new SingleUserProvider({ loginPasswordBcrypt: "x", now: () => new Date(), log: () => {} });
   const store = provider.clientsStore;
   const meta = { redirect_uris: ["http://127.0.0.1:9/callback"] } as Parameters<typeof store.registerClient>[0];
-  const user = store.registerClient(meta);
-  store.markSignedIn(user.client_id);
-  for (let i = 0; i < 150; i++) store.registerClient(meta);
-  assert.ok(store.getClient(user.client_id), "the signed-in client stays");
+  const user = await store.registerClient(meta);
+  await store.markSignedIn(user.client_id);
+  for (let i = 0; i < 150; i++) await store.registerClient(meta);
+  assert.ok(await store.getClient(user.client_id), "the signed-in client stays");
 });
 
 test("a stranger who blocks the shared login limit cannot lock out the user's known browser", async () => {
@@ -467,6 +458,263 @@ test("a call made while the woken Mac connects again goes to the new connection"
     const result = await call;
     assert.equal(result.isError, undefined, result.content[0].text);
     assert.equal(result.content[0].text, "answer from the new connection");
+  } finally {
+    await t.close();
+  }
+});
+
+/** A backend whose secret check never answers (Temporal is slow or down). */
+function hangingBackend(): AgentBackend {
+  const never = () => new Promise<never>(() => {});
+  return {
+    verifyAgent: never,
+    hello: never,
+    sync: never,
+    gone: never,
+    state: never,
+    ack: never,
+    pair: never,
+    pairCodeValid: never,
+    unpair: never,
+    uploadUrl: never,
+    downloadUrl: never,
+    pendingForMac: never,
+  };
+}
+
+function rawUpgrade(base: string): Promise<Socket> {
+  const { port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(port), "127.0.0.1", () => {
+      socket.write(
+        "GET /agent HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+          "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer not-paired\r\n\r\n",
+      );
+      resolve(socket);
+    });
+    socket.on("error", reject);
+  });
+}
+
+test("a reset of the agent socket during the secret check does not crash the relay", async () => {
+  const t = await startRelay({ agentBackend: hangingBackend(), testAgentPaired: false });
+  try {
+    const socket = await rawUpgrade(t.base);
+    await sleep(100);
+    socket.resetAndDestroy();
+    await sleep(200);
+    // The relay is still up.
+    assert.equal((await fetch(`${t.base}/healthz`)).status, 200);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the secret check of an agent upgrade ends with 503 when Temporal does not answer in time", async () => {
+  const t = await startRelay({ agentBackend: hangingBackend(), testAgentPaired: false, agentAuthTimeoutMs: 300 });
+  try {
+    const socket = await rawUpgrade(t.base);
+    const answer = await new Promise<string>((resolve) => {
+      let text = "";
+      socket.on("data", (d) => (text += d.toString()));
+      socket.on("close", () => resolve(text));
+    });
+    assert.match(answer, /^HTTP\/1\.1 503/);
+    assert.ok(t.logs.some((l) => l.event === "agent_rejected" && l.status === 503));
+  } finally {
+    await t.close();
+  }
+});
+
+test("the codec sign-in uses the device cookie from /login, so a stranger cannot lock out the user's browser", async () => {
+  const { newPayloadKeys } = await import("../src/codec.js");
+  const { parsePayloadKeys } = await import("../src/config.js");
+  const t = await startRelay({ codecDataKeys: parsePayloadKeys(newPayloadKeys()).data });
+  const codecSignIn = (password: string, cookie?: string) =>
+    fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) },
+      body: new URLSearchParams({ password }).toString(),
+    });
+  try {
+    const first = await openLogin(t.base);
+    const ok = await postLogin(t.base, first.request, PASSWORD);
+    const setCookie = ok.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /Path=\/(;|$)/, "the device cookie reaches /codec/signin too");
+    const cookie = setCookie.split(";")[0];
+
+    // A stranger uses up the shared limit on the codec sign-in.
+    await Promise.all(Array.from({ length: 12 }, () => codecSignIn("wrong")));
+    assert.equal((await codecSignIn(PASSWORD)).status, 429);
+    // The user's browser still signs in.
+    assert.equal((await codecSignIn(PASSWORD, cookie)).status, 200);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a codec sign-in from a new browser sets the device cookie", async () => {
+  const { newPayloadKeys } = await import("../src/codec.js");
+  const { parsePayloadKeys } = await import("../src/config.js");
+  const t = await startRelay({ codecDataKeys: parsePayloadKeys(newPayloadKeys()).data });
+  try {
+    const res = await fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: PASSWORD }).toString(),
+    });
+    assert.equal(res.status, 200);
+    const cookies = res.headers.getSetCookie();
+    assert.ok(cookies.some((c) => /^relay_device=[\w-]+\.[\w-]+;.*Path=\/(;|$)/.test(c)), cookies.join(" | "));
+  } finally {
+    await t.close();
+  }
+});
+
+test("while a version 2 agent is connected, the relay looks again for waiting messages that the welcome scan missed", async () => {
+  let scans = 0;
+  const spec = { repoKey: "0123456789ab", slug: "late", repo: "/Users/me/code/app" };
+  const message = {
+    id: "m1",
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text: "Sent while visibility lagged.",
+    createdAt: "2026-11-23T12:00:00Z",
+  };
+  const backend: AgentBackend = {
+    ...hangingBackend(),
+    hello: async () => {},
+    // The first scan (at the welcome) misses the message; later scans find it.
+    pendingForMac: async () => (scans++ === 0 ? [] : [{ spec, message }]),
+  };
+  const t = await startRelay({ agentBackend: backend, pendingScanMs: 150 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    const pushed = await agent.next("message");
+    assert.equal(pushed.message.text, "Sent while visibility lagged.");
+    await sleep(400);
+    assert.ok(scans >= 3);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0, "a message goes once per connection");
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});
+
+test("a message of a new run with the same seq as a message pushed before on this connection is pushed too", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "again", repo: "/Users/me/code/app" };
+  const message = (id: string, text: string) => ({
+    id,
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text,
+    createdAt: "2026-11-23T12:00:00Z",
+  });
+  const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [] };
+  const t = await startRelay({ agentBackend: backend });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    assert.equal(t.relay.hub.pushMessage(spec, message("old-run-1", "Old run.")), true);
+    assert.equal((await agent.next("message")).message.text, "Old run.");
+    // The same message again: not pushed twice.
+    t.relay.hub.pushMessage(spec, message("old-run-1", "Old run."));
+    // A new run of the slug: seq 1 again, a new ID.
+    t.relay.hub.pushMessage(spec, message("new-run-1", "New run."));
+    const next = await agent.next("message");
+    assert.equal(next.message.text, "New run.");
+    await sleep(100);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0);
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});
+
+test("a scan pushes again a message that still waits long after its push on the same connection", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "unacked", repo: "/Users/me/code/app" };
+  const message = {
+    id: "m-unacked",
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text: "The ack of this one failed.",
+    createdAt: "2026-11-23T12:00:00Z",
+  };
+  // The message keeps waiting (its ack never lands).
+  const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [{ spec, message }] };
+  const t = await startRelay({ agentBackend: backend, pendingScanMs: 50, resendAfterMs: 400 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    const start = Date.now();
+    await agent.next("message");
+    await sleep(250);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0, "no push again before resendAfterMs");
+    await agent.next("message", undefined, 3000);
+    assert.ok(Date.now() - start >= 350);
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});
+
+test("a state frame that fails on a Temporal error is tried again until it applies; a newer frame or a disconnect stops it", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "flaky" };
+  const calls: string[] = [];
+  let failures = 2;
+  const backend: AgentBackend = {
+    ...hangingBackend(),
+    hello: async () => {},
+    pendingForMac: async () => [],
+    sync: async (_spec, input) => {
+      calls.push(`sync ${input.line}`);
+      return { line: input.line, applied: true };
+    },
+    state: async (_spec, state) => {
+      calls.push(`state ${state.status}`);
+      if (failures-- > 0) throw new Error("Temporal is down");
+      return true;
+    },
+  };
+  const t = await startRelay({ agentBackend: backend, stateRetryMs: 100 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "state", spec, state: { status: "blocked" }, turn: null });
+    await sleep(600);
+    // Two failures, then it applies, and no more tries.
+    assert.deepEqual(calls, ["state blocked", "state blocked", "state blocked"]);
+
+    // A newer sync frame stops the retry of an older failed state.
+    calls.length = 0;
+    failures = 100;
+    agent.send({ type: "state", spec, state: { status: "working" }, turn: null });
+    await sleep(30);
+    agent.send({ type: "sync", spec, line: 1, event: { kind: "note" }, state: { status: "idle" }, turn: null });
+    await agent.next("synced");
+    await sleep(400);
+    assert.deepEqual(calls, ["state working", "sync 1"]);
+
+    // A newer state frame replaces the failed one; a disconnect stops its retry.
+    calls.length = 0;
+    agent.send({ type: "state", spec, state: { status: "old" }, turn: null });
+    await sleep(30);
+    agent.send({ type: "state", spec, state: { status: "new" }, turn: null });
+    await sleep(250);
+    assert.ok(!calls.slice(2).includes("state old"), calls.join(", "));
+    assert.ok(calls.filter((c) => c === "state new").length >= 2, calls.join(", "));
+    await agent.close();
+    await sleep(50);
+    const after = calls.length;
+    await sleep(400);
+    assert.equal(calls.length, after, "no retry after the disconnect");
   } finally {
     await t.close();
   }

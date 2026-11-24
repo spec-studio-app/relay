@@ -1,0 +1,138 @@
+{{- $secret := include "relay.secretName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "relay.fullname" . }}
+  labels:
+    {{- include "relay.labels" . | nindent 4 }}
+spec:
+  # One replica: the relay keeps the one agent connection in its process.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "relay.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "relay.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8760
+          env:
+            - name: PORT
+              value: "8760"
+            - name: PUBLIC_URL
+              value: {{ required "publicUrl is required (the public origin of the relay)" .Values.publicUrl | quote }}
+            - name: DEPLOY_ID
+              value: {{ .Values.deployId | quote }}
+            - name: TEMPORAL_ADDRESS
+              value: {{ required "temporal.address is required" .Values.temporal.address | quote }}
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.temporal.namespace | quote }}
+            {{- with .Values.temporal.auth }}
+            - name: TEMPORAL_AUTH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.temporal.taskQueue }}
+            - name: TASK_QUEUE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.bucket.endpoint }}
+            - name: BUCKET_ENDPOINT
+              value: {{ .Values.bucket.endpoint | quote }}
+            - name: BUCKET_NAME
+              value: {{ required "bucket.name is required with bucket.endpoint" .Values.bucket.name | quote }}
+            - name: BUCKET_REGION
+              value: {{ .Values.bucket.region | quote }}
+            {{- end }}
+            {{- with .Values.attachmentMaxBytes }}
+            - name: ATTACHMENT_MAX_BYTES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.uiOrigin }}
+            - name: UI_ORIGIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.extraRedirectUris }}
+            - name: EXTRA_REDIRECT_URIS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- include "relay.secretEnv" (dict "name" "OWNER_PASSWORD_HASH" "key" "OWNER_PASSWORD_HASH" "secret" $secret "required" true) | nindent 12 }}
+            {{- include "relay.secretEnv" (dict "name" "PAYLOAD_KEYS" "key" "PAYLOAD_KEYS" "secret" $secret "required" true) | nindent 12 }}
+            {{- range $key := list "TEMPORAL_API_KEY" "TEMPORAL_TLS_CERT" "TEMPORAL_TLS_KEY" }}
+            {{- include "relay.secretEnv" (dict "name" $key "key" $key "secret" $secret "required" false) | nindent 12 }}
+            {{- end }}
+            {{- if .Values.bucket.endpoint }}
+            {{- range $key := list "BUCKET_ACCESS_KEY" "BUCKET_SECRET_KEY" }}
+            {{- include "relay.secretEnv" (dict "name" $key "key" $key "secret" $secret "required" true) | nindent 12 }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
