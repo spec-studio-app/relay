@@ -212,8 +212,9 @@ test("R10.S2, R10.S3: a signed-in decode from UI_ORIGIN shows spec payloads as J
       body: new URLSearchParams({ password: PASSWORD }).toString(),
     });
     assert.equal(ok.status, 200);
-    const cookie = (ok.headers.get("set-cookie") ?? "").split(";")[0];
-    assert.match(ok.headers.get("set-cookie") ?? "", /SameSite=None/i);
+    const session = ok.headers.getSetCookie().find((c) => c.startsWith("relay_session=")) ?? "";
+    const cookie = session.split(";")[0];
+    assert.match(session, /SameSite=None/i);
     assert.equal((await decode(t.base, [specPayload], { cookie })).status, 200);
     assert.equal((await decode(t.base, [specPayload], { cookie: "relay_session=99999999999999.forged" })).status, 401);
 

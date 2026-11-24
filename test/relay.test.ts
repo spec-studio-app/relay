@@ -513,3 +513,48 @@ test("the secret check of an agent upgrade ends with 503 when Temporal does not 
     await t.close();
   }
 });
+
+test("the codec sign-in uses the device cookie from /login, so a stranger cannot lock out the user's browser", async () => {
+  const { newPayloadKeys } = await import("../src/codec.js");
+  const { parsePayloadKeys } = await import("../src/config.js");
+  const t = await startRelay({ codecDataKeys: parsePayloadKeys(newPayloadKeys()).data });
+  const codecSignIn = (password: string, cookie?: string) =>
+    fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) },
+      body: new URLSearchParams({ password }).toString(),
+    });
+  try {
+    const first = await openLogin(t.base);
+    const ok = await postLogin(t.base, first.request, PASSWORD);
+    const setCookie = ok.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /Path=\/(;|$)/, "the device cookie reaches /codec/signin too");
+    const cookie = setCookie.split(";")[0];
+
+    // A stranger uses up the shared limit on the codec sign-in.
+    await Promise.all(Array.from({ length: 12 }, () => codecSignIn("wrong")));
+    assert.equal((await codecSignIn(PASSWORD)).status, 429);
+    // The user's browser still signs in.
+    assert.equal((await codecSignIn(PASSWORD, cookie)).status, 200);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a codec sign-in from a new browser sets the device cookie", async () => {
+  const { newPayloadKeys } = await import("../src/codec.js");
+  const { parsePayloadKeys } = await import("../src/config.js");
+  const t = await startRelay({ codecDataKeys: parsePayloadKeys(newPayloadKeys()).data });
+  try {
+    const res = await fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: PASSWORD }).toString(),
+    });
+    assert.equal(res.status, 200);
+    const cookies = res.headers.getSetCookie();
+    assert.ok(cookies.some((c) => /^relay_device=[\w-]+\.[\w-]+;.*Path=\/(;|$)/.test(c)), cookies.join(" | "));
+  } finally {
+    await t.close();
+  }
+});

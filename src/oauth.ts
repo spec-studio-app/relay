@@ -267,6 +267,22 @@ export class SingleUserProvider implements OAuthServerProvider {
     return `${id}.${this.signDevice(id)}`;
   }
 
+  /**
+   * After a correct password from an unknown browser: set the device cookie, so
+   * that the browser gets its own login limit. Its path covers /login and
+   * /codec/signin.
+   */
+  rememberDevice(req: Request, res: Response): void {
+    if (this.loginSource(req) !== UNKNOWN_SOURCE) return;
+    res.cookie(DEVICE_COOKIE, this.newDeviceCookie(), {
+      httpOnly: true,
+      secure: req.secure,
+      sameSite: "lax",
+      path: "/",
+      maxAge: DEVICE_COOKIE_MAX_AGE_MS,
+    });
+  }
+
   /** The login limit's source for this request: a known device, or the shared one. */
   private loginSource(req: Request): string {
     const header = req.headers.cookie ?? "";
@@ -508,15 +524,7 @@ export class SingleUserProvider implements OAuthServerProvider {
         expiresAt: this.nowMs() + CODE_TTL_MS,
       });
       this.options.log({ event: "login_ok" });
-      if (source === UNKNOWN_SOURCE) {
-        res.cookie(DEVICE_COOKIE, this.newDeviceCookie(), {
-          httpOnly: true,
-          secure: req.secure,
-          sameSite: "lax",
-          path: LOGIN_PATH,
-          maxAge: DEVICE_COOKIE_MAX_AGE_MS,
-        });
-      }
+      this.rememberDevice(req, res);
 
       const target = new URL(pending.params.redirectUri);
       target.searchParams.set("code", code);

@@ -123,6 +123,7 @@ export function codecRouter(o: CodecServerOptions): Router {
       sendSignIn(res, result === "locked" ? "Too many wrong passwords. Wait 15 minutes, then try again." : "The password is not correct.");
       return;
     }
+    o.provider.rememberDevice(req, res);
     const expires = String(Date.now() + SESSION_TTL_MS);
     // SameSite=None: the Web UI calls the codec from its own origin with credentials.
     res.cookie(SESSION_COOKIE, `${expires}.${sign(expires)}`, {
