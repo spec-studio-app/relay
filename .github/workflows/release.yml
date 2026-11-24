@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/spec-studio-app/spec-studio-relay
+  IMAGE: ghcr.io/spec-studio-app/relay
   CHART_REPO: oci://ghcr.io/spec-studio-app/charts
 
 jobs:
@@ -76,16 +76,16 @@ jobs:
         run: |
           version="${{ steps.version.outputs.version }}"
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm package chart/spec-studio-relay --version "$version" --app-version "$version" -d dist-chart
-          helm push "dist-chart/spec-studio-relay-$version.tgz" "$CHART_REPO"
+          helm package chart/relay --version "$version" --app-version "$version" -d dist-chart
+          helm push "dist-chart/relay-$version.tgz" "$CHART_REPO"
 
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ steps.version.outputs.version }}"
-          gh release create "$GITHUB_REF_NAME" "dist-chart/spec-studio-relay-$version.tgz" compose.yaml \
+          gh release create "$GITHUB_REF_NAME" "dist-chart/relay-$version.tgz" compose.yaml \
             --title "$GITHUB_REF_NAME" \
             --notes "Image: \`${IMAGE}:${version}\` (linux/amd64, linux/arm64, signed with cosign).
-          Chart: \`helm install relay ${CHART_REPO}/spec-studio-relay --version ${version}\`.
+          Chart: \`helm install relay ${CHART_REPO}/relay --version ${version}\`.
           See README.md for the deploy guide."

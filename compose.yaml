@@ -7,7 +7,7 @@
 # password hash in single quotes: it holds `$` characters.
 services:
   relay:
-    image: ghcr.io/spec-studio-app/spec-studio-relay:${RELAY_VERSION:-latest}
+    image: ghcr.io/spec-studio-app/relay:${RELAY_VERSION:-latest}
     build: .
     restart: unless-stopped
     ports:
@@ -15,7 +15,7 @@ services:
     environment:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8760}
       OWNER_PASSWORD_HASH: "${OWNER_PASSWORD_HASH:?Set OWNER_PASSWORD_HASH to a bcrypt hash of the owner password}"
-      PAYLOAD_KEYS: "${PAYLOAD_KEYS:?Set PAYLOAD_KEYS. Make it with docker run --rm ghcr.io/spec-studio-app/spec-studio-relay keys}"
+      PAYLOAD_KEYS: "${PAYLOAD_KEYS:?Set PAYLOAD_KEYS. Make it with docker run --rm ghcr.io/spec-studio-app/relay keys}"
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_AUTH: ${TEMPORAL_AUTH:-}

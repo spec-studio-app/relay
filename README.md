@@ -26,13 +26,13 @@ Run one relay process for each deploy. The relay keeps the one agent connection 
 Make the payload keys. The relay encrypts every Temporal payload with them. Keep a copy in a safe place: without the same keys, the relay cannot read its data. The relay refuses a payload that is not encrypted with one of its keys. Each update input also names its workflow and the time it was made, and the workflows refuse a copy for another workflow or one older than 5 minutes. So a person who can write to the namespace but has no key cannot make new input for the relay's workflows; they can only send a copy of a recent update again to the same workflow.
 
 ```sh
-docker run --rm ghcr.io/spec-studio-app/spec-studio-relay keys
+docker run --rm ghcr.io/spec-studio-app/relay keys
 ```
 
 Make the bcrypt hash of the owner password. You type this password on the sign-in page of the relay.
 
 ```sh
-printf '%s' 'your password' | docker run --rm -i ghcr.io/spec-studio-app/spec-studio-relay password-hash
+printf '%s' 'your password' | docker run --rm -i ghcr.io/spec-studio-app/relay password-hash
 ```
 
 ## Step 2: Choose the Temporal namespace
@@ -80,7 +80,7 @@ Any S3-compatible service works (AWS S3, MinIO). Set `BUCKET_REGION` when the se
 
 ## Step 4: Run the relay
 
-There are three ways. Each release publishes the image `ghcr.io/spec-studio-app/spec-studio-relay:<version>` (linux/amd64 and linux/arm64, signed with cosign) and the chart `oci://ghcr.io/spec-studio-app/charts/spec-studio-relay`.
+There are three ways. Each release publishes the image `ghcr.io/spec-studio-app/relay:<version>` (linux/amd64 and linux/arm64, signed with cosign) and the chart `oci://ghcr.io/spec-studio-app/charts/relay`.
 
 ### Docker Compose
 
@@ -109,21 +109,21 @@ Put an HTTPS proxy (Caddy, Traefik, Cloudflare Tunnel) in front of port 8760.
 ### Helm
 
 ```sh
-helm install relay oci://ghcr.io/spec-studio-app/charts/spec-studio-relay --version <version> \
+helm install relay oci://ghcr.io/spec-studio-app/charts/relay --version <version> \
   --set publicUrl=https://relay.example.com \
   --set temporal.address=temporal-frontend.temporal.svc:7233 \
   --set temporal.namespace=studio-relay \
   --set bucket.endpoint=https://<account id>.r2.cloudflarestorage.com \
   --set bucket.name=spec-studio-relay \
-  --set existingSecret=spec-studio-relay
+  --set existingSecret=relay-secrets
 ```
 
-The Secret `existingSecret` has the keys `OWNER_PASSWORD_HASH`, `PAYLOAD_KEYS`, and as needed `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY` and `BUCKET_SECRET_KEY`. Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/spec-studio-relay/values.yaml` for all values.
+The Secret `existingSecret` has the keys `OWNER_PASSWORD_HASH`, `PAYLOAD_KEYS`, and as needed `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY` and `BUCKET_SECRET_KEY`. Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/relay/values.yaml` for all values.
 
 ### Docker
 
 ```sh
-docker run -d --name relay -p 8760:8760 --env-file relay.env ghcr.io/spec-studio-app/spec-studio-relay:<version>
+docker run -d --name relay -p 8760:8760 --env-file relay.env ghcr.io/spec-studio-app/relay:<version>
 ```
 
 ## Step 5: Pair the Mac
@@ -140,7 +140,7 @@ Enter the relay URL and the code in Spec Studio > Settings (⌘,) > Remote Relay
 
 ```sh
 docker compose exec relay relay pair-code
-kubectl exec deploy/relay-spec-studio-relay -- relay pair-code
+kubectl exec deploy/relay -- relay pair-code
 ```
 
 Pairing is the only way to get an agent secret. The relay keeps only its SHA-256. Unpair in the Settings pane, or with `studio agent unpair`.

@@ -28,12 +28,12 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Lint the chart
         run: |
-          helm lint chart/spec-studio-relay \
+          helm lint chart/relay \
             --set publicUrl=https://relay.example.com \
             --set temporal.address=temporal:7233 \
             --set secrets.ownerPasswordHash=x \
             --set secrets.payloadKeys=y
-          helm template relay chart/spec-studio-relay \
+          helm template relay chart/relay \
             --set publicUrl=https://relay.example.com \
             --set temporal.address=temporal:7233 \
             --set secrets.ownerPasswordHash=x \

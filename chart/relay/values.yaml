@@ -1,7 +1,7 @@
 # The relay keeps one agent connection from the Mac in its process.
 # Run one replica only.
 image:
-  repository: ghcr.io/spec-studio-app/spec-studio-relay
+  repository: ghcr.io/spec-studio-app/relay
   # Empty: the chart's appVersion.
   tag: ""
   pullPolicy: IfNotPresent

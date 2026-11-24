@@ -1,10 +1,10 @@
 apiVersion: v2
-name: spec-studio-relay
+name: relay
 description: The Spec Studio relay, a self-hosted remote MCP server with a Temporal mirror of each spec.
 type: application
 # The release workflow sets both versions from the v* tag.
 version: 0.2.0
 appVersion: "0.2.0"
-home: https://github.com/spec-studio-app/spec-studio-relay
+home: https://github.com/spec-studio-app/relay
 sources:
-  - https://github.com/spec-studio-app/spec-studio-relay
+  - https://github.com/spec-studio-app/relay
