@@ -1,5 +1,7 @@
 // The relay's side of the relay-config workflow (payloads use the config key).
 import type { Client } from "@temporalio/client";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthStore } from "./oauth.js";
 import {
   clientQuery,
   issueTokensUpdate,
@@ -79,4 +81,20 @@ export class ConfigStore {
   async revoke(hash: string, clientId: string): Promise<void> {
     await this.handle.executeUpdate(revokeUpdate, { args: [{ hash, clientId }] });
   }
+}
+
+/** The OAuth provider's store in the relay-config workflow (R9.S4). */
+export function temporalOAuthStore(store: ConfigStore): OAuthStore {
+  return {
+    async getClient(clientId) {
+      const stored = await store.getClient(clientId);
+      return stored ? (stored.client as unknown as OAuthClientInformationFull) : undefined;
+    },
+    registerClient: (client) => store.registerClient(client as unknown as StoredClient["client"]),
+    markSignedIn: (clientId) => store.markSignedIn(clientId),
+    saveTokens: (pair) => store.issueTokens(pair),
+    accessToken: (hash) => store.token("access", hash),
+    rotateRefresh: (oldHash, clientId, next) => store.rotateRefresh(oldHash, clientId, next),
+    revoke: (hash, clientId) => store.revoke(hash, clientId),
+  };
 }

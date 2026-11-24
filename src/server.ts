@@ -8,7 +8,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { AgentHub } from "./agent.js";
-import { SingleUserProvider } from "./oauth.js";
+import { SingleUserProvider, type OAuthStore } from "./oauth.js";
+import { randomBytes } from "node:crypto";
+import { pairCodeHash } from "./pairing.js";
+import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
 import { LOCAL_TOOLS, TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
@@ -42,6 +45,8 @@ export interface RelayConfig {
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
+  /** The OAuth clients and token hashes. In memory when not given. */
+  oauthStore?: OAuthStore;
   /** The tools that the relay answers itself (send_message, read_messages, ...). */
   localTools?: (hub: AgentHub) => LocalTools;
 }
@@ -74,6 +79,7 @@ export function createRelay(config: RelayConfig): Relay {
   // expiry with Date.now().
   const provider = new SingleUserProvider({
     loginPasswordBcrypt: config.loginPasswordBcrypt,
+    store: config.oauthStore,
     extraRedirectUris: config.extraRedirectUris ?? [],
     now: () => new Date(),
     log,
@@ -100,6 +106,70 @@ export function createRelay(config: RelayConfig): Relay {
   // Public, so it does not say whether the Mac is online.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ ok: true });
+  });
+
+  // Pairing: a pairing code mints the agent secret. The relay keeps only its hash.
+  const failedPairs: number[] = [];
+  const PAIR_LIMIT = 20;
+  const PAIR_WINDOW_MS = 15 * 60 * 1000;
+  app.get("/agent/info", (_req, res) => {
+    res.json({ relayVersion: RELAY_VERSION, wireVersion: WIRE_VERSION, mcpURL: mcpUrl.href });
+  });
+  app.post("/agent/pair", express.json({ limit: "4kb" }), async (req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "no-store");
+    const backend = config.agentBackend;
+    const nowMs = Date.now();
+    while (failedPairs.length > 0 && nowMs - failedPairs[0] > PAIR_WINDOW_MS) failedPairs.shift();
+    if (failedPairs.length >= PAIR_LIMIT) {
+      res.status(429).json({ error: "Too many wrong pairing codes. Wait 15 minutes, then try again." });
+      return;
+    }
+    const code = typeof req.body?.code === "string" ? req.body.code : "";
+    if (!backend || code.length === 0 || code.length > 64) {
+      failedPairs.push(nowMs);
+      res.status(403).json({ error: "The relay refused the pairing code." });
+      return;
+    }
+    const secret = randomBytes(32).toString("base64url");
+    const secretHash = AgentHub.secretHash(`Bearer ${secret}`)!;
+    let ok: boolean;
+    try {
+      ok = await backend.pair(pairCodeHash(code), secretHash, now());
+    } catch {
+      log({ event: "pair_failed" });
+      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      return;
+    }
+    if (!ok) {
+      failedPairs.push(nowMs);
+      log({ event: "pair_refused", status: 403 });
+      res.status(403).json({ error: "The relay refused the pairing code." });
+      return;
+    }
+    log({ event: "paired" });
+    res.json({ secret, relayVersion: RELAY_VERSION, mcpURL: mcpUrl.href });
+  });
+  app.post("/agent/unpair", async (req: Request, res: Response) => {
+    const hash = AgentHub.secretHash(req.headers.authorization);
+    const backend = config.agentBackend;
+    if (!hash || !backend) {
+      res.status(401).end();
+      return;
+    }
+    let removed: boolean;
+    try {
+      removed = await backend.unpair(hash);
+    } catch {
+      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      return;
+    }
+    if (!removed) {
+      res.status(401).end();
+      return;
+    }
+    hub.disconnect(hash);
+    log({ event: "unpaired" });
+    res.status(204).end();
   });
 
   app.use(

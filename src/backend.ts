@@ -13,6 +13,10 @@ export interface AgentBackend {
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
   /** The agent wrote a message to disk, or refused it with an error. */
   ack(spec: SpecAddress, seq: number, error?: string): Promise<void>;
+  /** Pair a Mac: true when the code was valid. The code works once. */
+  pair(codeHash: string, secretHash: string, at: Date): Promise<boolean>;
+  /** Forget a paired secret. False when it was not paired. */
+  unpair(secretHash: string): Promise<boolean>;
   /** Every message that waits for the Mac, in seq order per spec. */
   pendingForMac(): Promise<Array<{ spec: SpecAddress; message: Message }>>;
 }
@@ -21,6 +25,8 @@ export function temporalAgentBackend(deps: { mirror: Mirror; configStore: Config
   return {
     verifyAgent: (hash) => deps.configStore.verifyAgent(hash),
     hello: (repos, at) => deps.configStore.setRepos(repos, at),
+    pair: (codeHash, secretHash, at) => deps.configStore.pair(codeHash, secretHash, at),
+    unpair: (secretHash) => deps.configStore.unpair(secretHash),
     sync: (spec, input) => deps.mirror.sync(spec, input),
     ack: async (spec, seq, error) => {
       await deps.mirror.ack(spec, seq, error);

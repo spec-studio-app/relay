@@ -62,6 +62,8 @@ export class AgentHub {
   private readonly versions = new WeakMap<WebSocket, number>();
   /** Sync lines of one spec apply in order: one promise chain per spec. */
   private readonly syncChains = new Map<string, Promise<void>>();
+  /** The secret hash of each socket, so an unpair can close it. */
+  private readonly hashes = new WeakMap<WebSocket, string>();
   /** The messages pushed on each socket, so a push goes once per connection. */
   private readonly pushed = new WeakMap<WebSocket, Set<string>>();
 
@@ -118,7 +120,11 @@ export class AgentHub {
         return;
       }
       if (socket.destroyed) return;
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
+      const hash = AgentHub.secretHash(req.headers.authorization);
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        if (hash) this.hashes.set(ws, hash);
+        this.accept(ws);
+      });
     });
     return true;
   }
@@ -239,6 +245,12 @@ export class AgentHub {
     this.pending.delete(m.id);
     clearTimeout(call.timer);
     call.resolve({ ok: m.ok === true, text: typeof m.text === "string" ? m.text : "" });
+  }
+
+  /** Close the agent connection that uses this secret hash (after an unpair). */
+  disconnect(hash: string): void {
+    const ws = this.socket;
+    if (ws && this.hashes.get(ws) === hash) ws.close(4001, "unpaired");
   }
 
   /** The wire version of the current agent socket (0 when no agent). */

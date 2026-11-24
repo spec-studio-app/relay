@@ -1,6 +1,6 @@
 // The checks at start: the namespace, the search attributes, the bucket and the
 // relay-config workflow. Each failure tells the owner what to correct.
-import { createHash, randomInt } from "node:crypto";
+import { newPairCode, pairCodeHash, PAIR_CODE_TTL_MS } from "./pairing.js";
 import { WorkflowExecutionAlreadyStartedError, type Client, type Connection } from "@temporalio/client";
 import proto from "@temporalio/proto";
 import type { temporal as protoTypes } from "@temporalio/proto";
@@ -19,20 +19,7 @@ import { SEARCH_ATTRIBUTE_KEYS, initialRelayConfigState, relayConfigWorkflowId }
 export class StartupError extends Error {}
 
 export const NAMESPACE_RETENTION_DAYS = 30;
-export const PAIR_CODE_TTL_MS = 24 * 60 * 60 * 1000;
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-/** A new pairing code, as XXXX-XXXX-XXXX. */
-export function newPairCode(): string {
-  const chars = Array.from({ length: 12 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]);
-  return [0, 4, 8].map((i) => chars.slice(i, i + 4).join("")).join("-");
-}
-
-/** The hash of a pairing code. Case, spaces and dashes do not count. */
-export function pairCodeHash(code: string): string {
-  const normal = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return createHash("sha256").update(`pair-code\0${normal}`, "utf8").digest("hex");
-}
+export { newPairCode, pairCodeHash, PAIR_CODE_TTL_MS } from "./pairing.js";
 
 /** The search attribute type names that Temporal uses. */
 const TYPE_NAMES: Record<SearchAttributeType, string> = {

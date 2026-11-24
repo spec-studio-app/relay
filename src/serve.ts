@@ -9,7 +9,7 @@ import { S3Bucket } from "./bucket.js";
 import { createWorkers } from "./worker.js";
 import { createActivities } from "./activities.js";
 import { Mirror } from "./mirror.js";
-import { ConfigStore } from "./configStore.js";
+import { ConfigStore, temporalOAuthStore } from "./configStore.js";
 import { temporalAgentBackend } from "./backend.js";
 import { OfflineTools } from "./offline.js";
 import { MessageTools } from "./messages.js";
@@ -55,6 +55,7 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     log,
     agentBackend: temporalAgentBackend({ mirror, configStore }),
     offline: new OfflineTools({ mirror, configStore }),
+    oauthStore: temporalOAuthStore(configStore),
     localTools: (hub) => new MessageTools({ mirror, push: (spec, message) => hub.pushMessage(spec, message) }),
   });
   const server = createServer(relay.app);

@@ -15,6 +15,18 @@ import { MAX_AGENTS, MAX_CLIENTS, type RelayConfigState, type StoredClient, type
 export interface TokenPair {
   access: { hash: string; token: StoredToken };
   refresh: { hash: string; token: StoredToken };
+  /** On a rotation: copy these fields from the old refresh token. */
+  inherit?: { scopes: boolean; resource: boolean };
+}
+
+function inherit(old: StoredToken, token: StoredToken, how: TokenPair["inherit"]): StoredToken {
+  const out = { ...token };
+  if (how?.scopes) out.scopes = old.scopes;
+  if (how?.resource) {
+    if (old.resource) out.resource = old.resource;
+    else delete out.resource;
+  }
+  return out;
 }
 
 export const setPairCodeUpdate = defineUpdate<void, [{ hash: string; expiresAt: number }]>("pairCode");
@@ -111,8 +123,8 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
     const stored = live(s.refresh[oldHash]);
     if (!stored || stored.clientId !== clientId) return null;
     delete s.refresh[oldHash];
-    s.access[next.access.hash] = next.access.token;
-    s.refresh[next.refresh.hash] = next.refresh.token;
+    s.access[next.access.hash] = inherit(stored, next.access.token, next.inherit);
+    s.refresh[next.refresh.hash] = inherit(stored, next.refresh.token, next.inherit);
     changed();
     return stored;
   });

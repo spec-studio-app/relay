@@ -400,10 +400,10 @@ test("registrations push out only clients that never signed in", async () => {
   const provider = new SingleUserProvider({ loginPasswordBcrypt: "x", now: () => new Date(), log: () => {} });
   const store = provider.clientsStore;
   const meta = { redirect_uris: ["http://127.0.0.1:9/callback"] } as Parameters<typeof store.registerClient>[0];
-  const user = store.registerClient(meta);
-  store.markSignedIn(user.client_id);
-  for (let i = 0; i < 150; i++) store.registerClient(meta);
-  assert.ok(store.getClient(user.client_id), "the signed-in client stays");
+  const user = await store.registerClient(meta);
+  await store.markSignedIn(user.client_id);
+  for (let i = 0; i < 150; i++) await store.registerClient(meta);
+  assert.ok(await store.getClient(user.client_id), "the signed-in client stays");
 });
 
 test("a stranger who blocks the shared login limit cannot lock out the user's known browser", async () => {

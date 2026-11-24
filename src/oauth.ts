@@ -1,8 +1,10 @@
 // A single-user OAuth 2.1 provider for the SDK's mcpAuthRouter.
 //
 // The authorize step shows a login page with one password field. The password
-// is compared with a bcrypt hash. Clients, codes and tokens live in memory, so a
-// relay restart asks the user to sign in once more. There is no sign-up.
+// is compared with a bcrypt hash. There is no sign-up. The clients and the
+// token hashes live in an OAuthStore: in the relay it is the relay-config
+// workflow, so a restart (or a second relay on the same Temporal) keeps the
+// sign-in. Login requests and authorization codes live in memory (minutes).
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import express, { type Request, type Response, type Router } from "express";
@@ -21,7 +23,7 @@ const ACCESS_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_FAILED_LOGINS = 10;
 const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const MAX_CLIENTS = 100;
+export const MAX_CLIENTS = 100;
 /** The number of known devices whose failed logins the relay keeps. */
 const MAX_FAILED_LOGIN_SOURCES = 1000;
 /**
@@ -69,13 +71,6 @@ interface IssuedCode {
   expiresAt: number;
 }
 
-interface IssuedToken {
-  clientId: string;
-  scopes: string[];
-  resource?: URL;
-  expiresAt: number;
-}
-
 function newSecret(): string {
   return randomBytes(32).toString("base64url");
 }
@@ -89,37 +84,140 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-class MemoryClientsStore implements OAuthRegisteredClientsStore {
+export interface StoredOAuthToken {
+  clientId: string;
+  scopes: string[];
+  resource?: string;
+  /** Milliseconds since the epoch. */
+  expiresAt: number;
+}
+
+export interface OAuthTokenPair {
+  access: { hash: string; token: StoredOAuthToken };
+  refresh: { hash: string; token: StoredOAuthToken };
+  /** On a rotation: copy these fields from the old refresh token into the new tokens. */
+  inherit?: { scopes: boolean; resource: boolean };
+}
+
+/** The new pair of a rotation, with the inherited fields of the old token. */
+export function inheritedPair(old: StoredOAuthToken, next: OAuthTokenPair): OAuthTokenPair {
+  const fix = (token: StoredOAuthToken): StoredOAuthToken => {
+    const out = { ...token };
+    if (next.inherit?.scopes) out.scopes = old.scopes;
+    if (next.inherit?.resource) {
+      if (old.resource) out.resource = old.resource;
+      else delete out.resource;
+    }
+    return out;
+  };
+  return {
+    access: { hash: next.access.hash, token: fix(next.access.token) },
+    refresh: { hash: next.refresh.hash, token: fix(next.refresh.token) },
+  };
+}
+
+/** Where the provider keeps clients and token hashes. */
+export interface OAuthStore {
+  getClient(clientId: string): Promise<OAuthClientInformationFull | undefined>;
+  /** False when the store is full of clients that signed in. */
+  registerClient(client: OAuthClientInformationFull): Promise<boolean>;
+  markSignedIn(clientId: string): Promise<void>;
+  saveTokens(pair: OAuthTokenPair): Promise<void>;
+  /** A live access token by its hash, or null. */
+  accessToken(hash: string): Promise<StoredOAuthToken | null>;
+  /** Swap a live refresh token of this client for a new pair. Null when it is not valid. */
+  rotateRefresh(oldHash: string, clientId: string, next: OAuthTokenPair): Promise<StoredOAuthToken | null>;
+  revoke(hash: string, clientId: string): Promise<void>;
+}
+
+/** An OAuthStore in memory: a restart forgets every sign-in. */
+export class MemoryOAuthStore implements OAuthStore {
   private readonly clients = new Map<string, OAuthClientInformationFull>();
   /** Clients that completed a sign-in. Registrations never push these out. */
   private readonly signedIn = new Set<string>();
+  private readonly access = new Map<string, StoredOAuthToken>();
+  private readonly refresh = new Map<string, StoredOAuthToken>();
 
-  constructor(private readonly extraRedirectUris: readonly string[]) {}
+  constructor(private readonly now: () => number = () => Date.now()) {}
 
-  markSignedIn(clientId: string): void {
-    this.signedIn.add(clientId);
+  private live(map: Map<string, StoredOAuthToken>, hash: string): StoredOAuthToken | null {
+    const token = map.get(hash);
+    if (!token) return null;
+    if (token.expiresAt <= this.now()) {
+      map.delete(hash);
+      return null;
+    }
+    return token;
   }
 
-  getClient(clientId: string): OAuthClientInformationFull | undefined {
+  async getClient(clientId: string) {
     return this.clients.get(clientId);
   }
 
-  registerClient(
-    client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
-  ): OAuthClientInformationFull {
-    const uris = client.redirect_uris ?? [];
-    if (uris.length === 0 || !uris.every((uri) => redirectAllowed(String(uri), this.extraRedirectUris))) {
-      throw new InvalidClientMetadataError(
-        "The relay accepts only the claude.ai or claude.com connector callback, or a loopback redirect URI.",
-      );
-    }
+  async registerClient(client: OAuthClientInformationFull) {
     // Keep the store small: one user has only a few clients. Push out the oldest
     // client that never signed in, so that anonymous registrations cannot push
     // out the user's own clients.
     if (this.clients.size >= MAX_CLIENTS) {
       const oldest = [...this.clients.keys()].find((id) => !this.signedIn.has(id));
-      if (oldest === undefined) throw new InvalidClientMetadataError("The relay has too many clients.");
+      if (oldest === undefined) return false;
       this.clients.delete(oldest);
+    }
+    this.clients.set(client.client_id, client);
+    return true;
+  }
+
+  async markSignedIn(clientId: string) {
+    this.signedIn.add(clientId);
+  }
+
+  async saveTokens({ access, refresh }: OAuthTokenPair) {
+    this.access.set(access.hash, access.token);
+    this.refresh.set(refresh.hash, refresh.token);
+  }
+
+  async accessToken(hash: string) {
+    return this.live(this.access, hash);
+  }
+
+  async rotateRefresh(oldHash: string, clientId: string, next: OAuthTokenPair) {
+    const stored = this.live(this.refresh, oldHash);
+    if (!stored || stored.clientId !== clientId) return null;
+    this.refresh.delete(oldHash);
+    await this.saveTokens(inheritedPair(stored, next));
+    return stored;
+  }
+
+  async revoke(hash: string, clientId: string) {
+    for (const map of [this.access, this.refresh]) {
+      if (map.get(hash)?.clientId === clientId) map.delete(hash);
+    }
+  }
+}
+
+/** The SDK's clients store over an OAuthStore, with the redirect URI rule. */
+class ClientsStore implements OAuthRegisteredClientsStore {
+  constructor(
+    private readonly store: OAuthStore,
+    private readonly extraRedirectUris: readonly string[],
+  ) {}
+
+  markSignedIn(clientId: string): Promise<void> {
+    return this.store.markSignedIn(clientId);
+  }
+
+  getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    return this.store.getClient(clientId);
+  }
+
+  async registerClient(
+    client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
+  ): Promise<OAuthClientInformationFull> {
+    const uris = client.redirect_uris ?? [];
+    if (uris.length === 0 || !uris.every((uri) => redirectAllowed(String(uri), this.extraRedirectUris))) {
+      throw new InvalidClientMetadataError(
+        "The relay accepts only the claude.ai or claude.com connector callback, or a loopback redirect URI.",
+      );
     }
     const given = client as Partial<OAuthClientInformationFull>;
     const full: OAuthClientInformationFull = {
@@ -127,24 +225,27 @@ class MemoryClientsStore implements OAuthRegisteredClientsStore {
       client_id: given.client_id ?? randomBytes(16).toString("hex"),
       client_id_issued_at: given.client_id_issued_at ?? Math.floor(Date.now() / 1000),
     };
-    this.clients.set(full.client_id, full);
+    if (!(await this.store.registerClient(JSON.parse(JSON.stringify(full))))) {
+      throw new InvalidClientMetadataError("The relay has too many clients.");
+    }
     return full;
   }
 }
 
 export interface SingleUserProviderOptions {
   loginPasswordBcrypt: string;
+  /** The clients and token hashes. A MemoryOAuthStore when not given. */
+  store?: OAuthStore;
   extraRedirectUris?: readonly string[];
   now: () => Date;
   log: Logger;
 }
 
 export class SingleUserProvider implements OAuthServerProvider {
-  readonly clientsStore: MemoryClientsStore;
+  readonly clientsStore: ClientsStore;
+  private readonly store: OAuthStore;
   private readonly pending = new Map<string, PendingAuthorization>();
   private readonly codes = new Map<string, IssuedCode>();
-  private readonly accessTokens = new Map<string, IssuedToken>();
-  private readonly refreshTokens = new Map<string, IssuedToken>();
   /** The times of the failed (and running) logins, by the caller's IP address. */
   private readonly failedLogins = new Map<string, number[]>();
 
@@ -152,7 +253,8 @@ export class SingleUserProvider implements OAuthServerProvider {
   private readonly deviceKey: Buffer;
 
   constructor(private readonly options: SingleUserProviderOptions) {
-    this.clientsStore = new MemoryClientsStore(options.extraRedirectUris ?? []);
+    this.store = options.store ?? new MemoryOAuthStore(() => this.nowMs());
+    this.clientsStore = new ClientsStore(this.store, options.extraRedirectUris ?? []);
     this.deviceKey = createHash("sha256").update("studio-relay device cookie\0").update(options.loginPasswordBcrypt).digest();
   }
 
@@ -186,7 +288,7 @@ export class SingleUserProvider implements OAuthServerProvider {
 
   private sweep(): void {
     const now = this.nowMs();
-    for (const map of [this.pending, this.codes, this.accessTokens, this.refreshTokens] as Map<
+    for (const map of [this.pending, this.codes] as Map<
       string,
       { expiresAt: number }
     >[]) {
@@ -234,7 +336,7 @@ export class SingleUserProvider implements OAuthServerProvider {
     if (redirectUri !== undefined && redirectUri !== code.params.redirectUri) {
       throw new InvalidGrantError("The redirect_uri does not match the authorization request.");
     }
-    this.clientsStore.markSignedIn(client.client_id);
+    await this.store.markSignedIn(client.client_id);
     return this.issueTokens(client.client_id, code.params.scopes ?? [], code.params.resource);
   }
 
@@ -244,18 +346,18 @@ export class SingleUserProvider implements OAuthServerProvider {
     scopes?: string[],
     resource?: URL,
   ): Promise<OAuthTokens> {
-    const k = key(refreshToken);
-    const stored = this.refreshTokens.get(k);
-    if (!stored || stored.clientId !== client.client_id || stored.expiresAt <= this.nowMs()) {
-      throw new InvalidGrantError("The refresh token is not valid.");
-    }
-    // Rotate: the old refresh token stops working.
-    this.refreshTokens.delete(k);
-    return this.issueTokens(client.client_id, scopes ?? stored.scopes, resource ?? stored.resource);
+    const next = this.newTokens(client.client_id, scopes ?? [], resource);
+    // Without scopes or a resource in the request, the new tokens keep those of the old token.
+    const pair: OAuthTokenPair = { ...next.pair, inherit: { scopes: scopes === undefined, resource: resource === undefined } };
+    const stored = await this.store.rotateRefresh(key(refreshToken), client.client_id, pair);
+    if (!stored) throw new InvalidGrantError("The refresh token is not valid.");
+    const kept = scopes ?? stored.scopes;
+    const { scope: _scope, ...tokens } = next.tokens;
+    return { ...tokens, ...(kept.length > 0 ? { scope: kept.join(" ") } : {}) };
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const stored = this.accessTokens.get(key(token));
+    const stored = await this.store.accessToken(key(token));
     if (!stored || stored.expiresAt <= this.nowMs()) {
       throw new InvalidTokenError("The access token is not valid.");
     }
@@ -264,7 +366,7 @@ export class SingleUserProvider implements OAuthServerProvider {
       clientId: stored.clientId,
       scopes: stored.scopes,
       expiresAt: Math.floor(stored.expiresAt / 1000),
-      resource: stored.resource,
+      resource: stored.resource ? new URL(stored.resource) : undefined,
     };
   }
 
@@ -272,27 +374,34 @@ export class SingleUserProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     request: { token: string; token_type_hint?: string },
   ): Promise<void> {
-    const k = key(request.token);
-    for (const map of [this.accessTokens, this.refreshTokens]) {
-      const stored = map.get(k);
-      if (stored && stored.clientId === client.client_id) map.delete(k);
-    }
+    await this.store.revoke(key(request.token), client.client_id);
   }
 
-  private issueTokens(clientId: string, scopes: string[], resource?: URL): OAuthTokens {
-    this.sweep();
+  private newTokens(clientId: string, scopes: string[], resource?: URL): { pair: OAuthTokenPair; tokens: OAuthTokens } {
     const now = this.nowMs();
     const accessToken = newSecret();
     const refreshToken = newSecret();
-    this.accessTokens.set(key(accessToken), { clientId, scopes, resource, expiresAt: now + ACCESS_TTL_MS });
-    this.refreshTokens.set(key(refreshToken), { clientId, scopes, resource, expiresAt: now + REFRESH_TTL_MS });
+    const base = { clientId, scopes, ...(resource ? { resource: resource.href } : {}) };
     return {
-      access_token: accessToken,
-      token_type: "bearer",
-      expires_in: Math.floor(ACCESS_TTL_MS / 1000),
-      refresh_token: refreshToken,
-      ...(scopes.length > 0 ? { scope: scopes.join(" ") } : {}),
+      pair: {
+        access: { hash: key(accessToken), token: { ...base, expiresAt: now + ACCESS_TTL_MS } },
+        refresh: { hash: key(refreshToken), token: { ...base, expiresAt: now + REFRESH_TTL_MS } },
+      },
+      tokens: {
+        access_token: accessToken,
+        token_type: "bearer",
+        expires_in: Math.floor(ACCESS_TTL_MS / 1000),
+        refresh_token: refreshToken,
+        ...(scopes.length > 0 ? { scope: scopes.join(" ") } : {}),
+      },
     };
+  }
+
+  private async issueTokens(clientId: string, scopes: string[], resource?: URL): Promise<OAuthTokens> {
+    this.sweep();
+    const { pair, tokens } = this.newTokens(clientId, scopes, resource);
+    await this.store.saveTokens(pair);
+    return tokens;
   }
 
   /**
@@ -341,7 +450,7 @@ export class SingleUserProvider implements OAuthServerProvider {
         res.status(400).type("text/plain").send("The sign-in request expired. Start the sign-in again from the client.");
         return;
       }
-      const client = this.clientsStore.getClient(pending.clientId);
+      const client = await this.clientsStore.getClient(pending.clientId);
       if (!client) {
         this.pending.delete(requestId);
         res.status(400).type("text/plain").send("The client is not registered. Start the sign-in again from the client.");

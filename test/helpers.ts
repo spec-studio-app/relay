@@ -30,6 +30,7 @@ export async function startRelay(
     agentBackend?: AgentBackend;
     offline?: OfflineReader;
     localTools?: RelayConfig["localTools"];
+    oauthStore?: RelayConfig["oauthStore"];
     /** Set to null for no legacy secret. */
     legacySecretSha256?: string | null;
   } = {},
@@ -46,6 +47,7 @@ export async function startRelay(
     agentBackend: options.agentBackend,
     offline: options.offline,
     localTools: options.localTools,
+    oauthStore: options.oauthStore,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,

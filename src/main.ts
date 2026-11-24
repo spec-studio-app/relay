@@ -1,3 +1,4 @@
+// Run the relay. The `relay` command (cli.ts) does the same with no arguments.
 import { ConfigError, loadConfig } from "./config.js";
 import { StartupError } from "./startup.js";
 import { serve } from "./serve.js";

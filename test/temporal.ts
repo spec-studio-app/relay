@@ -13,8 +13,9 @@ import { REQUIRED_SEARCH_ATTRIBUTES, temporalAdmin } from "../src/startup.js";
 import { MemoryBucket } from "../src/bucket.js";
 import { Mirror } from "../src/mirror.js";
 import type { LogEntry } from "../src/log.js";
-import { ConfigStore } from "../src/configStore.js";
-import { relayConfigWorkflow } from "../src/workflows/relayConfig.js";
+import { ConfigStore, temporalOAuthStore } from "../src/configStore.js";
+import { relayConfigWorkflow, setPairCodeUpdate } from "../src/workflows/relayConfig.js";
+import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows/types.js";
 import { configTaskQueue } from "../src/temporal/connection.js";
 import { pairCodeHash } from "../src/startup.js";
@@ -103,6 +104,23 @@ export async function harness(
   await startWorkers();
   const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit });
   const configStore = new ConfigStore(clients.config, deployId);
+  const startConfig = async (pairCode?: string) => {
+    const code = pairCode ? { hash: pairCodeHash(pairCode), expiresAt: Date.now() + 3_600_000 } : null;
+    try {
+      await clients.config.workflow.start(relayConfigWorkflow, {
+        workflowId: relayConfigWorkflowId(deployId),
+        taskQueue: configTaskQueue(taskQueue),
+        args: [initialRelayConfigState(deployId, code)],
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error;
+      if (code) {
+        await clients.config.workflow
+          .getHandle(relayConfigWorkflowId(deployId))
+          .executeUpdate(setPairCodeUpdate, { args: [code] });
+      }
+    }
+  };
   return {
     env,
     keys,
@@ -114,19 +132,13 @@ export async function harness(
     logs,
     mirror,
     configStore,
-    async startConfig(pairCode?: string) {
-      await clients.config.workflow.start(relayConfigWorkflow, {
-        workflowId: relayConfigWorkflowId(deployId),
-        taskQueue: configTaskQueue(taskQueue),
-        args: [
-          initialRelayConfigState(deployId, pairCode ? { hash: pairCodeHash(pairCode), expiresAt: Date.now() + 3_600_000 } : null),
-        ],
-      });
-    },
-    relay(relayOptions = {}) {
+    startConfig,
+    async relay(relayOptions = {}) {
+      await startConfig();
       return startRelay({
         agentBackend: temporalAgentBackend({ mirror, configStore }),
         offline: new OfflineTools({ mirror, configStore }),
+        oauthStore: temporalOAuthStore(configStore),
         localTools: (hub) =>
           new MessageTools({ mirror, push: (spec, message) => hub.pushMessage(spec, message), waitMs: options.readWaitMs ?? 1500 }),
         ...relayOptions,
