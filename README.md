@@ -2,6 +2,8 @@
 
 The Spec Studio relay is a remote MCP server that you host yourself. Claude AI (claude.ai, the Claude app, or Claude Code on another computer) uses it to list, read, make and start the specs of Spec Studio on your Mac. It also carries messages between Claude AI and the session of a spec.
 
+New to the relay? The [relay guide](https://spec-studio-app.github.io/site/guides/relay/) takes you from no relay to Claude AI reading a spec, and [Relay backends](https://spec-studio-app.github.io/site/guides/backends/) explains each Temporal, bucket and hosting choice. This README is the full reference.
+
 The relay keeps a copy of each spec in your own Temporal namespace. So Claude AI can read the specs and leave messages while the Mac is offline. The Mac opens no port: the Spec Studio agent on the Mac connects out to the relay.
 
 ```
