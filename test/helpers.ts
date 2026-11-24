@@ -32,6 +32,8 @@ export async function startRelay(
     localTools?: RelayConfig["localTools"];
     oauthStore?: RelayConfig["oauthStore"];
     mcpBodyLimit?: number;
+    codecDataKeys?: RelayConfig["codecDataKeys"];
+    uiOrigin?: string;
     /** Set to null for no legacy secret. */
     legacySecretSha256?: string | null;
   } = {},
@@ -50,6 +52,8 @@ export async function startRelay(
     localTools: options.localTools,
     oauthStore: options.oauthStore,
     mcpBodyLimit: options.mcpBodyLimit,
+    codecDataKeys: options.codecDataKeys,
+    uiOrigin: options.uiOrigin,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,

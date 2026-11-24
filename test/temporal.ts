@@ -151,6 +151,7 @@ export async function harness(
         offline: new OfflineTools({ mirror, configStore }),
         oauthStore: temporalOAuthStore(configStore),
         mcpBodyLimit: mcpBodyLimit(maxBytes),
+        codecDataKeys: keys.data,
         localTools: (hub) =>
           new MessageTools({ mirror, attachments, push: (spec, message) => hub.pushMessage(spec, message), waitMs: options.readWaitMs ?? 1500 }),
         ...relayOptions,

@@ -436,6 +436,20 @@ export class SingleUserProvider implements OAuthServerProvider {
     if (times.length === 0) this.failedLogins.delete(source);
   }
 
+  /**
+   * Check the owner's password with the same login limit as the sign-in page.
+   * Used by the codec sign-in.
+   */
+  async checkPassword(req: Request, password: string): Promise<"ok" | "wrong" | "locked"> {
+    const source = this.loginSource(req);
+    const attempt = this.startAttempt(source);
+    if (attempt === undefined) return "locked";
+    const ok = password.length > 0 && (await bcrypt.compare(password, this.options.loginPasswordBcrypt));
+    if (!ok) return "wrong";
+    this.endAttempt(source, attempt);
+    return "ok";
+  }
+
   /** The POST target of the login page. */
   loginRouter(): Router {
     const router = express.Router();

@@ -12,6 +12,8 @@ import { SingleUserProvider, type OAuthStore } from "./oauth.js";
 import { randomBytes } from "node:crypto";
 import { pairCodeHash } from "./pairing.js";
 import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
+import { codecRouter } from "./codecServer.js";
+import type { PayloadKey } from "./config.js";
 import { LOCAL_TOOLS, TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
@@ -45,6 +47,10 @@ export interface RelayConfig {
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
+  /** The data keys for the codec endpoints. No endpoints when not given. */
+  codecDataKeys?: PayloadKey[];
+  /** The origin of the Temporal Web UI (CORS for the codec endpoints). */
+  uiOrigin?: string;
   /** The largest /mcp request body in bytes (1 MB when not given). */
   mcpBodyLimit?: number;
   /** The OAuth clients and token hashes. In memory when not given. */
@@ -183,6 +189,17 @@ export function createRelay(config: RelayConfig): Relay {
     }),
   );
   app.use(provider.loginRouter());
+  if (config.codecDataKeys && config.codecDataKeys.length > 0) {
+    app.use(
+      codecRouter({
+        dataKeys: config.codecDataKeys,
+        uiOrigin: config.uiOrigin,
+        provider,
+        passwordHash: config.loginPasswordBcrypt,
+        log,
+      }),
+    );
+  }
 
   const bearer = requireBearerAuth({
     verifier: provider,

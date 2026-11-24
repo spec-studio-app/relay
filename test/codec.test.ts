@@ -91,3 +91,105 @@ function collectPayloadData(value: unknown, out: string[] = []): string[] {
   }
   return out;
 }
+
+const UI = "https://ui.example.com";
+
+/** The first input payload of a workflow's history, as codec JSON. */
+async function firstInput(workflowId: string) {
+  const raw = await env.connection.workflowService.getWorkflowExecutionHistory({ namespace: "default", execution: { workflowId } });
+  const p = raw.history!.events![0].workflowExecutionStartedEventAttributes!.input!.payloads![0];
+  const metadata: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p.metadata ?? {})) metadata[k] = Buffer.from(v).toString("base64");
+  return { metadata, data: Buffer.from(p.data ?? new Uint8Array()).toString("base64") };
+}
+
+function decode(base: string, payloads: unknown[], headers: Record<string, string> = {}) {
+  return fetch(`${base}/codec/decode`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: UI, ...headers },
+    body: JSON.stringify({ payloads }),
+  });
+}
+
+test("R10.S2, R10.S3: a signed-in decode from UI_ORIGIN shows spec payloads as JSON; config payloads stay encrypted; no sign-in gives 401", async () => {
+  const { signIn, PASSWORD } = await import("./helpers.js");
+  const h = await harness(env);
+  const t = await h.relay({ uiOrigin: UI });
+  try {
+    const spec = specAddress("/Users/me/code/codec", "decode-me");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: { title: "Decode me" }, turn: null });
+    const specPayload = await firstInput(specWorkflowId(spec.repoKey, spec.slug));
+    const configPayload = await firstInput(relayConfigWorkflowId(h.deployId));
+
+    // No sign-in: 401, and the payloads stay hidden.
+    const anonymous = await decode(t.base, [specPayload]);
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.headers.get("access-control-allow-origin"), UI);
+
+    const { accessToken } = await signIn(t.base);
+    const res = await decode(t.base, [specPayload, configPayload], { authorization: `Bearer ${accessToken}` });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("access-control-allow-origin"), UI);
+    assert.equal(res.headers.get("access-control-allow-credentials"), "true");
+    const body = await res.json();
+    const decoded = body.payloads[0];
+    assert.equal(Buffer.from(decoded.metadata.encoding, "base64").toString(), "json/plain");
+    const state = JSON.parse(Buffer.from(decoded.data, "base64").toString());
+    assert.equal(state.spec.slug, "decode-me");
+    assert.deepEqual(body.payloads[1], configPayload, "the config payload stays encrypted");
+
+    // The session cookie from the codec sign-in also works.
+    const wrong = await fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "wrong" }).toString(),
+    });
+    assert.equal(wrong.status, 401);
+    const ok = await fetch(`${t.base}/codec/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: PASSWORD }).toString(),
+    });
+    assert.equal(ok.status, 200);
+    const cookie = (ok.headers.get("set-cookie") ?? "").split(";")[0];
+    assert.match(ok.headers.get("set-cookie") ?? "", /SameSite=None/i);
+    assert.equal((await decode(t.base, [specPayload], { cookie })).status, 200);
+    assert.equal((await decode(t.base, [specPayload], { cookie: "relay_session=99999999999999.forged" })).status, 401);
+
+    // Encode round trip with the data key.
+    const plain = { metadata: { encoding: Buffer.from("json/plain").toString("base64") }, data: Buffer.from('"hi"').toString("base64") };
+    const encoded = await (
+      await fetch(`${t.base}/codec/encode`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ payloads: [plain] }),
+      })
+    ).json();
+    const back = await (await decode(t.base, encoded.payloads, { authorization: `Bearer ${accessToken}` })).json();
+    assert.deepEqual(back.payloads[0], plain);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("CORS: a preflight from UI_ORIGIN gets the headers; another origin gets none", async () => {
+  const h = await harness(env);
+  const t = await h.relay({ uiOrigin: UI });
+  try {
+    const preflight = (origin: string) =>
+      fetch(`${t.base}/codec/decode`, {
+        method: "OPTIONS",
+        headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type,x-namespace" },
+      });
+    const good = await preflight(UI);
+    assert.equal(good.status, 204);
+    assert.equal(good.headers.get("access-control-allow-origin"), UI);
+    assert.match(good.headers.get("access-control-allow-headers") ?? "", /x-namespace/);
+    const bad = await preflight("https://evil.example.com");
+    assert.equal(bad.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

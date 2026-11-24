@@ -61,6 +61,8 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     extraRedirectUris: config.extraRedirectUris,
     log,
     mcpBodyLimit: mcpBodyLimit(config.attachmentMaxBytes),
+    codecDataKeys: config.payloadKeys.data,
+    uiOrigin: config.uiOrigin,
     agentBackend: temporalAgentBackend({ mirror, configStore, attachments }),
     offline: new OfflineTools({ mirror, configStore }),
     oauthStore: temporalOAuthStore(configStore),
