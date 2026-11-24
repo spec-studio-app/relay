@@ -38,6 +38,8 @@ export interface RelayConfig {
   callTimeoutMs?: number;
   pingIntervalMs?: number;
   probeTimeoutMs?: number;
+  /** The longest wait for the secret check of an agent upgrade. */
+  agentAuthTimeoutMs?: number;
   /** Redirect URIs that clients may register, in addition to the defaults (see oauth.ts). */
   extraRedirectUris?: string[];
   /** The clock for the agent's last-seen and start times. */
@@ -82,6 +84,7 @@ export function createRelay(config: RelayConfig): Relay {
     now,
     log,
     backend: config.agentBackend,
+    authTimeoutMs: config.agentAuthTimeoutMs,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().

@@ -16,6 +16,8 @@ import {
 } from "./helpers.js";
 import { LOCAL_TOOLS, TOOLS } from "../src/tools.js";
 import { redirectAllowed } from "../src/oauth.js";
+import type { AgentBackend } from "../src/backend.js";
+import { connect, type Socket } from "node:net";
 
 test("R5.S1: an MCP call without a token gets 401 and nothing goes to the agent", async () => {
   const t = await startRelay();
@@ -446,6 +448,67 @@ test("a call made while the woken Mac connects again goes to the new connection"
     const result = await call;
     assert.equal(result.isError, undefined, result.content[0].text);
     assert.equal(result.content[0].text, "answer from the new connection");
+  } finally {
+    await t.close();
+  }
+});
+
+/** A backend whose secret check never answers (Temporal is slow or down). */
+function hangingBackend(): AgentBackend {
+  const never = () => new Promise<never>(() => {});
+  return {
+    verifyAgent: never,
+    hello: never,
+    sync: never,
+    ack: never,
+    pair: never,
+    pairCodeValid: never,
+    unpair: never,
+    uploadUrl: never,
+    downloadUrl: never,
+    pendingForMac: never,
+  };
+}
+
+function rawUpgrade(base: string): Promise<Socket> {
+  const { port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(port), "127.0.0.1", () => {
+      socket.write(
+        "GET /agent HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+          "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer not-paired\r\n\r\n",
+      );
+      resolve(socket);
+    });
+    socket.on("error", reject);
+  });
+}
+
+test("a reset of the agent socket during the secret check does not crash the relay", async () => {
+  const t = await startRelay({ agentBackend: hangingBackend(), legacySecretSha256: null });
+  try {
+    const socket = await rawUpgrade(t.base);
+    await sleep(100);
+    socket.resetAndDestroy();
+    await sleep(200);
+    // The relay is still up.
+    assert.equal((await fetch(`${t.base}/healthz`)).status, 200);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the secret check of an agent upgrade ends with 503 when Temporal does not answer in time", async () => {
+  const t = await startRelay({ agentBackend: hangingBackend(), legacySecretSha256: null, agentAuthTimeoutMs: 300 });
+  try {
+    const socket = await rawUpgrade(t.base);
+    const answer = await new Promise<string>((resolve) => {
+      let text = "";
+      socket.on("data", (d) => (text += d.toString()));
+      socket.on("close", () => resolve(text));
+    });
+    assert.match(answer, /^HTTP\/1\.1 503/);
+    assert.ok(t.logs.some((l) => l.event === "agent_rejected" && l.status === 503));
   } finally {
     await t.close();
   }

@@ -39,7 +39,11 @@ export interface AgentHubOptions {
   /** Temporal, for wire version 2 and paired secrets. Without it the hub speaks version 1 only. */
   backend?: AgentBackend;
   relayVersion?: string;
+  /** The longest wait for the secret check of an upgrade (10 seconds when not given). */
+  authTimeoutMs?: number;
 }
+
+export const DEFAULT_AGENT_AUTH_TIMEOUT_MS = 10_000;
 
 interface PendingCall {
   socket: WebSocket;
@@ -112,15 +116,39 @@ export class AgentHub {
     const path = (req.url ?? "").split("?")[0];
     if (path !== AGENT_PATH) return false;
 
-    void this.authorizedHash(AgentHub.secretHash(req.headers.authorization)).then((ok) => {
+    // Node removes its own error listener before it emits 'upgrade'. During the
+    // secret check (a Temporal query) a reset of the socket must not crash the relay.
+    const onError = () => {
+      this.options.log({ event: "agent_upgrade_socket_error" });
+      socket.destroy();
+    };
+    socket.on("error", onError);
+    const refuse = (status: string) => {
+      if (!socket.destroyed) {
+        socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+        socket.destroy();
+      }
+    };
+    const hash = AgentHub.secretHash(req.headers.authorization);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), this.options.authTimeoutMs ?? DEFAULT_AGENT_AUTH_TIMEOUT_MS);
+    });
+    void Promise.race([this.authorizedHash(hash), timeout]).then((ok) => {
+      clearTimeout(timer);
+      if (ok === "timeout") {
+        this.options.log({ event: "agent_rejected", status: 503 });
+        refuse("503 Service Unavailable");
+        return;
+      }
       if (!ok) {
         this.options.log({ event: "agent_rejected", status: 401 });
-        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-        socket.destroy();
+        refuse("401 Unauthorized");
         return;
       }
       if (socket.destroyed) return;
-      const hash = AgentHub.secretHash(req.headers.authorization);
+      // ws adds its own error listener in handleUpgrade.
+      socket.off("error", onError);
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         if (hash) this.hashes.set(ws, hash);
         this.accept(ws);

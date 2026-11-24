@@ -26,6 +26,7 @@ export async function startRelay(
     callTimeoutMs?: number;
     pingIntervalMs?: number;
     probeTimeoutMs?: number;
+    agentAuthTimeoutMs?: number;
     now?: () => Date;
     agentBackend?: AgentBackend;
     offline?: OfflineReader;
@@ -57,6 +58,7 @@ export async function startRelay(
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,
+    agentAuthTimeoutMs: options.agentAuthTimeoutMs,
     now: options.now,
     log: (entry) => logs.push(entry),
   });
