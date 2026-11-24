@@ -59,6 +59,22 @@ export interface AgentHubOptions {
   pendingScanMs?: number;
   /** A scan pushes again a message that still waits this long after its push (60 seconds when not given). */
   resendAfterMs?: number;
+  /** Try a state frame that failed on a Temporal error again after this time (30 seconds when not given). */
+  stateRetryMs?: number;
+}
+
+export const DEFAULT_STATE_RETRY_MS = 30_000;
+
+interface StateEntry {
+  ws: WebSocket;
+  spec: SpecAddress;
+  state: Record<string, unknown>;
+  turn: { turn: string; needsYou: boolean } | null;
+  timer?: NodeJS.Timeout;
+}
+
+function specKey(spec: { repoKey: string; slug: string }): string {
+  return `${spec.repoKey}/${spec.slug}`;
 }
 
 export const DEFAULT_PENDING_SCAN_MS = 60_000;
@@ -88,6 +104,8 @@ export class AgentHub {
   private readonly syncChains = new Map<string, Promise<void>>();
   /** The secret hash of each socket, so an unpair can close it. */
   private readonly hashes = new WeakMap<WebSocket, string>();
+  /** The newest state frame of each spec while it applies or waits for a retry. */
+  private readonly latestStates = new Map<string, StateEntry>();
   /** The timer of each version 2 socket that looks for waiting messages again. */
   private readonly scanners = new WeakMap<WebSocket, NodeJS.Timeout>();
   /**
@@ -216,6 +234,7 @@ export class AgentHub {
 
     ws.on("close", () => {
       clearInterval(pinger);
+      for (const [key, entry] of this.latestStates) if (entry.ws === ws) this.forgetState(key);
       if (this.socket === ws) {
         this.socket = null;
         this.options.log({ event: "agent_disconnected" });
@@ -450,6 +469,8 @@ export class AgentHub {
       }
       return;
     }
+    // The line carries the state of its time: a failed state frame before it is old now.
+    this.forgetState(specKey(spec));
     this.chain(spec, async () => {
       try {
         await backend.sync(spec, {
@@ -468,7 +489,7 @@ export class AgentHub {
 
   /** The spec's frames (sync and gone) apply in order: one promise chain per spec. */
   private chain(spec: SpecAddress, work: () => Promise<void>): void {
-    const key = `${spec.repoKey}/${spec.slug}`;
+    const key = specKey(spec);
     const previous = this.syncChains.get(key) ?? Promise.resolve();
     const next = previous.then(work);
     this.syncChains.set(key, next);
@@ -484,15 +505,44 @@ export class AgentHub {
       this.options.log({ event: "agent_bad_message" });
       return;
     }
-    const state = m.state as Record<string, unknown>;
-    const turn = parseTurn(m.turn);
-    this.chain(spec, async () => {
+    const entry: StateEntry = { ws, spec, state: m.state as Record<string, unknown>, turn: parseTurn(m.turn) };
+    // A newer state frame replaces a failed one that waits for its retry.
+    this.forgetState(specKey(spec));
+    this.latestStates.set(specKey(spec), entry);
+    this.applyState(entry);
+  }
+
+  /**
+   * Apply a state frame after the earlier frames of its spec. When Temporal
+   * fails, keep it and try again every stateRetryMs, until it applies, a newer
+   * state or sync frame of the spec comes, or the agent disconnects.
+   */
+  private applyState(entry: StateEntry): void {
+    const backend = this.options.backend!;
+    const key = specKey(entry.spec);
+    this.chain(entry.spec, async () => {
       try {
-        await backend.state(spec, state, turn);
+        await backend.state(entry.spec, entry.state, entry.turn);
+        if (this.latestStates.get(key) === entry) this.latestStates.delete(key);
       } catch {
         this.options.log({ event: "state_failed" });
+        if (this.latestStates.get(key) !== entry || entry.ws.readyState !== WebSocket.OPEN) return;
+        entry.timer = setTimeout(() => {
+          entry.timer = undefined;
+          if (this.latestStates.get(key) !== entry || entry.ws.readyState !== WebSocket.OPEN) return;
+          this.applyState(entry);
+        }, this.options.stateRetryMs ?? DEFAULT_STATE_RETRY_MS);
+        entry.timer.unref();
       }
     });
+  }
+
+  /** Stop the retry of the spec's failed state frame (a newer frame came). */
+  private forgetState(key: string): void {
+    const entry = this.latestStates.get(key);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    this.latestStates.delete(key);
   }
 
   private gone(ws: WebSocket, m: Record<string, unknown>): void {

@@ -664,3 +664,58 @@ test("a scan pushes again a message that still waits long after its push on the 
     await t.close();
   }
 });
+
+test("a state frame that fails on a Temporal error is tried again until it applies; a newer frame or a disconnect stops it", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "flaky" };
+  const calls: string[] = [];
+  let failures = 2;
+  const backend: AgentBackend = {
+    ...hangingBackend(),
+    hello: async () => {},
+    pendingForMac: async () => [],
+    sync: async (_spec, input) => {
+      calls.push(`sync ${input.line}`);
+      return { line: input.line, applied: true };
+    },
+    state: async (_spec, state) => {
+      calls.push(`state ${state.status}`);
+      if (failures-- > 0) throw new Error("Temporal is down");
+      return true;
+    },
+  };
+  const t = await startRelay({ agentBackend: backend, stateRetryMs: 100 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "state", spec, state: { status: "blocked" }, turn: null });
+    await sleep(600);
+    // Two failures, then it applies, and no more tries.
+    assert.deepEqual(calls, ["state blocked", "state blocked", "state blocked"]);
+
+    // A newer sync frame stops the retry of an older failed state.
+    calls.length = 0;
+    failures = 100;
+    agent.send({ type: "state", spec, state: { status: "working" }, turn: null });
+    await sleep(30);
+    agent.send({ type: "sync", spec, line: 1, event: { kind: "note" }, state: { status: "idle" }, turn: null });
+    await agent.next("synced");
+    await sleep(400);
+    assert.deepEqual(calls, ["state working", "sync 1"]);
+
+    // A newer state frame replaces the failed one; a disconnect stops its retry.
+    calls.length = 0;
+    agent.send({ type: "state", spec, state: { status: "old" }, turn: null });
+    await sleep(30);
+    agent.send({ type: "state", spec, state: { status: "new" }, turn: null });
+    await sleep(250);
+    assert.ok(!calls.slice(2).includes("state old"), calls.join(", "));
+    assert.ok(calls.filter((c) => c === "state new").length >= 2, calls.join(", "));
+    await agent.close();
+    await sleep(50);
+    const after = calls.length;
+    await sleep(400);
+    assert.equal(calls.length, after, "no retry after the disconnect");
+  } finally {
+    await t.close();
+  }
+});

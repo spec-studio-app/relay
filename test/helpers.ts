@@ -29,6 +29,7 @@ export async function startRelay(
     agentAuthTimeoutMs?: number;
     pendingScanMs?: number;
     resendAfterMs?: number;
+    stateRetryMs?: number;
     now?: () => Date;
     agentBackend?: AgentBackend;
     offline?: OfflineReader;
@@ -63,6 +64,7 @@ export async function startRelay(
     agentAuthTimeoutMs: options.agentAuthTimeoutMs,
     pendingScanMs: options.pendingScanMs,
     resendAfterMs: options.resendAfterMs,
+    stateRetryMs: options.stateRetryMs,
     now: options.now,
     log: (entry) => logs.push(entry),
   });

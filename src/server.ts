@@ -44,6 +44,8 @@ export interface RelayConfig {
   pendingScanMs?: number;
   /** A scan pushes again a message that still waits this long after its push. */
   resendAfterMs?: number;
+  /** Try a failed state frame again after this time. */
+  stateRetryMs?: number;
   /** Redirect URIs that clients may register, in addition to the defaults (see oauth.ts). */
   extraRedirectUris?: string[];
   /** The clock for the agent's last-seen and start times. */
@@ -91,6 +93,7 @@ export function createRelay(config: RelayConfig): Relay {
     authTimeoutMs: config.agentAuthTimeoutMs,
     pendingScanMs: config.pendingScanMs,
     resendAfterMs: config.resendAfterMs,
+    stateRetryMs: config.stateRetryMs,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().
