@@ -45,6 +45,8 @@ export interface RelayConfig {
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
+  /** The largest /mcp request body in bytes (1 MB when not given). */
+  mcpBodyLimit?: number;
   /** The OAuth clients and token hashes. In memory when not given. */
   oauthStore?: OAuthStore;
   /** The tools that the relay answers itself (send_message, read_messages, ...). */
@@ -187,7 +189,7 @@ export function createRelay(config: RelayConfig): Relay {
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
   });
 
-  app.post("/mcp", bearer, express.json({ limit: "1mb" }), async (req: Request, res: Response) => {
+  app.post("/mcp", bearer, express.json({ limit: config.mcpBodyLimit ?? 1024 * 1024 }), async (req: Request, res: Response) => {
     // Stateless: one server and one transport for each request.
     const server = buildMcpServer(hub, log, config.offline, localTools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

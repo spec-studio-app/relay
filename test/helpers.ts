@@ -31,6 +31,7 @@ export async function startRelay(
     offline?: OfflineReader;
     localTools?: RelayConfig["localTools"];
     oauthStore?: RelayConfig["oauthStore"];
+    mcpBodyLimit?: number;
     /** Set to null for no legacy secret. */
     legacySecretSha256?: string | null;
   } = {},
@@ -48,6 +49,7 @@ export async function startRelay(
     offline: options.offline,
     localTools: options.localTools,
     oauthStore: options.oauthStore,
+    mcpBodyLimit: options.mcpBodyLimit,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,

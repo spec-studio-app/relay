@@ -13,9 +13,15 @@ import { ConfigStore, temporalOAuthStore } from "./configStore.js";
 import { temporalAgentBackend } from "./backend.js";
 import { OfflineTools } from "./offline.js";
 import { MessageTools } from "./messages.js";
+import { Attachments } from "./attachments.js";
 
 export const TEMPORAL_UNREACHABLE =
   "The relay cannot reach Temporal. Check TEMPORAL_ADDRESS and the Temporal auth settings (TEMPORAL_AUTH, TEMPORAL_API_KEY, TEMPORAL_TLS_CERT, TEMPORAL_TLS_KEY).";
+
+/** The /mcp body limit: room for a base64 attachment at the size limit. */
+export function mcpBodyLimit(attachmentMaxBytes: number): number {
+  return Math.max(1024 * 1024, Math.ceil((attachmentMaxBytes * 4) / 3) * 2 + 1024 * 1024);
+}
 
 export async function serve(config: Config, log: Logger = consoleLogger, print = (text: string) => process.stdout.write(text + "\n")) {
   let connection;
@@ -45,6 +51,7 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
 
   const mirror = new Mirror({ client: clients.data, deployId: config.deployId, taskQueue: config.temporal.taskQueue });
   const configStore = new ConfigStore(clients.config, config.deployId);
+  const attachments = new Attachments({ bucket, deployId: config.deployId, maxBytes: config.attachmentMaxBytes });
 
   const relay = createRelay({
     publicUrl: config.publicUrl,
@@ -53,10 +60,11 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     callTimeoutMs: config.callTimeoutMs,
     extraRedirectUris: config.extraRedirectUris,
     log,
-    agentBackend: temporalAgentBackend({ mirror, configStore }),
+    mcpBodyLimit: mcpBodyLimit(config.attachmentMaxBytes),
+    agentBackend: temporalAgentBackend({ mirror, configStore, attachments }),
     offline: new OfflineTools({ mirror, configStore }),
     oauthStore: temporalOAuthStore(configStore),
-    localTools: (hub) => new MessageTools({ mirror, push: (spec, message) => hub.pushMessage(spec, message) }),
+    localTools: (hub) => new MessageTools({ mirror, attachments, push: (spec, message) => hub.pushMessage(spec, message) }),
   });
   const server = createServer(relay.app);
   relay.attach(server);

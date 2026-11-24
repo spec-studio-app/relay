@@ -1,6 +1,7 @@
 // What the agent hub needs from Temporal. The hub's tests without Temporal give
 // no backend: the hub then speaks wire version 1 only.
 import type { ConfigStore } from "./configStore.js";
+import type { Attachments, UploadUrlAnswer } from "./attachments.js";
 import type { Mirror } from "./mirror.js";
 import type { SyncInput, SyncResult } from "./workflows/spec.js";
 import type { Message, SpecAddress } from "./workflows/types.js";
@@ -17,12 +18,18 @@ export interface AgentBackend {
   pair(codeHash: string, secretHash: string, at: Date): Promise<boolean>;
   /** Forget a paired secret. False when it was not paired. */
   unpair(secretHash: string): Promise<boolean>;
+  /** A signed PUT URL for a session attachment (the agent's upload-url). */
+  uploadUrl(spec: SpecAddress, filename: string, contentType: string, size: number): Promise<UploadUrlAnswer>;
+  /** A signed GET URL for an attachment of this deploy, or null. */
+  downloadUrl(objectKey: string): Promise<string | null>;
   /** Every message that waits for the Mac, in seq order per spec. */
   pendingForMac(): Promise<Array<{ spec: SpecAddress; message: Message }>>;
 }
 
-export function temporalAgentBackend(deps: { mirror: Mirror; configStore: ConfigStore }): AgentBackend {
+export function temporalAgentBackend(deps: { mirror: Mirror; configStore: ConfigStore; attachments: Attachments }): AgentBackend {
   return {
+    uploadUrl: (spec, filename, contentType, size) => deps.attachments.uploadUrl(spec, filename, contentType, size),
+    downloadUrl: (objectKey) => deps.attachments.downloadUrl(objectKey),
     verifyAgent: (hash) => deps.configStore.verifyAgent(hash),
     hello: (repos, at) => deps.configStore.setRepos(repos, at),
     pair: (codeHash, secretHash, at) => deps.configStore.pair(codeHash, secretHash, at),

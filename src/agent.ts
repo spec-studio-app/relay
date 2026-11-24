@@ -236,6 +236,10 @@ export class AgentHub {
       this.delivered(ws, m);
       return;
     }
+    if (m.type === "upload-url" || m.type === "download-url") {
+      void this.signedUrl(ws, m);
+      return;
+    }
     if (m.type !== "result" || typeof m.id !== "string") {
       this.options.log({ event: "agent_bad_message" });
       return;
@@ -305,6 +309,38 @@ export class AgentHub {
     if (!ws || ws.readyState !== WebSocket.OPEN || this.versions.get(ws) !== WIRE_VERSION) return false;
     this.pushTo(ws, spec, message);
     return true;
+  }
+
+  /** The agent asks for a signed URL to upload or download an attachment. */
+  private async signedUrl(ws: WebSocket, m: Record<string, unknown>): Promise<void> {
+    const backend = this.options.backend;
+    if (!backend || this.versions.get(ws) !== WIRE_VERSION || typeof m.id !== "string") {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const id = m.id;
+    try {
+      if (m.type === "upload-url") {
+        const spec = parseSpec(m.spec);
+        if (!spec || typeof m.filename !== "string" || typeof m.size !== "number") {
+          this.send(ws, { type: "upload-url", id, ok: false, text: "The upload-url frame is not valid." });
+          return;
+        }
+        const contentType = typeof m.contentType === "string" && m.contentType ? m.contentType : "application/octet-stream";
+        const answer = await backend.uploadUrl(spec, m.filename, contentType, m.size);
+        this.send(ws, { type: "upload-url", id, ...answer });
+        return;
+      }
+      const objectKey = typeof m.objectKey === "string" ? m.objectKey : "";
+      const url = objectKey ? await backend.downloadUrl(objectKey) : null;
+      this.send(
+        ws,
+        url ? { type: "download-url", id, ok: true, url } : { type: "download-url", id, ok: false, text: "The relay has no such attachment." },
+      );
+    } catch {
+      this.options.log({ event: "signed_url_failed" });
+      this.send(ws, { type: m.type, id, ok: false, text: "The relay cannot reach the bucket now." });
+    }
   }
 
   private delivered(ws: WebSocket, m: Record<string, unknown>): void {

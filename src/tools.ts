@@ -109,6 +109,11 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
       slug,
       text: z.string().min(1).max(20_000).describe("The text of the message, in Markdown."),
       replyTo: z.string().min(1).optional().describe("The ID of the message that this message answers."),
+      attachments: z
+        .array(z.string().min(1))
+        .max(10)
+        .optional()
+        .describe("The object keys of files that upload_attachment gave for this spec."),
     },
   },
   {
@@ -129,6 +134,22 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
         .min(0)
         .optional()
         .describe("The cursor: the sequence number of the last message that you read. Use it only with a slug."),
+    },
+  },
+  {
+    name: "upload_attachment",
+    title: "Upload an attachment",
+    description:
+      "Upload a file for a message to a spec. Give the contents as base64. " +
+      "The result gives the object key of the file. Give the object key in the attachments of send_message. " +
+      "The relay refuses a file above its size limit, and the result gives the limit. " +
+      "Attachments of a message for Claude AI show a link that works for 15 minutes.",
+    inputSchema: {
+      repo,
+      slug,
+      filename: z.string().min(1).max(200).describe("The name of the file, for example screenshot.png."),
+      contentType: z.string().min(1).max(200).describe("The media type of the file, for example image/png."),
+      base64: z.string().min(1).describe("The contents of the file, in base64."),
     },
   },
 ];

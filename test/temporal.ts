@@ -22,6 +22,8 @@ import { pairCodeHash } from "../src/startup.js";
 import { temporalAgentBackend } from "../src/backend.js";
 import { OfflineTools } from "../src/offline.js";
 import { MessageTools } from "../src/messages.js";
+import { Attachments } from "../src/attachments.js";
+import { mcpBodyLimit } from "../src/serve.js";
 import { startRelay, type TestRelay } from "./helpers.js";
 
 export const BCRYPT_FOR_CONFIG = "$2b$12$" + "a".repeat(53);
@@ -79,7 +81,14 @@ export interface Harness {
 /** Clients, workers and a mirror on a fresh deploy ID of a shared test server. */
 export async function harness(
   env: TestWorkflowEnvironment,
-  options: { deployId?: string; updateLimit?: number; keysText?: string; readWaitMs?: number } = {},
+  options: {
+    deployId?: string;
+    updateLimit?: number;
+    keysText?: string;
+    readWaitMs?: number;
+    attachmentMaxBytes?: number;
+    noBucket?: boolean;
+  } = {},
 ): Promise<Harness> {
   const keysText = options.keysText ?? newKeysText();
   const keys = parsePayloadKeys(keysText);
@@ -104,6 +113,8 @@ export async function harness(
   await startWorkers();
   const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit });
   const configStore = new ConfigStore(clients.config, deployId);
+  const maxBytes = options.attachmentMaxBytes ?? 5 * 1024 * 1024;
+  const attachments = new Attachments({ bucket: options.noBucket ? null : bucket, deployId, maxBytes });
   const startConfig = async (pairCode?: string) => {
     const code = pairCode ? { hash: pairCodeHash(pairCode), expiresAt: Date.now() + 3_600_000 } : null;
     try {
@@ -136,11 +147,12 @@ export async function harness(
     async relay(relayOptions = {}) {
       await startConfig();
       return startRelay({
-        agentBackend: temporalAgentBackend({ mirror, configStore }),
+        agentBackend: temporalAgentBackend({ mirror, configStore, attachments }),
         offline: new OfflineTools({ mirror, configStore }),
         oauthStore: temporalOAuthStore(configStore),
+        mcpBodyLimit: mcpBodyLimit(maxBytes),
         localTools: (hub) =>
-          new MessageTools({ mirror, push: (spec, message) => hub.pushMessage(spec, message), waitMs: options.readWaitMs ?? 1500 }),
+          new MessageTools({ mirror, attachments, push: (spec, message) => hub.pushMessage(spec, message), waitMs: options.readWaitMs ?? 1500 }),
         ...relayOptions,
       });
     },
