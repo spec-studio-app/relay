@@ -19,7 +19,7 @@ const REPO = "/Users/me/code/app";
 const HELLO2 = { type: "hello", version: 2, agentVersion: "0.9.0", repos: [REPO, "/Users/me/code/site"] };
 const spec = (slug: string) => ({ repoKey: repoKeyOf(REPO), slug });
 
-test("R1.S1: a version 1 agent keeps working and gets no welcome, sync or message frame", async () => {
+test("R1.S1: a paired version 1 agent gets tool calls only: no welcome, sync or message frame", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
