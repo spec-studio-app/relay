@@ -84,6 +84,8 @@ export interface StateInput {
   /** `studio show --json` of the spec now. */
   state: Record<string, unknown>;
   turn: Turn | null;
+  /** The relay's time: the mirror's state is as of this time (syncedAt). */
+  at: string;
 }
 
 /**
@@ -296,6 +298,8 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     if (s.finished) return { applied: false };
     s.state = input.state;
     s.turn = input.turn;
+    // The age that offline reads show is the age of this state.
+    s.syncedAt = input.at;
     changed();
     return { applied: true };
   }, { validator: (_: StateInput, b: Bound) => open(b) });

@@ -502,3 +502,23 @@ test("a restored spec sends its old lines again after the reset: its old message
     await h.close();
   }
 });
+
+test("a state update moves the mirror's syncedAt, and keeps the line cursor and the events", async () => {
+  let clock = new Date("2026-11-23T12:00:00.000Z");
+  const h = await harness(env);
+  try {
+    const { Mirror } = await import("../src/mirror.js");
+    const mirror = new Mirror({ client: h.clients.data, deployId: h.deployId, taskQueue: h.taskQueue, now: () => clock });
+    const spec = specAddress(REPO, "fresh-state");
+    await mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
+    assert.equal((await mirror.state(spec))?.syncedAt, "2026-11-23T12:00:00.000Z");
+    clock = new Date("2026-11-23T15:30:00.000Z");
+    assert.equal(await mirror.refresh(spec, { state: showJson({ status: "blocked" }), turn: null }), true);
+    const state = await mirror.state(spec);
+    assert.equal(state?.syncedAt, "2026-11-23T15:30:00.000Z");
+    assert.equal(state?.line, 1);
+    assert.equal(state?.events.length, 1);
+  } finally {
+    await h.close();
+  }
+});

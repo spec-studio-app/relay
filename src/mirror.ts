@@ -245,10 +245,10 @@ export class Mirror {
    * that is not finished. An unknown spec gets no new run; a finished or closing
    * run ignores it. True when the workflow applied it.
    */
-  async refresh(spec: { repoKey: string; slug: string }, input: StateInput): Promise<boolean> {
+  async refresh(spec: { repoKey: string; slug: string }, input: Omit<StateInput, "at">): Promise<boolean> {
     try {
       const result = await this.update(spec, () =>
-        this.handle(spec).executeUpdate(stateUpdate, { args: [input, this.bound(spec)] }),
+        this.handle(spec).executeUpdate(stateUpdate, { args: [{ ...input, at: this.now() }, this.bound(spec)] }),
       );
       return result.applied;
     } catch (error) {
