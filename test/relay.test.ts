@@ -305,14 +305,24 @@ test("GET /healthz answers 200", async () => {
 test("the relay pings the agent and a pong updates the last-seen time", async () => {
   let clock = new Date("2026-11-22T10:00:00.000Z");
   const t = await startRelay({ now: () => clock, pingIntervalMs: 30 });
+  const until = async (check: () => boolean, what: string) => {
+    const end = Date.now() + 5000;
+    while (!check()) {
+      if (Date.now() > end) throw new Error(`${what} did not happen in time.`);
+      await sleep(5);
+    }
+  };
   try {
     const agent = await connectAgent(t.base);
-    await sleep(20);
+    await until(() => t.relay.hub.connected, "the connection");
     clock = new Date("2026-11-22T10:05:00.000Z");
-    await sleep(120);
-    clock = new Date("2026-11-22T10:10:00.000Z");
+    // Wait for a ping after the clock moved; the agent's pong updates the last-seen time.
+    await new Promise<void>((resolve) => agent.ws.once("ping", () => resolve()));
+    await until(() => t.relay.hub.offlineText().includes("10:05:00.000Z"), "the pong");
     agent.ws.terminate();
-    await sleep(50);
+    await until(() => !t.relay.hub.connected, "the disconnect");
+    // After the disconnect, time goes on but the last-seen time stays.
+    clock = new Date("2026-11-22T10:10:00.000Z");
     assert.equal(t.relay.hub.offlineText(), "The Mac is offline. The relay last saw it at 2026-11-22T10:05:00.000Z.");
   } finally {
     await t.close();
