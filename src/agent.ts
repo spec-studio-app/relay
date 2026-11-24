@@ -46,7 +46,15 @@ export interface AgentHubOptions {
   relayVersion?: string;
   /** The longest wait for the secret check of an upgrade (10 seconds when not given). */
   authTimeoutMs?: number;
+  /**
+   * While a version 2 agent is connected, look for messages that wait for the
+   * Mac this often (60 seconds when not given). Visibility is eventually
+   * consistent, so the scan at the welcome can miss a message.
+   */
+  pendingScanMs?: number;
 }
+
+export const DEFAULT_PENDING_SCAN_MS = 60_000;
 
 export const DEFAULT_AGENT_AUTH_TIMEOUT_MS = 10_000;
 
@@ -73,6 +81,8 @@ export class AgentHub {
   private readonly syncChains = new Map<string, Promise<void>>();
   /** The secret hash of each socket, so an unpair can close it. */
   private readonly hashes = new WeakMap<WebSocket, string>();
+  /** The timer of each version 2 socket that looks for waiting messages again. */
+  private readonly scanners = new WeakMap<WebSocket, NodeJS.Timeout>();
   /** The messages pushed on each socket, so a push goes once per connection. */
   private readonly pushed = new WeakMap<WebSocket, Set<string>>();
 
@@ -313,9 +323,21 @@ export class AgentHub {
     this.options.log({ event: "agent_hello", version: WIRE_VERSION, repos: repos.length });
     backend.hello(repos, this.options.now()).catch(() => this.options.log({ event: "agent_hello_failed" }));
     void this.afterWelcome(ws);
+    if (!this.scanners.has(ws)) {
+      const scanner = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        void this.afterWelcome(ws);
+      }, this.options.pendingScanMs ?? DEFAULT_PENDING_SCAN_MS);
+      scanner.unref();
+      this.scanners.set(ws, scanner);
+      ws.once("close", () => clearInterval(scanner));
+    }
   }
 
-  /** After a welcome: push every message that waits for the Mac, in seq order per spec. */
+  /**
+   * After a welcome, and again every pendingScanMs: push every message that
+   * waits for the Mac, in seq order per spec. Each message goes once per connection.
+   */
   private async afterWelcome(ws: WebSocket): Promise<void> {
     const backend = this.options.backend;
     if (!backend) return;

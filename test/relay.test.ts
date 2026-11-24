@@ -559,3 +559,36 @@ test("a codec sign-in from a new browser sets the device cookie", async () => {
     await t.close();
   }
 });
+
+test("while a version 2 agent is connected, the relay looks again for waiting messages that the welcome scan missed", async () => {
+  let scans = 0;
+  const spec = { repoKey: "0123456789ab", slug: "late", repo: "/Users/me/code/app" };
+  const message = {
+    id: "m1",
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text: "Sent while visibility lagged.",
+    createdAt: "2026-11-23T12:00:00Z",
+  };
+  const backend: AgentBackend = {
+    ...hangingBackend(),
+    hello: async () => {},
+    // The first scan (at the welcome) misses the message; later scans find it.
+    pendingForMac: async () => (scans++ === 0 ? [] : [{ spec, message }]),
+  };
+  const t = await startRelay({ agentBackend: backend, pendingScanMs: 150 });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    const pushed = await agent.next("message");
+    assert.equal(pushed.message.text, "Sent while visibility lagged.");
+    await sleep(400);
+    assert.ok(scans >= 3);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0, "a message goes once per connection");
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});

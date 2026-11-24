@@ -40,6 +40,8 @@ export interface RelayConfig {
   probeTimeoutMs?: number;
   /** The longest wait for the secret check of an agent upgrade. */
   agentAuthTimeoutMs?: number;
+  /** How often the relay looks for messages that wait for the Mac while the agent is connected. */
+  pendingScanMs?: number;
   /** Redirect URIs that clients may register, in addition to the defaults (see oauth.ts). */
   extraRedirectUris?: string[];
   /** The clock for the agent's last-seen and start times. */
@@ -85,6 +87,7 @@ export function createRelay(config: RelayConfig): Relay {
     log,
     backend: config.agentBackend,
     authTimeoutMs: config.agentAuthTimeoutMs,
+    pendingScanMs: config.pendingScanMs,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().
