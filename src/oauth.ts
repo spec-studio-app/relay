@@ -8,6 +8,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import express, { type Request, type Response, type Router } from "express";
+import { newNonce, setFormPageHeaders, submittingScript, SUBMITTING_STYLE } from "./formPage.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -19,6 +20,8 @@ export const LOGIN_PATH = "/login";
 
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 5 * 60 * 1000;
+/** How long a finished sign-in answers a repeated post with the same redirect. */
+const DONE_TTL_MS = 2 * 60 * 1000;
 const ACCESS_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_FAILED_LOGINS = 10;
@@ -245,6 +248,8 @@ export class SingleUserProvider implements OAuthServerProvider {
   readonly clientsStore: ClientsStore;
   private readonly store: OAuthStore;
   private readonly pending = new Map<string, PendingAuthorization>();
+  /** Finished sign-ins: request ID to the redirect it got, for a repeated post. */
+  private readonly done = new Map<string, { target: string; expiresAt: number }>();
   private readonly codes = new Map<string, IssuedCode>();
   /** The times of the failed (and running) logins, by the caller's IP address. */
   private readonly failedLogins = new Map<string, number[]>();
@@ -304,7 +309,7 @@ export class SingleUserProvider implements OAuthServerProvider {
 
   private sweep(): void {
     const now = this.nowMs();
-    for (const map of [this.pending, this.codes] as Map<
+    for (const map of [this.pending, this.codes, this.done] as Map<
       string,
       { expiresAt: number }
     >[]) {
@@ -475,6 +480,14 @@ export class SingleUserProvider implements OAuthServerProvider {
       const password = typeof req.body?.password === "string" ? req.body.password : "";
 
       this.sweep();
+      const finished = this.done.get(requestId);
+      if (finished) {
+        // A second post of a sign-in that already worked (a double click, or a
+        // password manager that submits too): send the browser to the same place.
+        this.options.log({ event: "login_repeat" });
+        res.redirect(302, finished.target);
+        return;
+      }
       const pending = this.pending.get(requestId);
       if (!pending) {
         res.status(400).type("text/plain").send("The sign-in request expired. Start the sign-in again from the client.");
@@ -510,8 +523,15 @@ export class SingleUserProvider implements OAuthServerProvider {
         return;
       }
       this.endAttempt(source, attempt);
-      // A second post of the same request (sent while the first compare ran) gets no second code.
+      // A second post of the same request, sent while the first compare ran, gets the
+      // first post's redirect (no second code).
       if (!this.pending.has(requestId)) {
+        const first = this.done.get(requestId);
+        if (first) {
+          this.options.log({ event: "login_repeat" });
+          res.redirect(302, first.target);
+          return;
+        }
         res.status(400).type("text/plain").send("The sign-in request expired. Start the sign-in again from the client.");
         return;
       }
@@ -529,6 +549,7 @@ export class SingleUserProvider implements OAuthServerProvider {
       const target = new URL(pending.params.redirectUri);
       target.searchParams.set("code", code);
       if (pending.params.state !== undefined) target.searchParams.set("state", pending.params.state);
+      this.done.set(requestId, { target: target.href, expiresAt: this.nowMs() + DONE_TTL_MS });
       res.redirect(302, target.href);
     });
     return router;
@@ -541,11 +562,8 @@ function sendLoginPage(res: Response, requestId: string, clientName: string | un
   // which the relay checked against its list.
   const target = new URL(redirectUri);
   const where = escapeHtml(target.host);
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-  );
+  const nonce = newNonce();
+  setFormPageHeaders(res, nonce);
   res.type("html").send(`<!doctype html>
 <html lang="en">
 <head>
@@ -560,6 +578,7 @@ function sendLoginPage(res: Response, requestId: string, clientName: string | un
   input, button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid #8888; }
   button { cursor: pointer; }
   .error { color: #d33; margin: 0; }
+  ${SUBMITTING_STYLE}
 </style>
 </head>
 <body>
@@ -571,6 +590,7 @@ function sendLoginPage(res: Response, requestId: string, clientName: string | un
   <input type="password" name="password" autocomplete="current-password" placeholder="Password" required autofocus>
   <button type="submit">Sign in</button>
 </form>
+${submittingScript(nonce)}
 </body>
 </html>`);
 }

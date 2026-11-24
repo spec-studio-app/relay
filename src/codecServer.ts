@@ -10,6 +10,7 @@ import { AesGcmCodec } from "./codec.js";
 import type { PayloadKey } from "./config.js";
 import type { SingleUserProvider } from "./oauth.js";
 import type { Logger } from "./log.js";
+import { newNonce, setFormPageHeaders, submittingScript, SUBMITTING_STYLE } from "./formPage.js";
 
 export const SESSION_COOKIE = "relay_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -146,13 +147,13 @@ function page(body: string): string {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Relay codec sign-in</title>
 <style>:root{color-scheme:light dark}body{font:16px/1.4 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;padding:0 16px}
-form{width:100%;max-width:320px;display:grid;gap:12px}h1{font-size:20px;margin:0}input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #8888}.error{color:#d33;margin:0}</style>
+form{width:100%;max-width:320px;display:grid;gap:12px}h1{font-size:20px;margin:0}input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #8888}.error{color:#d33;margin:0}${SUBMITTING_STYLE}</style>
 </head><body>${body}</body></html>`;
 }
 
 function sendSignIn(res: Response, error?: string): void {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+  const nonce = newNonce();
+  setFormPageHeaders(res, nonce);
   const escaped = error?.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   res.type("html").send(
     page(`<form method="post" action="/codec/signin">
@@ -161,6 +162,7 @@ function sendSignIn(res: Response, error?: string): void {
 ${escaped ? `<p class="error">${escaped}</p>` : ""}
 <input type="password" name="password" autocomplete="current-password" placeholder="Password" required autofocus>
 <button type="submit">Sign in</button>
-</form>`),
+</form>
+${submittingScript(nonce)}`),
   );
 }
