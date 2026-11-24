@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { WebSocket } from "ws";
 import { createRelay, type Relay } from "../src/server.js";
 import type { LogEntry } from "../src/log.js";
+import type { AgentBackend } from "../src/backend.js";
 
 export const PASSWORD = "correct horse battery staple";
 export const AGENT_SECRET = "agent-secret-" + randomBytes(16).toString("hex");
@@ -20,7 +21,15 @@ export interface TestRelay {
 }
 
 export async function startRelay(
-  options: { callTimeoutMs?: number; pingIntervalMs?: number; probeTimeoutMs?: number; now?: () => Date } = {},
+  options: {
+    callTimeoutMs?: number;
+    pingIntervalMs?: number;
+    probeTimeoutMs?: number;
+    now?: () => Date;
+    agentBackend?: AgentBackend;
+    /** Set to null for no legacy secret. */
+    legacySecretSha256?: string | null;
+  } = {},
 ): Promise<TestRelay> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -30,7 +39,8 @@ export async function startRelay(
   const relay = createRelay({
     publicUrl: base,
     loginPasswordBcrypt: PASSWORD_BCRYPT,
-    agentSecretSha256: AGENT_SECRET_SHA256,
+    agentSecretSha256: options.legacySecretSha256 === null ? undefined : (options.legacySecretSha256 ?? AGENT_SECRET_SHA256),
+    agentBackend: options.agentBackend,
     callTimeoutMs: options.callTimeoutMs ?? 2000,
     pingIntervalMs: options.pingIntervalMs ?? 60_000,
     probeTimeoutMs: options.probeTimeoutMs ?? 500,
@@ -54,19 +64,52 @@ export async function startRelay(
 
 export interface FakeAgent {
   ws: WebSocket;
+  /** The call frames. */
   received: Array<{ type: string; id: string; tool: string; arguments: Record<string, unknown> }>;
+  /** Every frame from the relay. */
+  frames: Array<Record<string, any>>;
+  send(frame: Record<string, unknown>): void;
+  /** Wait for the next frame of this type that passes the check. */
+  next(type: string, check?: (frame: Record<string, any>) => boolean, ms?: number): Promise<Record<string, any>>;
   /** Reply to each call with this function. Return undefined to never answer. */
   answer: ((call: { tool: string; arguments: Record<string, unknown> }) => { ok: boolean; text: string } | undefined) | null;
   close(): Promise<void>;
 }
 
-export async function connectAgent(base: string, secret = AGENT_SECRET): Promise<FakeAgent> {
+export async function connectAgent(
+  base: string,
+  secret = AGENT_SECRET,
+  hello: Record<string, unknown> = { type: "hello", version: 1 },
+): Promise<FakeAgent> {
   const ws = new WebSocket(base.replace(/^http/, "ws") + "/agent", {
     headers: { Authorization: `Bearer ${secret}` },
   });
   const agent: FakeAgent = {
     ws,
     received: [],
+    frames: [],
+    send: (frame) => ws.send(JSON.stringify(frame)),
+    next: (type, check = () => true, ms = 10_000) =>
+      new Promise((resolve, reject) => {
+        let index = 0;
+        const timer = setTimeout(() => {
+          clearInterval(poll);
+          reject(new Error(`No ${type} frame in time.`));
+        }, ms);
+        const poll = setInterval(() => {
+          for (; index < agent.frames.length; index++) {
+            const f = agent.frames[index];
+            if (f.type === type && check(f)) {
+              clearInterval(poll);
+              clearTimeout(timer);
+              agent.frames.splice(index, 1);
+              resolve(f);
+              return;
+            }
+          }
+          index = 0;
+        }, 10);
+      }),
     answer: null,
     close: () =>
       new Promise<void>((resolve) => {
@@ -77,13 +120,17 @@ export async function connectAgent(base: string, secret = AGENT_SECRET): Promise
   };
   ws.on("message", (data) => {
     const message = JSON.parse(data.toString());
+    if (message.type !== "call") {
+      agent.frames.push(message);
+      return;
+    }
     agent.received.push(message);
     const reply = agent.answer?.(message);
     if (reply) ws.send(JSON.stringify({ type: "result", id: message.id, ...reply }));
   });
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => {
-      ws.send(JSON.stringify({ type: "hello", version: 1 }));
+      ws.send(JSON.stringify(hello));
       resolve();
     });
     ws.once("unexpected-response", (_req, res) => reject(Object.assign(new Error("rejected"), { status: res.statusCode })));

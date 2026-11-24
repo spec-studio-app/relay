@@ -11,6 +11,7 @@ import { AgentHub } from "./agent.js";
 import { SingleUserProvider } from "./oauth.js";
 import { TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
+import type { AgentBackend } from "./backend.js";
 
 import { DEFAULT_CALL_TIMEOUT_MS } from "./config.js";
 
@@ -32,6 +33,8 @@ export interface RelayConfig {
   /** The clock for the agent's last-seen and start times. */
   now?: () => Date;
   log?: Logger;
+  /** Temporal for the agent hub (wire version 2, paired secrets). */
+  agentBackend?: AgentBackend;
 }
 
 export interface Relay {
@@ -56,6 +59,7 @@ export function createRelay(config: RelayConfig): Relay {
     probeTimeoutMs: config.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
     now,
     log,
+    backend: config.agentBackend,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().

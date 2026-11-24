@@ -1,14 +1,20 @@
 // The hub for the one agent connection from the user's Mac.
 //
-// Wire protocol (the Swift agent implements the other side):
+// Wire protocol (the Swift agent implements the other side). Version 1:
 //   relay -> agent: {"type":"call","id":"<uuid>","tool":"<name>","arguments":{...}}
 //   agent -> relay: {"type":"result","id":"<same>","ok":true|false,"text":"<string>"}
 //   agent -> relay: {"type":"hello","version":1}   (optional, after connect)
+// Version 2 (wire.md in the spec): hello with repos, welcome, sync and synced,
+// message and delivered, upload-url and download-url. A version 1 agent gets
+// tool calls only.
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Logger } from "./log.js";
+import type { AgentBackend } from "./backend.js";
+import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
+import type { SpecAddress } from "./workflows/types.js";
 
 export interface CallResult {
   ok: boolean;
@@ -28,6 +34,9 @@ export interface AgentHubOptions {
   probeTimeoutMs: number;
   now: () => Date;
   log: Logger;
+  /** Temporal, for wire version 2 and paired secrets. Without it the hub speaks version 1 only. */
+  backend?: AgentBackend;
+  relayVersion?: string;
 }
 
 interface PendingCall {
@@ -47,6 +56,10 @@ export class AgentHub {
   /** Monotonic time (ms) of the last frame from the agent. */
   private lastHeardMs = 0;
   private readonly pending = new Map<string, PendingCall>();
+  /** The wire version of each socket (1 until a version 2 hello). */
+  private readonly versions = new WeakMap<WebSocket, number>();
+  /** Sync lines of one spec apply in order: one promise chain per spec. */
+  private readonly syncChains = new Map<string, Promise<void>>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.expectedHash = options.agentSecretSha256 ? Buffer.from(options.agentSecretSha256, "hex") : null;
@@ -65,15 +78,27 @@ export class AgentHub {
     return `The Mac is offline. The relay did not see the Mac since it started at ${this.startedAt.toISOString()}.`;
   }
 
-  /** True when the bearer secret in the header hashes to the configured hash. */
-  private authorized(req: IncomingMessage): boolean {
-    const header = req.headers.authorization;
-    if (typeof header !== "string") return false;
+  /** The SHA-256 (hex) of the bearer secret in the header, or null. */
+  static secretHash(header: string | string[] | undefined): string | null {
+    if (typeof header !== "string") return null;
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    if (!match) return false;
-    const actual = createHash("sha256").update(match[1], "utf8").digest();
+    if (!match) return null;
+    return createHash("sha256").update(match[1], "utf8").digest("hex");
+  }
+
+  /** True when the secret is the legacy secret or a paired secret. */
+  async authorizedHash(hash: string | null): Promise<boolean> {
+    if (hash === null) return false;
+    const actual = Buffer.from(hash, "hex");
     const expected = this.expectedHash;
-    return expected !== null && actual.length === expected.length && timingSafeEqual(actual, expected);
+    if (expected !== null && actual.length === expected.length && timingSafeEqual(actual, expected)) return true;
+    if (!this.options.backend) return false;
+    try {
+      return await this.options.backend.verifyAgent(hash);
+    } catch {
+      this.options.log({ event: "agent_verify_failed" });
+      return false;
+    }
   }
 
   /** Handle an HTTP upgrade. Returns false when the path is not the agent path. */
@@ -81,14 +106,16 @@ export class AgentHub {
     const path = (req.url ?? "").split("?")[0];
     if (path !== AGENT_PATH) return false;
 
-    if (!this.authorized(req)) {
-      this.options.log({ event: "agent_rejected", status: 401 });
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-      socket.destroy();
-      return true;
-    }
-
-    this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
+    void this.authorizedHash(AgentHub.secretHash(req.headers.authorization)).then((ok) => {
+      if (!ok) {
+        this.options.log({ event: "agent_rejected", status: 401 });
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (socket.destroyed) return;
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
+    });
     return true;
   }
 
@@ -187,7 +214,14 @@ export class AgentHub {
     }
     if (typeof message !== "object" || message === null) return;
     const m = message as Record<string, unknown>;
-    if (m.type === "hello") return;
+    if (m.type === "hello") {
+      this.hello(ws, m);
+      return;
+    }
+    if (m.type === "sync") {
+      this.sync(ws, m);
+      return;
+    }
     if (m.type !== "result" || typeof m.id !== "string") {
       this.options.log({ event: "agent_bad_message" });
       return;
@@ -197,6 +231,67 @@ export class AgentHub {
     this.pending.delete(m.id);
     clearTimeout(call.timer);
     call.resolve({ ok: m.ok === true, text: typeof m.text === "string" ? m.text : "" });
+  }
+
+  /** The wire version of the current agent socket (0 when no agent). */
+  get wireVersion(): number {
+    return this.socket ? (this.versions.get(this.socket) ?? 1) : 0;
+  }
+
+  private send(ws: WebSocket, frame: Record<string, unknown>): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(frame));
+  }
+
+  private hello(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    if (!backend || typeof m.version !== "number" || m.version < 2) return;
+    this.versions.set(ws, WIRE_VERSION);
+    this.send(ws, { type: "welcome", version: WIRE_VERSION, relayVersion: this.options.relayVersion ?? RELAY_VERSION });
+    const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
+    this.options.log({ event: "agent_hello", version: WIRE_VERSION, repos: repos.length });
+    backend.hello(repos, this.options.now()).catch(() => this.options.log({ event: "agent_hello_failed" }));
+    void this.afterWelcome(ws);
+  }
+
+  /** Work to do after a welcome (pushes of waiting messages). */
+  protected async afterWelcome(_ws: WebSocket): Promise<void> {}
+
+  private sync(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    if (!backend || this.versions.get(ws) !== WIRE_VERSION) {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const spec = parseSpec(m.spec);
+    const line = m.line;
+    if (!spec || typeof line !== "number" || !Number.isInteger(line) || line < 1 || !isObject(m.event)) {
+      this.options.log({ event: "agent_bad_sync" });
+      if (spec && typeof line === "number") {
+        this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The sync frame is not valid." });
+      }
+      return;
+    }
+    const key = `${spec.repoKey}/${spec.slug}`;
+    const previous = this.syncChains.get(key) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      try {
+        await backend.sync(spec, {
+          line,
+          event: m.event as Record<string, unknown>,
+          state: isObject(m.state) ? (m.state as Record<string, unknown>) : null,
+          turn: parseTurn(m.turn),
+        });
+        this.send(ws, { type: "synced", spec: wireSpec(spec), line });
+      } catch {
+        this.options.log({ event: "sync_failed" });
+        this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The relay cannot apply the line now." });
+      }
+    });
+    this.syncChains.set(key, next);
+    void next.finally(() => {
+      if (this.syncChains.get(key) === next) this.syncChains.delete(key);
+    });
   }
 
   private failPending(ws: WebSocket): void {
@@ -263,4 +358,26 @@ export class AgentHub {
     this.socket = null;
     this.wss.close();
   }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A spec address from a frame: a 12-hex repoKey and a slug. */
+export function parseSpec(value: unknown): SpecAddress | null {
+  if (!isObject(value)) return null;
+  const { repoKey, slug, repo } = value;
+  if (typeof repoKey !== "string" || !/^[0-9a-f]{12}$/.test(repoKey)) return null;
+  if (typeof slug !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(slug)) return null;
+  return { repoKey, slug, ...(typeof repo === "string" && repo ? { repo } : {}) };
+}
+
+function wireSpec(spec: SpecAddress): { repoKey: string; slug: string } {
+  return { repoKey: spec.repoKey, slug: spec.slug };
+}
+
+function parseTurn(value: unknown): { turn: string; needsYou: boolean } | null {
+  if (!isObject(value) || typeof value.turn !== "string") return null;
+  return { turn: value.turn, needsYou: value.needsYou === true };
 }

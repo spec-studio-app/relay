@@ -13,6 +13,13 @@ import { REQUIRED_SEARCH_ATTRIBUTES, temporalAdmin } from "../src/startup.js";
 import { MemoryBucket } from "../src/bucket.js";
 import { Mirror } from "../src/mirror.js";
 import type { LogEntry } from "../src/log.js";
+import { ConfigStore } from "../src/configStore.js";
+import { relayConfigWorkflow } from "../src/workflows/relayConfig.js";
+import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows/types.js";
+import { configTaskQueue } from "../src/temporal/connection.js";
+import { pairCodeHash } from "../src/startup.js";
+import { temporalAgentBackend } from "../src/backend.js";
+import { startRelay, type TestRelay } from "./helpers.js";
 
 export const BCRYPT_FOR_CONFIG = "$2b$12$" + "a".repeat(53);
 
@@ -55,7 +62,12 @@ export interface Harness {
   taskQueue: string;
   bucket: MemoryBucket;
   mirror: Mirror;
+  configStore: ConfigStore;
   logs: LogEntry[];
+  /** Start the relay-config workflow with this pairing code. */
+  startConfig(pairCode?: string): Promise<void>;
+  /** A relay (HTTP server and agent hub) on this harness. */
+  relay(options?: Parameters<typeof startRelay>[0]): Promise<TestRelay>;
   /** Start workers on this harness's task queues. */
   startWorkers(): Promise<RelayWorkers>;
   close(): Promise<void>;
@@ -87,6 +99,8 @@ export async function harness(
     return w;
   };
   await startWorkers();
+  const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit });
+  const configStore = new ConfigStore(clients.config, deployId);
   return {
     env,
     keys,
@@ -96,7 +110,20 @@ export async function harness(
     taskQueue,
     bucket,
     logs,
-    mirror: new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit }),
+    mirror,
+    configStore,
+    async startConfig(pairCode?: string) {
+      await clients.config.workflow.start(relayConfigWorkflow, {
+        workflowId: relayConfigWorkflowId(deployId),
+        taskQueue: configTaskQueue(taskQueue),
+        args: [
+          initialRelayConfigState(deployId, pairCode ? { hash: pairCodeHash(pairCode), expiresAt: Date.now() + 3_600_000 } : null),
+        ],
+      });
+    },
+    relay(relayOptions = {}) {
+      return startRelay({ agentBackend: temporalAgentBackend({ mirror, configStore }), ...relayOptions });
+    },
     startWorkers,
     async close() {
       await Promise.all(workers.map((w) => w.shutdown()));

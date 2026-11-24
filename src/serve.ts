@@ -8,6 +8,9 @@ import { runStartupChecks, StartupError, temporalAdmin } from "./startup.js";
 import { S3Bucket } from "./bucket.js";
 import { createWorkers } from "./worker.js";
 import { createActivities } from "./activities.js";
+import { Mirror } from "./mirror.js";
+import { ConfigStore } from "./configStore.js";
+import { temporalAgentBackend } from "./backend.js";
 
 export const TEMPORAL_UNREACHABLE =
   "The relay cannot reach Temporal. Check TEMPORAL_ADDRESS and the Temporal auth settings (TEMPORAL_AUTH, TEMPORAL_API_KEY, TEMPORAL_TLS_CERT, TEMPORAL_TLS_KEY).";
@@ -38,6 +41,9 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     process.exit(1);
   });
 
+  const mirror = new Mirror({ client: clients.data, deployId: config.deployId, taskQueue: config.temporal.taskQueue });
+  const configStore = new ConfigStore(clients.config, config.deployId);
+
   const relay = createRelay({
     publicUrl: config.publicUrl,
     loginPasswordBcrypt: config.ownerPasswordHash,
@@ -45,6 +51,7 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     callTimeoutMs: config.callTimeoutMs,
     extraRedirectUris: config.extraRedirectUris,
     log,
+    agentBackend: temporalAgentBackend({ mirror, configStore }),
   });
   const server = createServer(relay.app);
   relay.attach(server);
