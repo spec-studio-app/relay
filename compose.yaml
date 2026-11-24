@@ -42,11 +42,13 @@ services:
   temporal:
     profiles: ["dev"]
     image: temporalio/temporal:latest
-    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
     ports:
       - "127.0.0.1:8233:8233"
     volumes:
-      - temporal-data:/data
+      # The image runs as the temporal user. A new volume at its home folder
+      # takes that folder's owner, so the dev server can write its database.
+      - temporal-home:/home/temporal
     healthcheck:
       test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
       interval: 5s
@@ -55,4 +57,4 @@ services:
       start_period: 5s
 
 volumes:
-  temporal-data:
+  temporal-home:
