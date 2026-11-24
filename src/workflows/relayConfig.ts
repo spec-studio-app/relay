@@ -47,6 +47,8 @@ export const tokenQuery = defineQuery<StoredToken | null, ["access" | "refresh",
 export const clientQuery = defineQuery<StoredClient | null, [string]>("client");
 export const reposQuery = defineQuery<RelayConfigState["repos"]>("repos");
 export const pairedQuery = defineQuery<number>("paired");
+/** True when the hash is the live pairing code. It does not use the code. */
+export const pairCodeQuery = defineQuery<boolean, [string]>("pairCodeValid");
 
 export async function relayConfigWorkflow(input: RelayConfigState): Promise<void> {
   const s = input;
@@ -71,6 +73,7 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
   setHandler(clientQuery, (id) => s.clients.find((c) => c.client.client_id === id) ?? null);
   setHandler(reposQuery, () => s.repos);
   setHandler(pairedQuery, () => s.agents.length);
+  setHandler(pairCodeQuery, (hash) => !!s.pairCode && s.pairCode.expiresAt > Date.now() && s.pairCode.hash === hash);
 
   setHandler(setPairCodeUpdate, (code) => {
     s.pairCode = code;

@@ -6,6 +6,7 @@ import {
   clientQuery,
   issueTokensUpdate,
   markSignedInUpdate,
+  pairCodeQuery,
   pairUpdate,
   pairedQuery,
   registerClientUpdate,
@@ -40,6 +41,11 @@ export class ConfigStore {
 
   pair(codeHash: string, secretHash: string, at: Date): Promise<boolean> {
     return this.handle.executeUpdate(pairUpdate, { args: [{ codeHash, secretHash, at: at.toISOString() }] });
+  }
+
+  /** True when the hash is the live pairing code (a query: no history event). */
+  pairCodeValid(codeHash: string): Promise<boolean> {
+    return this.handle.query(pairCodeQuery, codeHash);
   }
 
   unpair(secretHash: string): Promise<boolean> {

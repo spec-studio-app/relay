@@ -117,39 +117,47 @@ export function createRelay(config: RelayConfig): Relay {
   });
 
   // Pairing: a pairing code mints the agent secret. The relay keeps only its hash.
-  const failedPairs: number[] = [];
-  const PAIR_LIMIT = 20;
-  const PAIR_WINDOW_MS = 15 * 60 * 1000;
+  const pairLimit = new PairLimit();
   app.get("/agent/info", (_req, res) => {
     res.json({ relayVersion: RELAY_VERSION, wireVersion: WIRE_VERSION, mcpURL: mcpUrl.href });
   });
   app.post("/agent/pair", express.json({ limit: "4kb" }), async (req: Request, res: Response) => {
     res.setHeader("Cache-Control", "no-store");
     const backend = config.agentBackend;
-    const nowMs = Date.now();
-    while (failedPairs.length > 0 && nowMs - failedPairs[0] > PAIR_WINDOW_MS) failedPairs.shift();
-    if (failedPairs.length >= PAIR_LIMIT) {
-      res.status(429).json({ error: "Too many wrong pairing codes. Wait 15 minutes, then try again." });
-      return;
-    }
+    const source = req.ip ?? "unknown";
     const code = typeof req.body?.code === "string" ? req.body.code : "";
     if (!backend || code.length === 0 || code.length > 64) {
-      failedPairs.push(nowMs);
+      pairLimit.fail(source);
       res.status(403).json({ error: "The relay refused the pairing code." });
+      return;
+    }
+    const codeHash = pairCodeHash(code);
+    try {
+      // A source with too many wrong codes (or too many wrong codes from all
+      // sources) gets a query first, which adds nothing to the workflow history.
+      // A correct code always passes, so a stranger cannot block the owner.
+      if (pairLimit.limited(source) && !(await backend.pairCodeValid(codeHash))) {
+        log({ event: "pair_limited", status: 429 });
+        res.status(429).json({ error: "Too many wrong pairing codes. Wait 15 minutes, then try again." });
+        return;
+      }
+    } catch {
+      log({ event: "pair_failed" });
+      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
       return;
     }
     const secret = randomBytes(32).toString("base64url");
     const secretHash = AgentHub.secretHash(`Bearer ${secret}`)!;
     let ok: boolean;
     try {
-      ok = await backend.pair(pairCodeHash(code), secretHash, now());
+      ok = await backend.pair(codeHash, secretHash, now());
     } catch {
       log({ event: "pair_failed" });
       res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
       return;
     }
     if (!ok) {
-      failedPairs.push(nowMs);
+      pairLimit.fail(source);
       log({ event: "pair_refused", status: 403 });
       res.status(403).json({ error: "The relay refused the pairing code." });
       return;
@@ -292,4 +300,52 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
     }
   }
   return server;
+}
+
+/**
+ * The limit on wrong pairing codes: per source IP, and a ceiling for all
+ * sources. A limited request must prove its code with a query before the relay
+ * runs the pair update.
+ */
+export class PairLimit {
+  private readonly failures = new Map<string, number[]>();
+  private all: number[] = [];
+
+  constructor(
+    private readonly o: { perSource: number; total: number; windowMs: number; maxSources: number } = {
+      perSource: 10,
+      total: 100,
+      windowMs: 15 * 60 * 1000,
+      maxSources: 10_000,
+    },
+    private readonly nowMs: () => number = Date.now,
+  ) {}
+
+  private prune(): void {
+    const start = this.nowMs() - this.o.windowMs;
+    this.all = this.all.filter((t) => t > start);
+    for (const [source, times] of this.failures) {
+      const recent = times.filter((t) => t > start);
+      if (recent.length === 0) this.failures.delete(source);
+      else this.failures.set(source, recent);
+    }
+  }
+
+  limited(source: string): boolean {
+    this.prune();
+    return (this.failures.get(source)?.length ?? 0) >= this.o.perSource || this.all.length >= this.o.total;
+  }
+
+  fail(source: string): void {
+    this.prune();
+    const now = this.nowMs();
+    this.all.push(now);
+    if (!this.failures.has(source) && this.failures.size >= this.o.maxSources) {
+      const oldest = this.failures.keys().next().value;
+      if (oldest !== undefined) this.failures.delete(oldest);
+    }
+    const times = this.failures.get(source) ?? [];
+    times.push(now);
+    this.failures.set(source, times);
+  }
 }

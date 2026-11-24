@@ -16,6 +16,8 @@ export interface AgentBackend {
   ack(spec: SpecAddress, seq: number, error?: string): Promise<void>;
   /** Pair a Mac: true when the code was valid. The code works once. */
   pair(codeHash: string, secretHash: string, at: Date): Promise<boolean>;
+  /** True when the code hash is the live pairing code. It does not use the code. */
+  pairCodeValid(codeHash: string): Promise<boolean>;
   /** Forget a paired secret. False when it was not paired. */
   unpair(secretHash: string): Promise<boolean>;
   /** A signed PUT URL for a session attachment (the agent's upload-url). */
@@ -34,6 +36,7 @@ export function temporalAgentBackend(deps: { mirror: Mirror; configStore: Config
     hello: (repos, at) => deps.configStore.setRepos(repos, at),
     pair: (codeHash, secretHash, at) => deps.configStore.pair(codeHash, secretHash, at),
     unpair: (secretHash) => deps.configStore.unpair(secretHash),
+    pairCodeValid: (codeHash) => deps.configStore.pairCodeValid(codeHash),
     sync: (spec, input) => deps.mirror.sync(spec, input),
     ack: async (spec, seq, error) => {
       await deps.mirror.ack(spec, seq, error);

@@ -5,6 +5,7 @@ import { harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, rejectedStatus, signIn, sleep } from "./helpers.js";
 import { makePairCode } from "../src/startup.js";
 import { RELAY_VERSION } from "../src/version.js";
+import { PairLimit } from "../src/server.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -16,10 +17,10 @@ after(async () => {
 
 const CODE = "ABCD-EFGH-JKLM";
 
-function pair(base: string, code: string) {
+function pair(base: string, code: string, ip?: string) {
   return fetch(`${base}/agent/pair`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(ip ? { "x-forwarded-for": ip } : {}) },
     body: JSON.stringify({ code }),
   });
 }
@@ -51,6 +52,43 @@ test("R9.S1, R9.S2: a pairing code mints a secret once; the agent connects with 
     await t.close();
     await h.close();
   }
+});
+
+test("wrong pairing codes are limited per source IP, and a correct code always passes", async () => {
+  const h = await harness(env);
+  const t = await h.relay({ legacySecretSha256: null });
+  try {
+    await h.startConfig(CODE);
+    const stranger = "203.0.113.7";
+    const statuses: number[] = [];
+    for (let i = 0; i < 12; i++) statuses.push((await pair(t.base, `WRNG-WRNG-WR${i}`, stranger)).status);
+    assert.deepEqual(statuses, [...Array(10).fill(403), 429, 429]);
+    // Another source is not limited.
+    assert.equal((await pair(t.base, "WRNG-WRNG-WRNG", "198.51.100.2")).status, 403);
+    // The owner behind the same IP still pairs with the correct code.
+    const ok = await pair(t.base, CODE, stranger);
+    assert.equal(ok.status, 200);
+    assert.match((await ok.json()).secret, /^[A-Za-z0-9_-]{43}$/);
+    // The used code is now wrong, and the limit holds for it.
+    assert.equal((await pair(t.base, CODE, stranger)).status, 429);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("PairLimit: a ceiling for all sources, and the window ends", () => {
+  let now = 0;
+  const limit = new PairLimit({ perSource: 3, total: 5, windowMs: 1000, maxSources: 100 }, () => now);
+  for (let i = 0; i < 3; i++) limit.fail("a");
+  assert.equal(limit.limited("a"), true);
+  assert.equal(limit.limited("b"), false);
+  limit.fail("b");
+  limit.fail("c");
+  assert.equal(limit.limited("d"), true, "the ceiling for all sources");
+  now = 1001;
+  assert.equal(limit.limited("a"), false);
+  assert.equal(limit.limited("d"), false);
 });
 
 test("relay pair-code: a new code works and the old code stops", async () => {
