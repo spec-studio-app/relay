@@ -469,3 +469,36 @@ test("a state update on a finished run changes nothing", async () => {
     await h.close();
   }
 });
+
+test("a restored spec sends its old lines again after the reset: its old messages are not added or unread again", async () => {
+  const h = await harness(env, { graceMs: 60_000 });
+  try {
+    const spec = specAddress(REPO, "restored");
+    const lines = [
+      { kind: "note", text: "start" },
+      { kind: "message", id: "old-1", text: "Plan ready.", t: "2026-11-23T12:00:00Z" },
+      { kind: "message", id: "old-2", text: "Build done.", t: "2026-11-23T13:00:00Z" },
+    ];
+    for (const [i, event] of lines.entries()) {
+      await h.mirror.sync(spec, { line: i + 1, event, state: showJson(), turn: null });
+    }
+    const read = await h.mirror.read(spec, undefined, 0, true);
+    assert.equal(read.messages.length, 2);
+    await h.mirror.gone(spec);
+
+    // The folder came back: the agent sends the same lines from line 1.
+    for (const [i, event] of lines.entries()) {
+      assert.equal((await h.mirror.sync(spec, { line: i + 1, event, state: showJson(), turn: null })).applied, true);
+    }
+    // A new message of the restored spec is added.
+    await h.mirror.sync(spec, { line: 4, event: { kind: "message", id: "new-1", text: "Back again." }, state: showJson(), turn: null });
+
+    const state = await h.mirror.state(spec);
+    const session = state!.coordinator.messages.filter((m) => m.from === "session" && !m.replyTo);
+    assert.deepEqual(session.map((m) => m.id), ["old-1", "old-2", "new-1"]);
+    const unread = await h.mirror.read(spec, undefined, 0, true);
+    assert.deepEqual(unread.messages.map((m) => m.id), ["new-1"]);
+  } finally {
+    await h.close();
+  }
+});

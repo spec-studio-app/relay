@@ -229,7 +229,11 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     s.events.push({ line: sync.line, event: sync.event });
     if (s.events.length > EVENT_LIMIT) s.events.splice(0, s.events.length - EVENT_LIMIT);
     const event = sync.event;
-    if (event.kind === "message") {
+    // A message that the inbox already has (a restored spec sends its old lines
+    // again after the reset of line 1) is not added a second time.
+    const knownMessage =
+      typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
+    if (event.kind === "message" && !knownMessage) {
       addForCoordinator({
         id: typeof event.id === "string" && event.id ? event.id : uuid4(),
         from: "session",
