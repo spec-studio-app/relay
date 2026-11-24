@@ -33,8 +33,6 @@ export interface RelayConfig {
   /** The public origin, e.g. https://studio-mcp.loomis.io. It is the OAuth issuer. */
   publicUrl: string;
   loginPasswordBcrypt: string;
-  /** The legacy agent secret hash (AGENT_SECRET_SHA256), when set. */
-  agentSecretSha256?: string;
   callTimeoutMs?: number;
   pingIntervalMs?: number;
   probeTimeoutMs?: number;
@@ -83,7 +81,6 @@ export function createRelay(config: RelayConfig): Relay {
   const mcpUrl = new URL("/mcp", publicUrl);
 
   const hub = new AgentHub({
-    agentSecretSha256: config.agentSecretSha256?.toLowerCase(),
     callTimeoutMs: config.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
     pingIntervalMs: config.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS,
     probeTimeoutMs: config.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,

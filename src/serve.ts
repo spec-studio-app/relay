@@ -56,7 +56,6 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
   const relay = createRelay({
     publicUrl: config.publicUrl,
     loginPasswordBcrypt: config.ownerPasswordHash,
-    agentSecretSha256: config.agentSecretSha256,
     callTimeoutMs: config.callTimeoutMs,
     extraRedirectUris: config.extraRedirectUris,
     log,

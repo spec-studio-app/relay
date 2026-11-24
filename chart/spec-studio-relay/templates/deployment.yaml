@@ -87,7 +87,7 @@ spec:
             {{- end }}
             {{- include "relay.secretEnv" (dict "name" "OWNER_PASSWORD_HASH" "key" "OWNER_PASSWORD_HASH" "secret" $secret "required" true) | nindent 12 }}
             {{- include "relay.secretEnv" (dict "name" "PAYLOAD_KEYS" "key" "PAYLOAD_KEYS" "secret" $secret "required" true) | nindent 12 }}
-            {{- range $key := list "TEMPORAL_API_KEY" "TEMPORAL_TLS_CERT" "TEMPORAL_TLS_KEY" "AGENT_SECRET_SHA256" }}
+            {{- range $key := list "TEMPORAL_API_KEY" "TEMPORAL_TLS_CERT" "TEMPORAL_TLS_KEY" }}
             {{- include "relay.secretEnv" (dict "name" $key "key" $key "secret" $secret "required" false) | nindent 12 }}
             {{- end }}
             {{- if .Values.bucket.endpoint }}

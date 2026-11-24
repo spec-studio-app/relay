@@ -497,7 +497,7 @@ function rawUpgrade(base: string): Promise<Socket> {
 }
 
 test("a reset of the agent socket during the secret check does not crash the relay", async () => {
-  const t = await startRelay({ agentBackend: hangingBackend(), legacySecretSha256: null });
+  const t = await startRelay({ agentBackend: hangingBackend(), testAgentPaired: false });
   try {
     const socket = await rawUpgrade(t.base);
     await sleep(100);
@@ -511,7 +511,7 @@ test("a reset of the agent socket during the secret check does not crash the rel
 });
 
 test("the secret check of an agent upgrade ends with 503 when Temporal does not answer in time", async () => {
-  const t = await startRelay({ agentBackend: hangingBackend(), legacySecretSha256: null, agentAuthTimeoutMs: 300 });
+  const t = await startRelay({ agentBackend: hangingBackend(), testAgentPaired: false, agentAuthTimeoutMs: 300 });
   try {
     const socket = await rawUpgrade(t.base);
     const answer = await new Promise<string>((resolve) => {

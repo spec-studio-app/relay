@@ -118,7 +118,7 @@ helm install relay oci://ghcr.io/spec-studio-app/charts/spec-studio-relay --vers
   --set existingSecret=spec-studio-relay
 ```
 
-The Secret `existingSecret` has the keys `OWNER_PASSWORD_HASH`, `PAYLOAD_KEYS`, and as needed `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY` and `AGENT_SECRET_SHA256`. Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/spec-studio-relay/values.yaml` for all values.
+The Secret `existingSecret` has the keys `OWNER_PASSWORD_HASH`, `PAYLOAD_KEYS`, and as needed `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY` and `BUCKET_SECRET_KEY`. Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/spec-studio-relay/values.yaml` for all values.
 
 ### Docker
 
@@ -143,7 +143,7 @@ docker compose exec relay relay pair-code
 kubectl exec deploy/relay-spec-studio-relay -- relay pair-code
 ```
 
-The relay keeps only the SHA-256 of the agent secret. Unpair in the Settings pane, or with `studio agent unpair`.
+Pairing is the only way to get an agent secret. The relay keeps only its SHA-256. Unpair in the Settings pane, or with `studio agent unpair`.
 
 ## Step 6: Add the connector in Claude AI
 
@@ -176,7 +176,7 @@ The codec endpoints load only the data key. The payloads of the relay-config wor
 | Setting | Required | Description |
 |---|---|---|
 | `PUBLIC_URL` | yes | The public origin of the relay. It is the OAuth issuer. |
-| `OWNER_PASSWORD_HASH` | yes | The bcrypt hash of the owner password. `LOGIN_PASSWORD_BCRYPT` is an alias. |
+| `OWNER_PASSWORD_HASH` | yes | The bcrypt hash of the owner password. |
 | `PAYLOAD_KEYS` | yes | The codec keys, from `relay keys`. See below. |
 | `TEMPORAL_ADDRESS` | yes | `host:port` of Temporal. |
 | `TEMPORAL_NAMESPACE` | no | The namespace. Default `default`. |
@@ -189,7 +189,6 @@ The codec endpoints load only the data key. The payloads of the relay-config wor
 | `BUCKET_REGION` | no | The bucket region. Default `auto` (R2). |
 | `ATTACHMENT_MAX_BYTES` | no | The largest attachment. Default 10485760 (10 MB). |
 | `UI_ORIGIN` | no | The origin of the Temporal Web UI for the codec endpoints. |
-| `AGENT_SECRET_SHA256` | no | The SHA-256 of an agent secret from before pairing. A paired secret also works. |
 | `EXTRA_REDIRECT_URIS` | no | Comma-separated OAuth redirect URIs, besides the claude.ai and claude.com callbacks and loopback addresses. |
 | `PORT` | no | The HTTP port. Default 8760. |
 | `CALL_TIMEOUT_MS` | no | How long a tool call waits for the Mac. Default 90000. |

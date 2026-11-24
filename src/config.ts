@@ -60,8 +60,6 @@ export interface Config {
   payloadKeys: PayloadKeys;
   /** The origin of the Temporal Web UI that may call the codec endpoints. */
   uiOrigin?: string;
-  /** The legacy agent secret hash, for an agent that did not pair yet. */
-  agentSecretSha256?: string;
 }
 
 export class ConfigError extends Error {}
@@ -177,7 +175,7 @@ function bucketSettings(env: Env): BucketSettings | null {
 
 /** Read the configuration from the environment. Throws a ConfigError that names the setting. */
 export function loadConfig(env: Env): Config {
-  const ownerPasswordHash = value(env, "OWNER_PASSWORD_HASH") ?? value(env, "LOGIN_PASSWORD_BCRYPT");
+  const ownerPasswordHash = value(env, "OWNER_PASSWORD_HASH");
   const missing: string[] = [];
   if (!value(env, "PUBLIC_URL")) missing.push("PUBLIC_URL");
   if (!ownerPasswordHash) missing.push("OWNER_PASSWORD_HASH");
@@ -193,10 +191,6 @@ export function loadConfig(env: Env): Config {
     throw new ConfigError("OWNER_PASSWORD_HASH is not a bcrypt hash.");
   }
 
-  const legacy = value(env, "AGENT_SECRET_SHA256");
-  if (legacy !== undefined && !/^[0-9a-fA-F]{64}$/.test(legacy)) {
-    throw new ConfigError("AGENT_SECRET_SHA256 must be 64 hex characters (the SHA-256 of the agent secret).");
-  }
 
   const deployId = value(env, "DEPLOY_ID") ?? DEFAULT_DEPLOY_ID;
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(deployId)) {
@@ -230,6 +224,5 @@ export function loadConfig(env: Env): Config {
     attachmentMaxBytes: positiveInt(env, "ATTACHMENT_MAX_BYTES", DEFAULT_ATTACHMENT_MAX_BYTES),
     payloadKeys: parsePayloadKeys(value(env, "PAYLOAD_KEYS")!),
     uiOrigin,
-    agentSecretSha256: legacy?.toLowerCase(),
   };
 }

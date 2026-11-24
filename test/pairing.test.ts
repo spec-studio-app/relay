@@ -28,7 +28,7 @@ function pair(base: string, code: string, ip?: string) {
 
 test("R9.S1, R9.S2: a pairing code mints a secret once; the agent connects with it; a used code fails", async () => {
   const h = await harness(env);
-  const t = await h.relay({ legacySecretSha256: null });
+  const t = await h.relay({ testAgentPaired: false });
   try {
     await h.startConfig(CODE);
     const res = await pair(t.base, "abcd efgh jklm");
@@ -57,7 +57,7 @@ test("R9.S1, R9.S2: a pairing code mints a secret once; the agent connects with 
 
 test("wrong pairing codes are limited per source IP, and a correct code always passes", async () => {
   const h = await harness(env);
-  const t = await h.relay({ legacySecretSha256: null });
+  const t = await h.relay({ testAgentPaired: false });
   try {
     await h.startConfig(CODE);
     const stranger = "203.0.113.7";
@@ -94,7 +94,7 @@ test("PairLimit: a ceiling for all sources, and the window ends", () => {
 
 test("relay pair-code: a new code works and the old code stops", async () => {
   const h = await harness(env);
-  const t = await h.relay({ legacySecretSha256: null });
+  const t = await h.relay({ testAgentPaired: false });
   try {
     await h.startConfig(CODE);
     const code = await makePairCode(h.clients.config, h.deployId);
@@ -109,7 +109,7 @@ test("relay pair-code: a new code works and the old code stops", async () => {
 
 test("R9.S3: after unpair the relay refuses the old secret with 401 and closes its connection", async () => {
   const h = await harness(env);
-  const t = await h.relay({ legacySecretSha256: null });
+  const t = await h.relay({ testAgentPaired: false });
   try {
     await h.startConfig(CODE);
     const { secret } = await (await pair(t.base, CODE)).json();
@@ -130,7 +130,7 @@ test("R9.S3: after unpair the relay refuses the old secret with 401 and closes i
 
 test("unpair with a bearer that is not paired adds no update to the relay-config history", async () => {
   const h = await harness(env);
-  const t = await h.relay({ legacySecretSha256: null });
+  const t = await h.relay({ testAgentPaired: false });
   try {
     await h.startConfig(CODE);
     const { secret } = await (await pair(t.base, CODE)).json();
@@ -155,16 +155,18 @@ test("unpair with a bearer that is not paired adds no update to the relay-config
   }
 });
 
-test("the legacy AGENT_SECRET_SHA256 still connects beside paired secrets", async () => {
+test("only a paired secret connects: there is no other agent secret", async () => {
   const h = await harness(env);
-  const t = await h.relay();
+  const t = await h.relay({ testAgentPaired: false });
   try {
-    await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET);
+    await h.startConfig(CODE);
+    assert.equal(await rejectedStatus(t.base, AGENT_SECRET), 401, "an unpaired secret");
+    assert.equal(await rejectedStatus(t.base, "not-a-secret"), 401);
+    const { secret } = await (await pair(t.base, CODE)).json();
+    const agent = await connectAgent(t.base, secret);
     await sleep(50);
     assert.equal(t.relay.hub.connected, true);
     await agent.close();
-    assert.equal(await rejectedStatus(t.base, "not-a-secret"), 401);
   } finally {
     await t.close();
     await h.close();

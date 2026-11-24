@@ -55,8 +55,6 @@ secrets:
   temporalTlsKey: ""
   bucketAccessKey: ""
   bucketSecretKey: ""
-  # Optional: the SHA-256 of an agent secret from before pairing.
-  agentSecretSha256: ""
 
 # Other environment variables, as a list of {name, value}.
 extraEnv: []

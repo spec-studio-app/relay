@@ -11,7 +11,26 @@ import type { OfflineReader } from "../src/offline.js";
 export const PASSWORD = "correct horse battery staple";
 export const AGENT_SECRET = "agent-secret-" + randomBytes(16).toString("hex");
 const PASSWORD_BCRYPT = bcrypt.hashSync(PASSWORD, 4);
-const AGENT_SECRET_SHA256 = createHash("sha256").update(AGENT_SECRET).digest("hex");
+export const AGENT_SECRET_SHA256 = createHash("sha256").update(AGENT_SECRET).digest("hex");
+
+/** A backend for a relay with no Temporal: only the test agent's secret is paired. */
+function noTemporalBackend(): AgentBackend {
+  const none = () => Promise.reject(new Error("No Temporal in this test."));
+  return {
+    verifyAgent: async () => false,
+    hello: async () => {},
+    sync: none,
+    gone: none,
+    state: none,
+    ack: none,
+    pair: async () => false,
+    pairCodeValid: async () => false,
+    unpair: async () => false,
+    uploadUrl: none,
+    downloadUrl: async () => null,
+    pendingForMac: async () => [],
+  };
+}
 
 export interface TestRelay {
   relay: Relay;
@@ -38,8 +57,11 @@ export async function startRelay(
     mcpBodyLimit?: number;
     codecDataKeys?: RelayConfig["codecDataKeys"];
     uiOrigin?: string;
-    /** Set to null for no legacy secret. */
-    legacySecretSha256?: string | null;
+    /**
+     * True (the default): the test agent's secret (AGENT_SECRET) counts as paired,
+     * beside the backend's own paired secrets. The Temporal harness pairs it for real.
+     */
+    testAgentPaired?: boolean;
   } = {},
 ): Promise<TestRelay> {
   const server = createServer();
@@ -50,8 +72,7 @@ export async function startRelay(
   const relay = createRelay({
     publicUrl: base,
     loginPasswordBcrypt: PASSWORD_BCRYPT,
-    agentSecretSha256: options.legacySecretSha256 === null ? undefined : (options.legacySecretSha256 ?? AGENT_SECRET_SHA256),
-    agentBackend: options.agentBackend,
+    agentBackend: withTestAgent(options.agentBackend ?? noTemporalBackend(), options.testAgentPaired ?? true),
     offline: options.offline,
     localTools: options.localTools,
     oauthStore: options.oauthStore,
@@ -81,6 +102,11 @@ export async function startRelay(
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+function withTestAgent(backend: AgentBackend, paired: boolean): AgentBackend {
+  if (!paired) return backend;
+  return { ...backend, verifyAgent: async (hash) => hash === AGENT_SECRET_SHA256 || (await backend.verifyAgent(hash)) };
 }
 
 export interface FakeAgent {

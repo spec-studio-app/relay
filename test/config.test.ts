@@ -57,14 +57,13 @@ test("the defaults: namespace, deploy ID, task queue, plain auth, no bucket", ()
   assert.equal(config.attachmentMaxBytes, 10 * 1024 * 1024);
   assert.equal(config.payloadKeys.data[0].id, "d1");
   assert.equal(config.payloadKeys.config[0].id, "c1");
-  assert.equal(config.agentSecretSha256, undefined);
 });
 
-test("LOGIN_PASSWORD_BCRYPT is an alias of OWNER_PASSWORD_HASH", () => {
+test("OWNER_PASSWORD_HASH has no alias: LOGIN_PASSWORD_BCRYPT does not set it", () => {
   const env = validEnv();
   delete env.OWNER_PASSWORD_HASH;
   env.LOGIN_PASSWORD_BCRYPT = BCRYPT;
-  assert.equal(loadConfig(env).ownerPasswordHash, BCRYPT);
+  assert.match(errorOf(env), /Missing required settings: OWNER_PASSWORD_HASH/);
 });
 
 test("the task queue follows DEPLOY_ID, and TASK_QUEUE overrides it", () => {
@@ -127,10 +126,8 @@ test("PAYLOAD_KEYS: errors name the setting and never the key", () => {
 test("other settings: bad values name the setting", () => {
   assert.match(errorOf({ ...validEnv(), PUBLIC_URL: "not a url" }), /PUBLIC_URL/);
   assert.match(errorOf({ ...validEnv(), OWNER_PASSWORD_HASH: "plain" }), /OWNER_PASSWORD_HASH/);
-  assert.match(errorOf({ ...validEnv(), AGENT_SECRET_SHA256: "not-hex" }), /AGENT_SECRET_SHA256/);
   assert.match(errorOf({ ...validEnv(), ATTACHMENT_MAX_BYTES: "-1" }), /ATTACHMENT_MAX_BYTES/);
   assert.match(errorOf({ ...validEnv(), PORT: "x" }), /PORT/);
   assert.match(errorOf({ ...validEnv(), CALL_TIMEOUT_MS: "0" }), /CALL_TIMEOUT_MS/);
   assert.equal(loadConfig({ ...validEnv(), UI_ORIGIN: "https://ui.example.com/path" }).uiOrigin, "https://ui.example.com");
-  assert.equal(loadConfig({ ...validEnv(), AGENT_SECRET_SHA256: "A".repeat(64) }).agentSecretSha256, "a".repeat(64));
 });

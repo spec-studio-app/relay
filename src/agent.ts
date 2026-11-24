@@ -17,7 +17,7 @@
 //     line. The relay replaces the mirror's state and turn of a spec whose
 //     workflow runs and is not finished, after the earlier sync frames of that
 //     spec. No answer frame.
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
@@ -34,8 +34,6 @@ export interface CallResult {
 }
 
 export interface AgentHubOptions {
-  /** Lowercase hex SHA-256 of the legacy agent secret, when set. */
-  agentSecretSha256?: string;
   callTimeoutMs: number;
   pingIntervalMs: number;
   /**
@@ -46,7 +44,7 @@ export interface AgentHubOptions {
   probeTimeoutMs: number;
   now: () => Date;
   log: Logger;
-  /** Temporal, for wire version 2 and paired secrets. Without it the hub speaks version 1 only. */
+  /** Temporal: the paired secrets and wire version 2. Without it no agent can connect. */
   backend?: AgentBackend;
   relayVersion?: string;
   /** The longest wait for the secret check of an upgrade (10 seconds when not given). */
@@ -91,7 +89,6 @@ export const AGENT_PATH = "/agent";
 
 export class AgentHub {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
-  private readonly expectedHash: Buffer | null;
   private readonly startedAt: Date;
   private socket: WebSocket | null = null;
   private lastSeen: Date | null = null;
@@ -115,7 +112,6 @@ export class AgentHub {
   private readonly pushed = new WeakMap<WebSocket, Map<string, number>>();
 
   constructor(private readonly options: AgentHubOptions) {
-    this.expectedHash = options.agentSecretSha256 ? Buffer.from(options.agentSecretSha256, "hex") : null;
     this.startedAt = options.now();
   }
 
@@ -139,13 +135,9 @@ export class AgentHub {
     return createHash("sha256").update(match[1], "utf8").digest("hex");
   }
 
-  /** True when the secret is the legacy secret or a paired secret. */
+  /** True when the secret is a paired secret. Pairing is the only way to get one. */
   async authorizedHash(hash: string | null): Promise<boolean> {
-    if (hash === null) return false;
-    const actual = Buffer.from(hash, "hex");
-    const expected = this.expectedHash;
-    if (expected !== null && actual.length === expected.length && timingSafeEqual(actual, expected)) return true;
-    if (!this.options.backend) return false;
+    if (hash === null || !this.options.backend) return false;
     try {
       return await this.options.backend.verifyAgent(hash);
     } catch {
