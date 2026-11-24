@@ -1,0 +1,91 @@
+name: release
+
+# A v* tag publishes the image (linux/amd64 and linux/arm64), signs it with
+# cosign (keyless), pushes the Helm chart as an OCI artifact, and makes a
+# GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/spec-studio-app/spec-studio-relay
+  CHART_REPO: oci://ghcr.io/spec-studio-app/charts
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from the tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "$version" != "$pkg" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match package.json ($pkg)." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image
+        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+      - uses: azure/setup-helm@v4
+      - name: Push the chart
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package chart/spec-studio-relay --version "$version" --app-version "$version" -d dist-chart
+          helm push "dist-chart/spec-studio-relay-$version.tgz" "$CHART_REPO"
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" "dist-chart/spec-studio-relay-$version.tgz" compose.yaml \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Image: \`${IMAGE}:${version}\` (linux/amd64, linux/arm64, signed with cosign).
+          Chart: \`helm install relay ${CHART_REPO}/spec-studio-relay --version ${version}\`.
+          See README.md for the deploy guide."

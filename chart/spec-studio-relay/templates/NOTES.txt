@@ -1,0 +1,14 @@
+The relay starts at {{ .Values.publicUrl }}.
+
+On its first start it prints a pairing code. Read it with:
+
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "relay.fullname" . }} | grep -A3 "Pairing code"
+
+For a new code:
+
+  kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "relay.fullname" . }} -- relay pair-code
+
+Then pair the Mac: Spec Studio > Settings > Remote Relay, or
+  studio agent pair {{ .Values.publicUrl | replace "https://" "wss://" | replace "http://" "ws://" }}/agent <code>
+
+Add the MCP connector in Claude AI with the URL {{ .Values.publicUrl }}/mcp.

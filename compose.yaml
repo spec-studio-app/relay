@@ -1,0 +1,58 @@
+# Spec Studio relay with Docker Compose.
+#
+#   With your own Temporal:   docker compose up
+#   With a local dev Temporal: docker compose --profile dev up
+#
+# Put the settings in a .env file next to this file (see README.md). Quote the
+# password hash in single quotes: it holds `$` characters.
+services:
+  relay:
+    image: ghcr.io/spec-studio-app/spec-studio-relay:${RELAY_VERSION:-latest}
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${RELAY_PORT:-8760}:8760"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8760}
+      OWNER_PASSWORD_HASH: "${OWNER_PASSWORD_HASH:?Set OWNER_PASSWORD_HASH to a bcrypt hash of the owner password}"
+      PAYLOAD_KEYS: "${PAYLOAD_KEYS:?Set PAYLOAD_KEYS. Make it with docker run --rm ghcr.io/spec-studio-app/spec-studio-relay keys}"
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_AUTH: ${TEMPORAL_AUTH:-}
+      TEMPORAL_API_KEY: ${TEMPORAL_API_KEY:-}
+      TEMPORAL_TLS_CERT: ${TEMPORAL_TLS_CERT:-}
+      TEMPORAL_TLS_KEY: ${TEMPORAL_TLS_KEY:-}
+      DEPLOY_ID: ${DEPLOY_ID:-default}
+      TASK_QUEUE: ${TASK_QUEUE:-}
+      BUCKET_ENDPOINT: ${BUCKET_ENDPOINT:-}
+      BUCKET_NAME: ${BUCKET_NAME:-}
+      BUCKET_ACCESS_KEY: ${BUCKET_ACCESS_KEY:-}
+      BUCKET_SECRET_KEY: ${BUCKET_SECRET_KEY:-}
+      BUCKET_REGION: ${BUCKET_REGION:-}
+      ATTACHMENT_MAX_BYTES: ${ATTACHMENT_MAX_BYTES:-}
+      UI_ORIGIN: ${UI_ORIGIN:-}
+      AGENT_SECRET_SHA256: ${AGENT_SECRET_SHA256:-}
+      EXTRA_REDIRECT_URIS: ${EXTRA_REDIRECT_URIS:-}
+    depends_on:
+      temporal:
+        condition: service_healthy
+        required: false
+
+  # A local Temporal dev server (data in a volume), with the Web UI on port 8233.
+  temporal:
+    profiles: ["dev"]
+    image: temporalio/temporal:latest
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "8233:8233"
+    volumes:
+      - temporal-data:/data
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  temporal-data:

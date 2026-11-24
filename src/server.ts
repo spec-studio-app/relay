@@ -256,7 +256,7 @@ export function createRelay(config: RelayConfig): Relay {
 }
 
 function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, localTools?: LocalTools): McpServer {
-  const server = new McpServer({ name: "spec-studio", version: "0.1.0" });
+  const server = new McpServer({ name: "spec-studio", version: RELAY_VERSION });
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,

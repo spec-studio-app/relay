@@ -1,15 +1,19 @@
 {
-  "name": "studio-relay",
-  "version": "0.1.0",
+  "name": "spec-studio-relay",
+  "version": "0.2.0",
   "private": true,
-  "description": "Single-user remote MCP server that relays Spec Studio tool calls to the agent on the user's Mac.",
+  "description": "Self-hosted relay for Spec Studio: a remote MCP server with a Temporal mirror of each spec, messages and attachments.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spec-studio-app/spec-studio-relay.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/main.js",
+    "start": "node dist/src/cli.js serve",
     "test": "npm run build && node --test --test-timeout=180000 dist/test/*.test.js"
   },
   "dependencies": {

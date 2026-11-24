@@ -3,6 +3,8 @@
 //   relay            Run the relay (the same as `relay serve`).
 //   relay pair-code  Make a new pairing code for a Mac.
 //   relay keys       Print a new PAYLOAD_KEYS value.
+//   relay password-hash  Read a password on stdin and print its bcrypt hash.
+import bcrypt from "bcryptjs";
 import { ConfigError, loadConfig } from "./config.js";
 import { newPayloadKeys } from "./codec.js";
 import { StartupError, makePairCode, pairingText } from "./startup.js";
@@ -13,6 +15,8 @@ const USAGE = `Usage:
   relay [serve]     Run the relay.
   relay pair-code   Make a new pairing code for a Mac. The old code stops working.
   relay keys        Print a new PAYLOAD_KEYS value. Keep it: the relay needs the same keys at each start.
+  relay password-hash
+                    Read the owner password on stdin and print its bcrypt hash (OWNER_PASSWORD_HASH).
 `;
 
 function fail(error: unknown): never {
@@ -53,6 +57,17 @@ function keys(): void {
   );
 }
 
+async function passwordHash(): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const password = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  if (password.length === 0) {
+    process.stderr.write("relay: Give the password on stdin.\n");
+    process.exit(1);
+  }
+  process.stdout.write(bcrypt.hashSync(password, 12) + "\n");
+}
+
 const command = process.argv[2] ?? "serve";
 try {
   switch (command) {
@@ -64,6 +79,9 @@ try {
       break;
     case "keys":
       keys();
+      break;
+    case "password-hash":
+      await passwordHash();
       break;
     case "help":
     case "--help":
