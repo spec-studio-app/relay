@@ -15,6 +15,7 @@ import {
 import type { Activities } from "../activities.js";
 import {
   CLOSING_TEXT,
+  DROPPED_TEXT,
   COORDINATOR_KEEP,
   EVENT_LIMIT,
   FINISHED_GRACE_MS,
@@ -76,6 +77,8 @@ export const syncUpdate = defineUpdate<SyncResult, [SyncInput]>("sync");
 export const sendUpdate = defineUpdate<{ seq: number; message: Message }, [SendInput]>("send");
 export const ackUpdate = defineUpdate<{ removed: boolean }, [AckInput]>("ack");
 export const readUpdate = defineUpdate<ReadResult, [ReadInput]>("read");
+/** The agent's gone frame: the spec no longer exists on the Mac. */
+export const goneUpdate = defineUpdate<{ dropped: boolean }, [{ at: string }]>("gone");
 export const stateQuery = defineQuery<SpecWorkflowState>("state");
 
 const { removeAttachments } = proxyActivities<Activities>({
@@ -85,9 +88,9 @@ const { removeAttachments } = proxyActivities<Activities>({
 
 const MAX_WAIT_MS = 20_000;
 
+/** A merged spec is finished. A dropped spec is finished by the agent's gone frame. */
 function isFinished(s: SpecWorkflowState, event: Record<string, unknown>): boolean {
-  const fields = mirrorFields(s.state);
-  return fields.stage === "merged" || fields.status === "dropped" || event.kind === "dropped" || event.kind === "merged";
+  return mirrorFields(s.state).stage === "merged" || event.kind === "merged";
 }
 
 function attachmentsOf(value: unknown): Attachment[] | undefined {
@@ -137,6 +140,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       syncedAt: s.syncedAt,
       waitingForMac: s.mac.messages.length,
       unreadForCoordinator: unread,
+      ...(s.dropped ? { dropped: true } : {}),
     };
     upsertMemo({ mirror: memo });
   };
@@ -208,7 +212,12 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     s.mac.messages.push(message);
     changed();
     return { seq, message };
-  }, { validator: (_: SendInput) => refuseWhenClosing() });
+  }, {
+    validator: (_: SendInput) => {
+      refuseWhenClosing();
+      if (s.dropped) throw new Error(DROPPED_TEXT);
+    },
+  });
 
   setHandler(ackUpdate, (ack) => {
     const index = s.mac.messages.findIndex((m) => m.seq === ack.seq);
@@ -228,6 +237,27 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     changed();
     return { removed: true };
   }, { validator: (_: AckInput) => refuseWhenClosing() });
+
+  setHandler(goneUpdate, (gone) => {
+    if (s.dropped) return { dropped: false };
+    s.dropped = true;
+    s.finished = true;
+    // The Mac can no longer take the messages that wait for it: tell Claude AI.
+    for (const message of s.mac.messages) {
+      addForCoordinator({
+        id: uuid4(),
+        from: "session",
+        spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
+        stage: mirrorFields(s.state).stage,
+        text: `The Mac did not take the message: ${DROPPED_TEXT}`,
+        replyTo: message.id,
+        createdAt: gone.at,
+      });
+    }
+    s.mac.messages = [];
+    changed();
+    return { dropped: true };
+  }, { validator: (_: { at: string }) => refuseWhenClosing() });
 
   setHandler(readUpdate, async (read) => {
     activity++;

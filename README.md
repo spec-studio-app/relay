@@ -230,4 +230,4 @@ npm test
 
 The tests run a Temporal dev server. They use the `temporal` CLI when `TEMPORAL_CLI` names it or when it is at `/opt/homebrew/bin/temporal`. Else the Temporal SDK downloads the dev server once.
 
-The wire contract between the relay and the Spec Studio agent (version 2) is in the Spec Studio repo, in `docs/state-format.md`.
+The wire contract between the relay and the Spec Studio agent (version 2) is in the Spec Studio repo, in `docs/state-format.md`. The agent sends `{"type":"gone","spec":{"repoKey":"<repoKey>","slug":"<slug>"}}` when a spec that it synced no longer exists on the Mac. The relay marks the spec dropped (list_specs shows it only with `all`, send_message refuses it, and the messages that waited for the Mac go back to Claude AI as errors), ends its workflow like a merged spec, and answers `{"type":"gone-ok","spec":{"repoKey":"<repoKey>","slug":"<slug>"}}`, so the agent can drop its cursor. A `gone-ok` with an `error` field means: send `gone` again later.

@@ -53,7 +53,7 @@ export class OfflineTools implements OfflineReader {
     // Like `studio specs`: a merged spec shows only with all.
     const listed = await this.deps.mirror.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
     const specs = listed
-      .filter((s) => s.memo !== null && (all || s.memo.stage !== "merged"))
+      .filter((s) => s.memo !== null && (all || (s.memo.stage !== "merged" && !s.memo.dropped)))
       .map((s) => ({
         repo: s.memo!.repo,
         slug: s.slug,
@@ -67,6 +67,7 @@ export class OfflineTools implements OfflineReader {
         syncedAt: s.memo!.syncedAt,
         messagesForMac: s.memo!.waitingForMac,
         unreadMessages: s.memo!.unreadForCoordinator,
+        ...(s.memo!.dropped ? { dropped: true } : {}),
       }));
     const times = specs.map((s) => s.syncedAt).filter((t): t is string => !!t).sort();
     const asOf = times.length > 0 ? times[times.length - 1] : null;
@@ -93,7 +94,8 @@ export class OfflineTools implements OfflineReader {
       "## State\n\n```json\n" + JSON.stringify(state.state ?? {}, null, 2) + "\n```",
       `## Turn\n\n${turn ? `${turn.turn}. Needs the user: ${turn.needsYou ? "yes" : "no"}.` : "Not known."}`,
       `## Summary\n\nStage: ${fields.stage || "unknown"}. Status: ${fields.status || "unknown"}.` +
-        (fields.note ? ` Note: ${fields.note}` : ""),
+        (fields.note ? ` Note: ${fields.note}` : "") +
+        (state.dropped ? " The spec no longer exists on the Mac." : ""),
       `## Messages\n\n${waiting === 1 ? "1 message waits" : `${waiting} messages wait`} for the Mac.`,
       `## The last ${EVENT_LIMIT} activity events\n\n` +
         "```jsonl\n" +

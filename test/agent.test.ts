@@ -105,6 +105,46 @@ test("R4.S1, R4.S2, R4.S3: sync lines go to the workflow in order; a copy answer
   }
 });
 
+test("a gone frame marks the spec dropped and gets gone-ok; offline list_specs shows it only with all", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    await agent.next("welcome");
+    const state = { slug: "deleted-on-mac", title: "Deleted", stage: "build", status: "working" };
+    agent.send({ type: "sync", spec: { ...spec("deleted-on-mac"), repo: REPO }, line: 1, event: { kind: "note" }, state, turn: null });
+    agent.send({ type: "gone", spec: spec("deleted-on-mac") });
+    await agent.next("synced", (f) => f.line === 1);
+    assert.deepEqual(await agent.next("gone-ok"), { type: "gone-ok", spec: spec("deleted-on-mac") });
+    assert.equal((await h.mirror.state(spec("deleted-on-mac")))?.dropped, true);
+
+    // A gone for a spec that the relay never saw also gets gone-ok.
+    agent.send({ type: "gone", spec: spec("unknown") });
+    assert.deepEqual(await agent.next("gone-ok", (f) => f.spec.slug === "unknown"), { type: "gone-ok", spec: spec("unknown") });
+    await agent.close();
+    await sleep(100);
+
+    const { accessToken } = await signIn(t.base);
+    const slugs = async (args: Record<string, unknown>) => {
+      const r = await callTool(t.base, accessToken, "list_specs", args);
+      return JSON.parse(r.content[0].text.split("\n").slice(1).join("\n")).specs;
+    };
+    const all = await eventually(async () => {
+      const l = await slugs({ repo: REPO, all: true });
+      return l.some((s: any) => s.slug === "deleted-on-mac" && s.dropped === true) ? l : null;
+    });
+    assert.ok(all);
+    assert.ok(!(await slugs({ repo: REPO })).some((s: any) => s.slug === "deleted-on-mac"));
+    const sent = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "deleted-on-mac", text: "Hi" });
+    assert.equal(sent.isError, true);
+    assert.match(sent.content[0].text, /no longer exists on the Mac/);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
 test("a version 1 agent cannot send sync frames", async () => {
   const h = await harness(env);
   const t = await h.relay();

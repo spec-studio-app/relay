@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
-import { SpecClosingError, specAddress } from "../src/mirror.js";
+import { SpecClosingError, SpecDroppedError, specAddress } from "../src/mirror.js";
 import { SA, specWorkflowId } from "../src/workflows/types.js";
 import { attachmentPrefix } from "../src/activities.js";
 import { sleep } from "./helpers.js";
@@ -137,7 +137,7 @@ test("a finished spec with a message for the Mac stays open until the Mac takes 
     const spec = specAddress(REPO, "dropped-later");
     await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
     const { seq } = await h.mirror.send(spec, { text: "Wait." });
-    await h.mirror.sync(spec, { line: 2, event: { kind: "dropped" }, state: null, turn: null });
+    await h.mirror.sync(spec, { line: 2, event: { kind: "merged" }, state: null, turn: null });
     const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "dropped-later"));
     assert.equal((await handle.describe()).status.name, "RUNNING");
     await h.mirror.ack(spec, seq);
@@ -307,6 +307,40 @@ test("a line after the workflow completed answers synced and starts no new run",
     const now = await handle.describe();
     assert.equal(now.runId, runId);
     assert.equal(now.status.name, "COMPLETED");
+  } finally {
+    await h.close();
+  }
+});
+
+test("R3.S3: a gone spec is dropped: its waiting messages go back to Claude AI, sends fail, and the workflow ends", async () => {
+  const h = await harness(env, { graceMs: 300 });
+  try {
+    const spec = specAddress(REPO, "deleted");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
+    const prefix = attachmentPrefix(h.deployId, spec.repoKey, "deleted");
+    await h.bucket.put(`${prefix}a.png`, Buffer.from("png"), "image/png", {});
+    const { message } = await h.mirror.send(spec, { text: "Are you there?" });
+
+    await h.mirror.gone(spec);
+    const state = await h.mirror.state(spec);
+    assert.equal(state?.dropped, true);
+    assert.equal(state?.finished, true);
+    assert.equal(state?.mac.messages.length, 0);
+    const bounced = state?.coordinator.messages.at(-1);
+    assert.equal(bounced?.replyTo, message.id);
+    assert.match(bounced?.text ?? "", /no longer exists on the Mac/);
+    await assert.rejects(h.mirror.send(spec, { text: "Hello?" }), SpecDroppedError);
+    // A second gone changes nothing.
+    await h.mirror.gone(spec);
+
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "deleted"));
+    assert.equal((await handle.describe()).status.name, "RUNNING", "the unread error keeps it open");
+    await h.mirror.read(spec, undefined, 0);
+    await handle.result();
+    assert.equal([...h.bucket.objects.keys()].filter((k) => k.startsWith(prefix)).length, 0);
+    // gone for a spec with no workflow, or a completed one, is fine.
+    await h.mirror.gone(spec);
+    await h.mirror.gone(specAddress(REPO, "never-synced"));
   } finally {
     await h.close();
   }

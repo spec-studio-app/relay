@@ -460,6 +460,7 @@ function hangingBackend(): AgentBackend {
     verifyAgent: never,
     hello: never,
     sync: never,
+    gone: never,
     ack: never,
     pair: never,
     pairCodeValid: never,

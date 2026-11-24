@@ -89,8 +89,10 @@ export interface SpecWorkflowState {
    * above it is unread, and PendingForCoordinator is true while one exists.
    */
   coordinator: { nextSeq: number; messages: Message[]; readUpTo: number };
-  /** True after a merged line. The workflow ends when no message waits, after the grace period. */
+  /** True after a merged line or a gone frame. The workflow ends when no message waits, after the grace period. */
   finished: boolean;
+  /** True after the agent's gone frame: the spec no longer exists on the Mac. */
+  dropped?: boolean;
   /** Continue as new after this many updates in one run. */
   updateLimit: number;
   /**
@@ -103,6 +105,9 @@ export interface SpecWorkflowState {
 
 /** A finished spec's workflow ends this long after its last update. */
 export const FINISHED_GRACE_MS = 60 * 60 * 1000;
+
+/** The send validator's refusal for a spec that no longer exists on the Mac. */
+export const DROPPED_TEXT = "The spec no longer exists on the Mac.";
 
 /** The validators' refusal while a finished spec's workflow removes its data and ends. */
 export const CLOSING_TEXT = "The spec is finished, and the relay is removing its data.";
@@ -213,6 +218,8 @@ export interface SpecMemo {
   syncedAt: string | null;
   waitingForMac: number;
   unreadForCoordinator: number;
+  /** True when the spec no longer exists on the Mac (missing in older memos). */
+  dropped?: boolean;
 }
 
 // ---- relay-config workflow ----

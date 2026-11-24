@@ -9,6 +9,7 @@ import {
 } from "@temporalio/client";
 import {
   ackUpdate,
+  goneUpdate,
   readUpdate,
   sendUpdate,
   specWorkflow,
@@ -21,6 +22,7 @@ import {
 import {
   CLOSING_TEXT,
   DEFAULT_UPDATE_LIMIT,
+  DROPPED_TEXT,
   FINISHED_GRACE_MS,
   SA as SAKeys,
   SPEC_WORKFLOW_TYPE,
@@ -73,11 +75,22 @@ export class SpecClosingError extends Error {
   }
 }
 
-/** True when the error is the workflow validators' refusal while the spec closes. */
-export function isClosingRefusal(error: unknown): boolean {
+/** The spec no longer exists on the Mac: it takes no messages. */
+export class SpecDroppedError extends Error {
+  constructor() {
+    super(DROPPED_TEXT);
+  }
+}
+
+function isRefusal(error: unknown, text: string): boolean {
   if (!(error instanceof WorkflowUpdateFailedError)) return false;
   const cause = (error as { cause?: unknown }).cause;
-  return cause instanceof Error && cause.message.includes(CLOSING_TEXT);
+  return cause instanceof Error && cause.message.includes(text);
+}
+
+/** True when the error is the workflow validators' refusal while the spec closes. */
+export function isClosingRefusal(error: unknown): boolean {
+  return isRefusal(error, CLOSING_TEXT);
 }
 
 export interface ListedSpec {
@@ -165,6 +178,7 @@ export class Mirror {
     } catch (error) {
       if (error instanceof WorkflowNotFoundError) throw new SpecNotFoundError();
       if (isClosingRefusal(error)) throw new SpecClosingError();
+      if (isRefusal(error, DROPPED_TEXT)) throw new SpecDroppedError();
       const cause = (error as { cause?: unknown }).cause;
       if (cause instanceof WorkflowNotFoundError) throw new SpecNotFoundError();
       if (/not found|already completed/i.test(String((error as Error).message))) throw new SpecNotFoundError();
@@ -180,6 +194,20 @@ export class Mirror {
     return this.update(spec, () =>
       this.handle(spec).executeUpdate(sendUpdate, { args: [{ ...input, id: randomUUID(), at: this.now() }] }),
     );
+  }
+
+  /**
+   * The agent's gone frame: the spec no longer exists on the Mac. The workflow
+   * marks it dropped and ends like a merged spec. A spec with no workflow, or
+   * one that ends now, needs nothing more.
+   */
+  async gone(spec: { repoKey: string; slug: string }): Promise<void> {
+    try {
+      await this.update(spec, () => this.handle(spec).executeUpdate(goneUpdate, { args: [{ at: this.now() }] }));
+    } catch (error) {
+      if (error instanceof SpecNotFoundError || error instanceof SpecClosingError) return;
+      throw error;
+    }
   }
 
   /** The agent wrote the message to disk (or refused it with an error). */

@@ -12,6 +12,8 @@ export interface AgentBackend {
   /** A version 2 hello: keep the repos and the time. */
   hello(repos: string[], at: Date): Promise<void>;
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
+  /** The agent's gone frame: the spec no longer exists on the Mac. */
+  gone(spec: SpecAddress): Promise<void>;
   /** The agent wrote a message to disk, or refused it with an error. */
   ack(spec: SpecAddress, seq: number, error?: string): Promise<void>;
   /** Pair a Mac: true when the code was valid. The code works once. */
@@ -38,6 +40,7 @@ export function temporalAgentBackend(deps: { mirror: Mirror; configStore: Config
     unpair: (secretHash) => deps.configStore.unpair(secretHash),
     pairCodeValid: (codeHash) => deps.configStore.pairCodeValid(codeHash),
     sync: (spec, input) => deps.mirror.sync(spec, input),
+    gone: (spec) => deps.mirror.gone(spec),
     ack: async (spec, seq, error) => {
       await deps.mirror.ack(spec, seq, error);
     },

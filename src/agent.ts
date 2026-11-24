@@ -5,8 +5,13 @@
 //   agent -> relay: {"type":"result","id":"<same>","ok":true|false,"text":"<string>"}
 //   agent -> relay: {"type":"hello","version":1}   (optional, after connect)
 // Version 2 (wire.md in the spec): hello with repos, welcome, sync and synced,
-// message and delivered, upload-url and download-url. A version 1 agent gets
-// tool calls only.
+// message and delivered, upload-url and download-url, gone and gone-ok. A
+// version 1 agent gets tool calls only.
+//   agent -> relay: {"type":"gone","spec":{"repoKey":"<12 hex>","slug":"<slug>"}}
+//     A spec that the agent synced no longer exists on the Mac.
+//   relay -> agent: {"type":"gone-ok","spec":{"repoKey":"...","slug":"..."}}
+//     The relay marked the spec dropped: the agent may drop its cursor. With an
+//     "error" field, the relay could not apply it: send it again later.
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -260,6 +265,10 @@ export class AgentHub {
       this.sync(ws, m);
       return;
     }
+    if (m.type === "gone") {
+      this.gone(ws, m);
+      return;
+    }
     if (m.type === "delivered") {
       this.delivered(ws, m);
       return;
@@ -398,9 +407,7 @@ export class AgentHub {
       }
       return;
     }
-    const key = `${spec.repoKey}/${spec.slug}`;
-    const previous = this.syncChains.get(key) ?? Promise.resolve();
-    const next = previous.then(async () => {
+    this.chain(spec, async () => {
       try {
         await backend.sync(spec, {
           line,
@@ -414,9 +421,35 @@ export class AgentHub {
         this.send(ws, { type: "synced", spec: wireSpec(spec), line, error: "The relay cannot apply the line now." });
       }
     });
+  }
+
+  /** The spec's frames (sync and gone) apply in order: one promise chain per spec. */
+  private chain(spec: SpecAddress, work: () => Promise<void>): void {
+    const key = `${spec.repoKey}/${spec.slug}`;
+    const previous = this.syncChains.get(key) ?? Promise.resolve();
+    const next = previous.then(work);
     this.syncChains.set(key, next);
     void next.finally(() => {
       if (this.syncChains.get(key) === next) this.syncChains.delete(key);
+    });
+  }
+
+  private gone(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    const spec = parseSpec(m.spec);
+    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec) {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    this.chain(spec, async () => {
+      try {
+        await backend.gone(spec);
+        this.options.log({ event: "spec_gone" });
+        this.send(ws, { type: "gone-ok", spec: wireSpec(spec) });
+      } catch {
+        this.options.log({ event: "gone_failed" });
+        this.send(ws, { type: "gone-ok", spec: wireSpec(spec), error: "The relay cannot apply it now." });
+      }
     });
   }
 
