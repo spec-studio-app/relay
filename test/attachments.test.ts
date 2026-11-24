@@ -161,6 +161,33 @@ test("R8.S3: 6 MB over a 5 MB limit fails with the limit in the text", async () 
   }
 });
 
+test("upload_attachment accepts wrapped base64 of a file just under the limit", async () => {
+  const max = 3000;
+  const h = await harness(env, { attachmentMaxBytes: max });
+  const t = await h.relay();
+  try {
+    await synced(h, "wrapped");
+    const body = randomBytes(max - 1);
+    // 76-character lines, and a newline after the padding.
+    const wrapped = (body.toString("base64").match(/.{1,76}/g) ?? []).join("\r\n") + "\n";
+    const { accessToken } = await signIn(t.base);
+    const result = await callTool(t.base, accessToken, "upload_attachment", {
+      repo: REPO,
+      slug: "wrapped",
+      filename: "file.bin",
+      contentType: "application/octet-stream",
+      base64: wrapped,
+    });
+    assert.equal(result.isError, undefined, result.content[0].text);
+    const ref = json(result);
+    assert.equal(ref.size, max - 1);
+    assert.deepEqual(h.bucket.objects.get(ref.objectKey)?.body, body);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
 test("without a bucket, upload_attachment and upload-url say that no bucket is set", async () => {
   const h = await harness(env, { noBucket: true });
   const t = await h.relay();

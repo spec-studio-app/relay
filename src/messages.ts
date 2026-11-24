@@ -127,7 +127,8 @@ export class MessageTools {
     const slug = str(args.slug);
     const filename = str(args.filename);
     const contentType = str(args.contentType);
-    const base64 = str(args.base64);
+    // Wrapped base64 (for example 76-character lines) is valid: drop the whitespace first.
+    const base64 = str(args.base64)?.replace(/\s+/g, "");
     if (!repo || !slug || !filename || !contentType || !base64) {
       return { ok: false, text: "Give the repo, the slug, the filename, the contentType and the base64 contents." };
     }
@@ -136,7 +137,7 @@ export class MessageTools {
     // Check the size before the decode: base64 is 4 characters for 3 bytes.
     const estimate = Math.floor((base64.replace(/=+$/, "").length * 3) / 4);
     if (estimate > max) return { ok: false, text: `The file is ${estimate} bytes. ${limitText(max)}` };
-    if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(base64.replace(/\s+/g, ""))) {
+    if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(base64)) {
       return { ok: false, text: "The base64 contents are not valid." };
     }
     const body = Buffer.from(base64, "base64");
