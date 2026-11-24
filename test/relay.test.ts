@@ -15,7 +15,6 @@ import {
   startRelay,
 } from "./helpers.js";
 import { TOOLS } from "../src/tools.js";
-import { configFromEnv } from "../src/server.js";
 import { redirectAllowed } from "../src/oauth.js";
 
 test("R5.S1: an MCP call without a token gets 401 and nothing goes to the agent", async () => {
@@ -299,26 +298,6 @@ test("GET /healthz answers 200", async () => {
   } finally {
     await t.close();
   }
-});
-
-test("the relay fails fast when a required value is missing", () => {
-  assert.throws(() => configFromEnv({}), /PUBLIC_URL, LOGIN_PASSWORD_BCRYPT, AGENT_SECRET_SHA256/);
-  assert.throws(
-    () =>
-      configFromEnv({
-        PUBLIC_URL: "https://studio-mcp.loomis.io",
-        LOGIN_PASSWORD_BCRYPT: "$2b$12$" + "a".repeat(53),
-        AGENT_SECRET_SHA256: "not-hex",
-      }),
-    /AGENT_SECRET_SHA256/,
-  );
-  const ok = configFromEnv({
-    PUBLIC_URL: "https://studio-mcp.loomis.io",
-    LOGIN_PASSWORD_BCRYPT: "$2b$12$" + "a".repeat(53),
-    AGENT_SECRET_SHA256: "a".repeat(64),
-  });
-  assert.equal(ok.port, 8760);
-  assert.equal(ok.relay.callTimeoutMs, 90000);
 });
 
 test("the relay pings the agent and a pong updates the last-seen time", async () => {

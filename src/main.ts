@@ -1,16 +1,24 @@
 import { createServer } from "node:http";
-import { configFromEnv, createRelay } from "./server.js";
+import { createRelay } from "./server.js";
+import { loadConfig } from "./config.js";
 import { consoleLogger } from "./log.js";
 
 let config;
 try {
-  config = configFromEnv(process.env);
+  config = loadConfig(process.env);
 } catch (error) {
-  process.stderr.write(`studio-relay: ${(error as Error).message}\n`);
+  process.stderr.write(`relay: ${(error as Error).message}\n`);
   process.exit(1);
 }
 
-const relay = createRelay({ ...config.relay, log: consoleLogger });
+const relay = createRelay({
+  publicUrl: config.publicUrl,
+  loginPasswordBcrypt: config.ownerPasswordHash,
+  agentSecretSha256: config.agentSecretSha256,
+  callTimeoutMs: config.callTimeoutMs,
+  extraRedirectUris: config.extraRedirectUris,
+  log: consoleLogger,
+});
 const server = createServer(relay.app);
 relay.attach(server);
 

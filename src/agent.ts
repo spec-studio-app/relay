@@ -16,8 +16,8 @@ export interface CallResult {
 }
 
 export interface AgentHubOptions {
-  /** Lowercase hex SHA-256 of the agent secret. */
-  agentSecretSha256: string;
+  /** Lowercase hex SHA-256 of the legacy agent secret, when set. */
+  agentSecretSha256?: string;
   callTimeoutMs: number;
   pingIntervalMs: number;
   /**
@@ -40,7 +40,7 @@ export const AGENT_PATH = "/agent";
 
 export class AgentHub {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
-  private readonly expectedHash: Buffer;
+  private readonly expectedHash: Buffer | null;
   private readonly startedAt: Date;
   private socket: WebSocket | null = null;
   private lastSeen: Date | null = null;
@@ -49,7 +49,7 @@ export class AgentHub {
   private readonly pending = new Map<string, PendingCall>();
 
   constructor(private readonly options: AgentHubOptions) {
-    this.expectedHash = Buffer.from(options.agentSecretSha256, "hex");
+    this.expectedHash = options.agentSecretSha256 ? Buffer.from(options.agentSecretSha256, "hex") : null;
     this.startedAt = options.now();
   }
 
@@ -72,7 +72,8 @@ export class AgentHub {
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
     if (!match) return false;
     const actual = createHash("sha256").update(match[1], "utf8").digest();
-    return actual.length === this.expectedHash.length && timingSafeEqual(actual, this.expectedHash);
+    const expected = this.expectedHash;
+    return expected !== null && actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 
   /** Handle an HTTP upgrade. Returns false when the path is not the agent path. */

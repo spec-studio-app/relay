@@ -12,8 +12,8 @@ import { SingleUserProvider } from "./oauth.js";
 import { TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
 
-export const DEFAULT_PORT = 8760;
-export const DEFAULT_CALL_TIMEOUT_MS = 90_000;
+import { DEFAULT_CALL_TIMEOUT_MS } from "./config.js";
+
 export const DEFAULT_PING_INTERVAL_MS = 20_000;
 /** R6.S1: a call to a sleeping Mac answers "offline" in 5 seconds or less. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
@@ -22,7 +22,8 @@ export interface RelayConfig {
   /** The public origin, e.g. https://studio-mcp.loomis.io. It is the OAuth issuer. */
   publicUrl: string;
   loginPasswordBcrypt: string;
-  agentSecretSha256: string;
+  /** The legacy agent secret hash (AGENT_SECRET_SHA256), when set. */
+  agentSecretSha256?: string;
   callTimeoutMs?: number;
   pingIntervalMs?: number;
   probeTimeoutMs?: number;
@@ -49,7 +50,7 @@ export function createRelay(config: RelayConfig): Relay {
   const mcpUrl = new URL("/mcp", publicUrl);
 
   const hub = new AgentHub({
-    agentSecretSha256: config.agentSecretSha256.toLowerCase(),
+    agentSecretSha256: config.agentSecretSha256?.toLowerCase(),
     callTimeoutMs: config.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
     pingIntervalMs: config.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS,
     probeTimeoutMs: config.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
@@ -168,52 +169,4 @@ function buildMcpServer(hub: AgentHub, log: Logger): McpServer {
     );
   }
   return server;
-}
-
-export interface EnvConfig {
-  port: number;
-  relay: RelayConfig;
-}
-
-/** Read the configuration from the environment. Throws when a required value is missing or bad. */
-export function configFromEnv(env: NodeJS.ProcessEnv): EnvConfig {
-  const missing = ["PUBLIC_URL", "LOGIN_PASSWORD_BCRYPT", "AGENT_SECRET_SHA256"].filter((name) => !env[name]?.trim());
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
-  }
-  const publicUrl = env.PUBLIC_URL!.trim();
-  try {
-    new URL(publicUrl);
-  } catch {
-    throw new Error("PUBLIC_URL is not a valid URL.");
-  }
-  const hash = env.AGENT_SECRET_SHA256!.trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(hash)) {
-    throw new Error("AGENT_SECRET_SHA256 must be 64 hex characters (the SHA-256 of the agent secret).");
-  }
-  const bcryptHash = env.LOGIN_PASSWORD_BCRYPT!.trim();
-  if (!/^\$2[aby]\$\d{2}\$.{53}$/.test(bcryptHash)) {
-    throw new Error("LOGIN_PASSWORD_BCRYPT is not a bcrypt hash.");
-  }
-  const port = env.PORT ? Number(env.PORT) : DEFAULT_PORT;
-  if (!Number.isInteger(port) || port <= 0) throw new Error("PORT is not a valid port.");
-  const callTimeoutMs = env.CALL_TIMEOUT_MS ? Number(env.CALL_TIMEOUT_MS) : DEFAULT_CALL_TIMEOUT_MS;
-  if (!Number.isFinite(callTimeoutMs) || callTimeoutMs <= 0) throw new Error("CALL_TIMEOUT_MS is not a valid number.");
-
-  const extraRedirectUris = (env.EXTRA_REDIRECT_URIS ?? "")
-    .split(",")
-    .map((uri) => uri.trim())
-    .filter((uri) => uri.length > 0);
-  for (const uri of extraRedirectUris) {
-    try {
-      new URL(uri);
-    } catch {
-      throw new Error(`EXTRA_REDIRECT_URIS has a URI that is not valid: ${uri}`);
-    }
-  }
-
-  return {
-    port,
-    relay: { publicUrl, loginPasswordBcrypt: bcryptHash, agentSecretSha256: hash, callTimeoutMs, extraRedirectUris },
-  };
 }
