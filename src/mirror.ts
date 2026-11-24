@@ -1,6 +1,6 @@
 // The relay's side of the spec workflows: sync lines, messages and reads.
 import { createHash, randomUUID } from "node:crypto";
-import { WithStartWorkflowOperation, WorkflowNotFoundError, type Client } from "@temporalio/client";
+import { WithStartWorkflowOperation, WorkflowNotFoundError, WorkflowUpdateFailedError, type Client } from "@temporalio/client";
 import {
   ackUpdate,
   readUpdate,
@@ -13,7 +13,9 @@ import {
   type SyncResult,
 } from "./workflows/spec.js";
 import {
+  CLOSING_TEXT,
   DEFAULT_UPDATE_LIMIT,
+  FINISHED_GRACE_MS,
   SA as SAKeys,
   SPEC_WORKFLOW_TYPE,
   initialSpecState,
@@ -58,6 +60,20 @@ export class SpecNotFoundError extends Error {
   }
 }
 
+/** The spec is finished and its workflow removes its data: it takes no more updates. */
+export class SpecClosingError extends Error {
+  constructor() {
+    super(CLOSING_TEXT);
+  }
+}
+
+/** True when the error is the workflow validators' refusal while the spec closes. */
+export function isClosingRefusal(error: unknown): boolean {
+  if (!(error instanceof WorkflowUpdateFailedError)) return false;
+  const cause = (error as { cause?: unknown }).cause;
+  return cause instanceof Error && cause.message.includes(CLOSING_TEXT);
+}
+
 export interface ListedSpec {
   repoKey: string;
   slug: string;
@@ -71,6 +87,8 @@ export interface MirrorOptions {
   taskQueue: string;
   /** Continue as new after this many updates (tests set a small number). */
   updateLimit?: number;
+  /** How long a finished spec's workflow stays open after its last update (tests set less). */
+  graceMs?: number;
   now?: () => Date;
 }
 
@@ -99,16 +117,24 @@ export class Mirror {
     const startWorkflowOperation = new WithStartWorkflowOperation(specWorkflow, {
       workflowId: specWorkflowId(this.o.deployId, spec.repoKey, spec.slug),
       taskQueue: this.o.taskQueue,
-      args: [initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT)],
+      args: [
+        initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT, this.o.graceMs ?? FINISHED_GRACE_MS),
+      ],
       workflowIdConflictPolicy: "USE_EXISTING",
     });
-    return withTimeout(
-      this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
-        args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
-        startWorkflowOperation,
-      }),
-      UPDATE_TIMEOUT_MS,
-    );
+    try {
+      return await withTimeout(
+        this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
+          args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
+          startWorkflowOperation,
+        }),
+        UPDATE_TIMEOUT_MS,
+      );
+    } catch (error) {
+      // The finished spec's workflow is ending: the line changes nothing more.
+      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      throw error;
+    }
   }
 
   /** The workflow's state, or null when the spec has no running workflow. */
@@ -126,6 +152,7 @@ export class Mirror {
       return await withTimeout(run(), ms);
     } catch (error) {
       if (error instanceof WorkflowNotFoundError) throw new SpecNotFoundError();
+      if (isClosingRefusal(error)) throw new SpecClosingError();
       const cause = (error as { cause?: unknown }).cause;
       if (cause instanceof WorkflowNotFoundError) throw new SpecNotFoundError();
       if (/not found|already completed/i.test(String((error as Error).message))) throw new SpecNotFoundError();

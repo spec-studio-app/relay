@@ -14,8 +14,10 @@ import {
 } from "@temporalio/workflow";
 import type { Activities } from "../activities.js";
 import {
+  CLOSING_TEXT,
   COORDINATOR_KEEP,
   EVENT_LIMIT,
+  FINISHED_GRACE_MS,
   SA,
   effectiveTurn,
   mirrorFields,
@@ -147,8 +149,17 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     }
   };
 
+  /** Counts every update, so the grace period of a finished spec starts again. */
+  let activity = 0;
+  /** True when the workflow removes the attachments and ends: the validators refuse updates. */
+  let closing = false;
+  const refuseWhenClosing = () => {
+    if (closing) throw new Error(CLOSING_TEXT);
+  };
+
   const changed = () => {
     updates++;
+    activity++;
     publish();
   };
 
@@ -179,7 +190,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     if (isFinished(s, event)) s.finished = true;
     changed();
     return { line: s.line, applied: true };
-  });
+  }, { validator: (_: SyncInput) => refuseWhenClosing() });
 
   setHandler(sendUpdate, (send) => {
     const seq = s.mac.nextSeq++;
@@ -197,7 +208,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     s.mac.messages.push(message);
     changed();
     return { seq, message };
-  });
+  }, { validator: (_: SendInput) => refuseWhenClosing() });
 
   setHandler(ackUpdate, (ack) => {
     const index = s.mac.messages.findIndex((m) => m.seq === ack.seq);
@@ -216,9 +227,10 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     }
     changed();
     return { removed: true };
-  });
+  }, { validator: (_: AckInput) => refuseWhenClosing() });
 
   setHandler(readUpdate, async (read) => {
+    activity++;
     const after = read.unreadOnly ? s.coordinator.readUpTo : (read.after ?? 0);
     const newest = () => s.coordinator.nextSeq - 1;
     if (newest() <= after && (read.waitMs ?? 0) > 0) {
@@ -233,7 +245,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       }
     }
     return { messages, stage: mirrorFields(s.state).stage, syncedAt: s.syncedAt };
-  });
+  }, { validator: (_: ReadInput) => refuseWhenClosing() });
 
   publish();
 
@@ -242,13 +254,21 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
 
   for (;;) {
     await condition(() => done() || tooLong());
-    await condition(allHandlersFinished);
-    if (done()) {
+    if (!tooLong()) {
+      // A finished spec with empty inboxes: wait the grace period. Any update
+      // in it (a read, a late line, a message) starts it again.
+      const seen = activity;
+      const interrupted = await condition(() => activity !== seen || !done() || tooLong(), s.graceMs ?? FINISHED_GRACE_MS);
+      if (interrupted) continue;
+      await condition(allHandlersFinished);
+      if (activity !== seen || !done()) continue;
+      // From here the validators refuse every update, so nothing that the
+      // relay accepted can be lost when the workflow ends.
+      closing = true;
       await removeAttachments({ deployId: s.deployId, repoKey: s.spec.repoKey, slug: s.spec.slug });
       return;
     }
-    if (tooLong()) {
-      await continueAsNew<typeof specWorkflow>(s);
-    }
+    await condition(allHandlersFinished);
+    await continueAsNew<typeof specWorkflow>(s);
   }
 }

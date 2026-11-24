@@ -2,9 +2,10 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
-import { specAddress } from "../src/mirror.js";
+import { SpecClosingError, specAddress } from "../src/mirror.js";
 import { SA, specWorkflowId } from "../src/workflows/types.js";
 import { attachmentPrefix } from "../src/activities.js";
+import { sleep } from "./helpers.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -201,5 +202,88 @@ test("two deploys on one namespace keep separate workflows for the same repo and
   } finally {
     await a.close();
     await b.close();
+  }
+});
+
+async function mergedWithAttachment(h: Awaited<ReturnType<typeof harness>>, slug: string) {
+  const spec = specAddress(REPO, slug);
+  const objectKey = `${attachmentPrefix(h.deployId, spec.repoKey, slug)}a-proof.png`;
+  await h.bucket.put(objectKey, Buffer.from("png"), "image/png", {});
+  await h.mirror.sync(spec, {
+    line: 1,
+    event: { kind: "message", id: "m1", text: "Proof.", attachments: [{ objectKey, filename: "proof.png", contentType: "image/png", size: 3, sha256: "x" }] },
+    state: showJson(),
+    turn: null,
+  });
+  await h.mirror.sync(spec, { line: 2, event: { kind: "stage", to: "merged" }, state: showJson({ stage: "merged", status: "idle" }), turn: null });
+  return { spec, objectKey, handle: h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, slug)) };
+}
+
+test("reading the last message of a finished spec keeps its attachments for the grace period after the last update", async () => {
+  const h = await harness(env, { graceMs: 1500 });
+  try {
+    const { spec, objectKey, handle } = await mergedWithAttachment(h, "read-late");
+    const read = await h.mirror.read(spec, undefined, 0);
+    assert.equal(read.messages[0].attachments?.[0].objectKey, objectKey);
+    // The read made the inboxes empty, but the attachment stays for the links in that answer.
+    await sleep(1000);
+    assert.ok(h.bucket.objects.has(objectKey));
+    // A second read starts the grace period again.
+    await h.mirror.read(spec, undefined, 0);
+    await sleep(1000);
+    assert.equal((await handle.describe()).status.name, "RUNNING");
+    assert.ok(h.bucket.objects.has(objectKey));
+    await handle.result();
+    assert.ok(!h.bucket.objects.has(objectKey), "the attachments go when the workflow ends");
+  } finally {
+    await h.close();
+  }
+});
+
+test("a message sent in the grace period of a finished spec waits for the Mac", async () => {
+  const h = await harness(env, { graceMs: 500 });
+  try {
+    const { spec, handle } = await mergedWithAttachment(h, "late-message");
+    await h.mirror.read(spec, undefined, 0);
+    const { seq } = await h.mirror.send(spec, { text: "One more thing." });
+    await sleep(1200);
+    assert.equal((await handle.describe()).status.name, "RUNNING");
+    assert.equal((await h.mirror.state(spec))?.mac.messages[0].text, "One more thing.");
+    await h.mirror.ack(spec, seq);
+    await handle.result();
+  } finally {
+    await h.close();
+  }
+});
+
+test("while a finished spec removes its data, new updates are refused with a clear error and nothing accepted is lost", async () => {
+  const h = await harness(env, { graceMs: 200 });
+  let release!: () => void;
+  let started!: () => void;
+  const removing = new Promise<void>((resolve) => (started = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const remove = h.bucket.removePrefix.bind(h.bucket);
+  h.bucket.removePrefix = async (prefix: string) => {
+    started();
+    await gate;
+    return remove(prefix);
+  };
+  try {
+    const { spec, objectKey, handle } = await mergedWithAttachment(h, "closing");
+    await h.mirror.read(spec, undefined, 0);
+    await removing;
+    await assert.rejects(h.mirror.send(spec, { text: "Too late." }), (error: Error) => {
+      assert.ok(error instanceof SpecClosingError);
+      assert.match(error.message, /finished, and the relay is removing its data/);
+      return true;
+    });
+    // A late line changes nothing more: the relay answers synced for it.
+    assert.deepEqual(await h.mirror.sync(spec, { line: 3, event: { kind: "note" }, state: null, turn: null }), { line: 3, applied: false });
+    release();
+    await handle.result();
+    assert.ok(!h.bucket.objects.has(objectKey));
+  } finally {
+    release();
+    await h.close();
   }
 });

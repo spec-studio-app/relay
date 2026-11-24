@@ -84,6 +84,8 @@ export async function harness(
   options: {
     deployId?: string;
     updateLimit?: number;
+    /** The grace period of a finished spec (300 ms when not given). */
+    graceMs?: number;
     keysText?: string;
     readWaitMs?: number;
     attachmentMaxBytes?: number;
@@ -111,7 +113,7 @@ export async function harness(
     return w;
   };
   await startWorkers();
-  const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit });
+  const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit, graceMs: options.graceMs ?? 300 });
   const configStore = new ConfigStore(clients.config, deployId);
   const maxBytes = options.attachmentMaxBytes ?? 5 * 1024 * 1024;
   const attachments = new Attachments({ bucket: options.noBucket ? null : bucket, deployId, maxBytes });

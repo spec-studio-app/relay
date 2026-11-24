@@ -89,18 +89,35 @@ export interface SpecWorkflowState {
    * above it is unread, and PendingForCoordinator is true while one exists.
    */
   coordinator: { nextSeq: number; messages: Message[]; readUpTo: number };
-  /** True after a merged or dropped line. The workflow ends when no message waits. */
+  /** True after a merged line. The workflow ends when no message waits, after the grace period. */
   finished: boolean;
   /** Continue as new after this many updates in one run. */
   updateLimit: number;
+  /**
+   * A finished spec with empty inboxes stays open this long after its last
+   * update (the default when missing: FINISHED_GRACE_MS), so the links in a
+   * read stay valid and late updates still apply.
+   */
+  graceMs?: number;
 }
+
+/** A finished spec's workflow ends this long after its last update. */
+export const FINISHED_GRACE_MS = 60 * 60 * 1000;
+
+/** The validators' refusal while a finished spec's workflow removes its data and ends. */
+export const CLOSING_TEXT = "The spec is finished, and the relay is removing its data.";
 
 export const EVENT_LIMIT = 20;
 /** The coordinator inbox keeps this many of its newest messages. */
 export const COORDINATOR_KEEP = 200;
 export const DEFAULT_UPDATE_LIMIT = 2000;
 
-export function initialSpecState(deployId: string, spec: SpecAddress, updateLimit = DEFAULT_UPDATE_LIMIT): SpecWorkflowState {
+export function initialSpecState(
+  deployId: string,
+  spec: SpecAddress,
+  updateLimit = DEFAULT_UPDATE_LIMIT,
+  graceMs = FINISHED_GRACE_MS,
+): SpecWorkflowState {
   return {
     deployId,
     spec,
@@ -113,6 +130,7 @@ export function initialSpecState(deployId: string, spec: SpecAddress, updateLimi
     coordinator: { nextSeq: 1, messages: [], readUpTo: 0 },
     finished: false,
     updateLimit,
+    graceMs,
   };
 }
 

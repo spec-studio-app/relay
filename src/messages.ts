@@ -1,6 +1,6 @@
 // The tools send_message and read_messages. They use the spec workflows, with
 // the Mac online or offline.
-import { repoKeyOf, SpecNotFoundError, type Mirror } from "./mirror.js";
+import { repoKeyOf, SpecClosingError, SpecNotFoundError, type Mirror } from "./mirror.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, Message, SpecAddress } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type Attachments } from "./attachments.js";
@@ -52,6 +52,9 @@ export class MessageTools {
       if (tool === "upload_attachment") return await this.upload(args);
       return { ok: false, text: `The relay has no tool ${tool}.` };
     } catch (error) {
+      if (error instanceof SpecClosingError) {
+        return { ok: false, text: `${error.message} It takes no more messages.` };
+      }
       if (error instanceof SpecNotFoundError) {
         return { ok: false, text: "The relay has no synced spec with this repo and slug. Check them with list_specs." };
       }
