@@ -39,12 +39,13 @@ services:
         required: false
 
   # A local Temporal dev server (data in a volume), with the Web UI on port 8233.
+  # The Web UI has no sign-in, so it listens on this machine (127.0.0.1) only.
   temporal:
     profiles: ["dev"]
     image: temporalio/temporal:latest
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
     ports:
-      - "8233:8233"
+      - "127.0.0.1:8233:8233"
     volumes:
       - temporal-data:/data
     healthcheck:

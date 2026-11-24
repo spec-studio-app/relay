@@ -96,7 +96,7 @@ BUCKET_ACCESS_KEY=...
 BUCKET_SECRET_KEY=...
 ```
 
-To try the relay with a local Temporal dev server (data in a Docker volume, Web UI on port 8233):
+To try the relay with a local Temporal dev server (data in a Docker volume, Web UI on port 8233 of this machine only, because it has no sign-in):
 
 ```sh
 docker compose --profile dev up
