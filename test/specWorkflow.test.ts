@@ -345,3 +345,37 @@ test("R3.S3: a gone spec is dropped: its waiting messages go back to Claude AI, 
     await h.close();
   }
 });
+
+test("a new spec with the slug of a completed one starts a new run at line 1; a later line of the old spec stays a no-op", async () => {
+  const h = await harness(env, { graceMs: 200 });
+  try {
+    const spec = specAddress(REPO, "reused-slug");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson({ title: "Old" }), turn: null });
+    await h.mirror.sync(spec, { line: 2, event: { kind: "stage", to: "merged" }, state: showJson({ stage: "merged" }), turn: null });
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec.repoKey, "reused-slug"));
+    await handle.result();
+    const oldRun = (await handle.describe()).runId;
+
+    // A late line of the old spec: synced, no new run.
+    assert.deepEqual(await h.mirror.sync(spec, { line: 3, event: { kind: "note" }, state: null, turn: null }), { line: 3, applied: false });
+    assert.equal((await handle.describe()).runId, oldRun);
+
+    // The first line of a new spec with the same slug: a new run.
+    assert.deepEqual(
+      await h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: showJson({ title: "New" }), turn: null }),
+      { line: 1, applied: true },
+    );
+    const now = await handle.describe();
+    assert.notEqual(now.runId, oldRun);
+    assert.equal(now.status.name, "RUNNING");
+    const state = await h.mirror.state(spec);
+    assert.equal((state?.state as Record<string, unknown>).title, "New");
+    assert.deepEqual(state?.events.map((e) => e.line), [1]);
+    assert.equal(state?.finished, false);
+    // Its next line applies, and line 1 sent again is ignored.
+    assert.equal((await h.mirror.sync(spec, { line: 2, event: { kind: "note" }, state: showJson({ title: "New" }), turn: null })).applied, true);
+    assert.equal((await h.mirror.sync(spec, { line: 1, event: { kind: "created" }, state: null, turn: null })).applied, false);
+  } finally {
+    await h.close();
+  }
+});

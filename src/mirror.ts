@@ -133,6 +133,30 @@ export class Mirror {
 
   /** Apply one activity line. The first line starts the workflow. */
   async sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult> {
+    try {
+      return await this.syncWith(spec, input, "ALLOW_DUPLICATE_FAILED_ONLY");
+    } catch (error) {
+      // The finished spec's workflow is ending: the line changes nothing more.
+      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error;
+    }
+    // The spec's workflow completed. Line 1 is the first line of a new spec
+    // with the same slug: start a new run for it. A later line belongs to the
+    // completed spec and changes nothing more, so the agent may drop it.
+    if (input.line !== 1) return { line: input.line, applied: false };
+    try {
+      return await this.syncWith(spec, input, "ALLOW_DUPLICATE");
+    } catch (error) {
+      if (isClosingRefusal(error)) return { line: input.line, applied: false };
+      throw error;
+    }
+  }
+
+  private syncWith(
+    spec: SpecAddress,
+    input: Omit<SyncInput, "at">,
+    workflowIdReusePolicy: "ALLOW_DUPLICATE_FAILED_ONLY" | "ALLOW_DUPLICATE",
+  ): Promise<SyncResult> {
     const startWorkflowOperation = new WithStartWorkflowOperation(specWorkflow, {
       workflowId: specWorkflowId(this.o.deployId, spec.repoKey, spec.slug),
       taskQueue: this.o.taskQueue,
@@ -140,27 +164,20 @@ export class Mirror {
         initialSpecState(this.o.deployId, spec, this.o.updateLimit ?? DEFAULT_UPDATE_LIMIT, this.o.graceMs ?? FINISHED_GRACE_MS),
       ],
       workflowIdConflictPolicy: "USE_EXISTING",
-      // A spec whose workflow completed (merged or dropped, then ended) gets no
-      // new empty run for a late line. A failed or terminated run may restart.
-      workflowIdReusePolicy: "ALLOW_DUPLICATE_FAILED_ONLY",
+      // By default a spec whose workflow completed (merged or dropped, then
+      // ended) gets no new empty run for a late line. A failed or terminated
+      // run may restart.
+      workflowIdReusePolicy,
     });
-    try {
-      return await withTimeout(
-        this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
-          args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
-          startWorkflowOperation,
-        }),
-        UPDATE_TIMEOUT_MS,
-      );
-    } catch (error) {
-      // The finished spec's workflow is ending, or it completed: the line
-      // changes nothing more, so the agent may drop it.
-      if (isClosingRefusal(error) || error instanceof WorkflowExecutionAlreadyStartedError) {
-        return { line: input.line, applied: false };
-      }
-      throw error;
-    }
+    return withTimeout(
+      this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
+        args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
+        startWorkflowOperation,
+      }),
+      UPDATE_TIMEOUT_MS,
+    );
   }
+
 
   /** The workflow's state, or null when the spec has no running workflow. */
   async state(spec: { repoKey: string; slug: string }): Promise<SpecWorkflowState | null> {
