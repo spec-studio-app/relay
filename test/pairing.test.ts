@@ -6,6 +6,7 @@ import { AGENT_SECRET, callTool, connectAgent, rejectedStatus, signIn, sleep } f
 import { makePairCode } from "../src/startup.js";
 import { RELAY_VERSION } from "../src/version.js";
 import { PairLimit } from "../src/server.js";
+import { relayConfigWorkflowId } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -121,6 +122,33 @@ test("R9.S3: after unpair the relay refuses the old secret with 401 and closes i
     assert.equal(await rejectedStatus(t.base, secret), 401);
     assert.equal((await unpair(secret)).status, 401);
     assert.equal((await fetch(`${t.base}/agent/unpair`, { method: "POST" })).status, 401);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("unpair with a bearer that is not paired adds no update to the relay-config history", async () => {
+  const h = await harness(env);
+  const t = await h.relay({ legacySecretSha256: null });
+  try {
+    await h.startConfig(CODE);
+    const { secret } = await (await pair(t.base, CODE)).json();
+    const handle = h.clients.config.workflow.getHandle(relayConfigWorkflowId(h.deployId));
+    const events = async () => (await handle.fetchHistory()).events?.length ?? 0;
+    const before = await events();
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`${t.base}/agent/unpair`, { method: "POST", headers: { authorization: `Bearer stranger-${i}` } });
+      assert.equal(res.status, 401);
+    }
+    assert.equal(await events(), before);
+    // The workflow's validator also refuses an unpair that removes nothing.
+    assert.equal(await h.configStore.unpair("0".repeat(64)), false);
+    assert.equal(await events(), before);
+    // The paired secret still unpairs.
+    const res = await fetch(`${t.base}/agent/unpair`, { method: "POST", headers: { authorization: `Bearer ${secret}` } });
+    assert.equal(res.status, 204);
+    assert.equal(await h.configStore.paired(), 0);
   } finally {
     await t.close();
     await h.close();

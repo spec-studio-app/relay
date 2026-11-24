@@ -174,6 +174,12 @@ export function createRelay(config: RelayConfig): Relay {
     }
     let removed: boolean;
     try {
+      // Only a paired secret may unpair: a stranger's bearer costs a query, not an update.
+      if (!(await backend.verifyAgent(hash))) {
+        log({ event: "unpair_refused", status: 401 });
+        res.status(401).end();
+        return;
+      }
       removed = await backend.unpair(hash);
     } catch {
       res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });

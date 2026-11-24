@@ -29,6 +29,9 @@ function inherit(old: StoredToken, token: StoredToken, how: TokenPair["inherit"]
   return out;
 }
 
+/** The unpair validator's refusal: the secret is not paired. */
+export const NOT_PAIRED = "The secret is not paired.";
+
 export const setPairCodeUpdate = defineUpdate<void, [{ hash: string; expiresAt: number }]>("pairCode");
 export const pairUpdate = defineUpdate<boolean, [{ codeHash: string; secretHash: string; at: string }]>("pair");
 export const unpairUpdate = defineUpdate<boolean, [{ secretHash: string }]>("unpair");
@@ -90,12 +93,22 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
     return true;
   });
 
-  setHandler(unpairUpdate, ({ secretHash }) => {
-    const before = s.agents.length;
-    s.agents = s.agents.filter((a) => a.hash !== secretHash);
-    changed();
-    return s.agents.length < before;
-  });
+  // The validator refuses an unpair that removes nothing, so it adds no event to the history.
+  setHandler(
+    unpairUpdate,
+    ({ secretHash }) => {
+      const before = s.agents.length;
+      s.agents = s.agents.filter((a) => a.hash !== secretHash);
+      if (s.agents.length === before) return false;
+      changed();
+      return true;
+    },
+    {
+      validator: ({ secretHash }) => {
+        if (!s.agents.some((a) => a.hash === secretHash)) throw new Error(NOT_PAIRED);
+      },
+    },
+  );
 
   setHandler(registerClientUpdate, (client) => {
     if (s.clients.length >= MAX_CLIENTS) {

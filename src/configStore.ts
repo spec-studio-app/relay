@@ -1,5 +1,5 @@
 // The relay's side of the relay-config workflow (payloads use the config key).
-import type { Client } from "@temporalio/client";
+import { WorkflowUpdateFailedError, type Client } from "@temporalio/client";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { OAuthStore } from "./oauth.js";
 import {
@@ -48,8 +48,14 @@ export class ConfigStore {
     return this.handle.query(pairCodeQuery, codeHash);
   }
 
-  unpair(secretHash: string): Promise<boolean> {
-    return this.handle.executeUpdate(unpairUpdate, { args: [{ secretHash }] });
+  /** Forget a paired secret. False when it was not paired (the validator refuses it). */
+  async unpair(secretHash: string): Promise<boolean> {
+    try {
+      return await this.handle.executeUpdate(unpairUpdate, { args: [{ secretHash }] });
+    } catch (error) {
+      if (error instanceof WorkflowUpdateFailedError) return false;
+      throw error;
+    }
   }
 
   async setRepos(repos: string[], at: Date): Promise<void> {
