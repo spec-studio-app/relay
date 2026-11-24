@@ -19,6 +19,7 @@ import {
   type SyncInput,
   type SyncResult,
 } from "./workflows/spec.js";
+import { boundFor } from "./workflows/bound.js";
 import {
   CLOSING_TEXT,
   DEFAULT_UPDATE_LIMIT,
@@ -127,6 +128,11 @@ export class Mirror {
     return (this.o.now?.() ?? new Date()).toISOString();
   }
 
+  /** Bind an update input to the spec's workflow (see workflows/bound.ts). */
+  private bound(spec: { repoKey: string; slug: string }) {
+    return boundFor(specWorkflowId(this.o.deployId, spec.repoKey, spec.slug));
+  }
+
   private handle(spec: { repoKey: string; slug: string }) {
     return this.o.client.workflow.getHandle(specWorkflowId(this.o.deployId, spec.repoKey, spec.slug));
   }
@@ -176,7 +182,7 @@ export class Mirror {
     });
     return withTimeout(
       this.o.client.workflow.executeUpdateWithStart(syncUpdate, {
-        args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }],
+        args: [{ ...input, repo: input.repo ?? spec.repo, at: this.now() }, this.bound(spec)],
         startWorkflowOperation,
       }),
       UPDATE_TIMEOUT_MS,
@@ -214,7 +220,7 @@ export class Mirror {
     input: { text: string; replyTo?: string; attachments?: Attachment[] },
   ): Promise<{ seq: number; message: Message }> {
     return this.update(spec, () =>
-      this.handle(spec).executeUpdate(sendUpdate, { args: [{ ...input, id: randomUUID(), at: this.now() }] }),
+      this.handle(spec).executeUpdate(sendUpdate, { args: [{ ...input, id: randomUUID(), at: this.now() }, this.bound(spec)] }),
     );
   }
 
@@ -225,7 +231,7 @@ export class Mirror {
    */
   async gone(spec: { repoKey: string; slug: string }): Promise<void> {
     try {
-      await this.update(spec, () => this.handle(spec).executeUpdate(goneUpdate, { args: [{ at: this.now() }] }));
+      await this.update(spec, () => this.handle(spec).executeUpdate(goneUpdate, { args: [{ at: this.now() }, this.bound(spec)] }));
     } catch (error) {
       if (error instanceof SpecNotFoundError || error instanceof SpecClosingError) return;
       throw error;
@@ -235,7 +241,7 @@ export class Mirror {
   /** The agent wrote the message to disk (or refused it with an error). */
   ack(spec: { repoKey: string; slug: string }, seq: number, error?: string): Promise<{ removed: boolean }> {
     return this.update(spec, () =>
-      this.handle(spec).executeUpdate(ackUpdate, { args: [{ seq, ...(error ? { error } : {}) }] }),
+      this.handle(spec).executeUpdate(ackUpdate, { args: [{ seq, ...(error ? { error } : {}) }, this.bound(spec)] }),
     );
   }
 
@@ -248,7 +254,7 @@ export class Mirror {
   ): Promise<ReadResult> {
     return this.update(
       spec,
-      () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs, unreadOnly }] }),
+      () => this.handle(spec).executeUpdate(readUpdate, { args: [{ after, waitMs, unreadOnly }, this.bound(spec)] }),
       waitMs + UPDATE_TIMEOUT_MS,
     );
   }

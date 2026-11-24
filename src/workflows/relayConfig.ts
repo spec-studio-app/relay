@@ -10,7 +10,8 @@ import {
   setHandler,
   workflowInfo,
 } from "@temporalio/workflow";
-import { MAX_AGENTS, MAX_CLIENTS, type RelayConfigState, type StoredClient, type StoredToken } from "./types.js";
+import { checkBound, type Bound } from "./bound.js";
+import { MAX_AGENTS, MAX_CLIENTS, relayConfigWorkflowId, type RelayConfigState, type StoredClient, type StoredToken } from "./types.js";
 
 export interface TokenPair {
   access: { hash: string; token: StoredToken };
@@ -32,18 +33,18 @@ function inherit(old: StoredToken, token: StoredToken, how: TokenPair["inherit"]
 /** The unpair validator's refusal: the secret is not paired. */
 export const NOT_PAIRED = "The secret is not paired.";
 
-export const setPairCodeUpdate = defineUpdate<void, [{ hash: string; expiresAt: number }]>("pairCode");
-export const pairUpdate = defineUpdate<boolean, [{ codeHash: string; secretHash: string; at: string }]>("pair");
-export const unpairUpdate = defineUpdate<boolean, [{ secretHash: string }]>("unpair");
-export const registerClientUpdate = defineUpdate<boolean, [StoredClient["client"]]>("registerClient");
-export const markSignedInUpdate = defineUpdate<void, [string]>("markSignedIn");
-export const issueTokensUpdate = defineUpdate<void, [TokenPair]>("issueTokens");
+export const setPairCodeUpdate = defineUpdate<void, [{ hash: string; expiresAt: number }, Bound]>("pairCode");
+export const pairUpdate = defineUpdate<boolean, [{ codeHash: string; secretHash: string; at: string }, Bound]>("pair");
+export const unpairUpdate = defineUpdate<boolean, [{ secretHash: string }, Bound]>("unpair");
+export const registerClientUpdate = defineUpdate<boolean, [StoredClient["client"], Bound]>("registerClient");
+export const markSignedInUpdate = defineUpdate<void, [string, Bound]>("markSignedIn");
+export const issueTokensUpdate = defineUpdate<void, [TokenPair, Bound]>("issueTokens");
 /** Rotate a refresh token: the old one stops working. False when it is not valid. */
-export const rotateRefreshUpdate = defineUpdate<StoredToken | null, [{ oldHash: string; clientId: string; next: TokenPair }]>(
+export const rotateRefreshUpdate = defineUpdate<StoredToken | null, [{ oldHash: string; clientId: string; next: TokenPair }, Bound]>(
   "rotateRefresh",
 );
-export const revokeUpdate = defineUpdate<void, [{ hash: string; clientId: string }]>("revoke");
-export const setReposUpdate = defineUpdate<void, [{ repos: string[]; at: string }]>("setRepos");
+export const revokeUpdate = defineUpdate<void, [{ hash: string; clientId: string }, Bound]>("revoke");
+export const setReposUpdate = defineUpdate<void, [{ repos: string[]; at: string }, Bound]>("setRepos");
 
 export const verifyAgentQuery = defineQuery<boolean, [string]>("verifyAgent");
 export const tokenQuery = defineQuery<StoredToken | null, ["access" | "refresh", string]>("token");
@@ -53,9 +54,14 @@ export const pairedQuery = defineQuery<number>("paired");
 /** True when the hash is the live pairing code. It does not use the code. */
 export const pairCodeQuery = defineQuery<boolean, [string]>("pairCodeValid");
 
+/** Every update of the relay-config workflow is bound to it (see bound.ts). */
+const bound = { validator: (_: unknown, b: Bound) => checkBound(b) };
+
 export async function relayConfigWorkflow(input: RelayConfigState): Promise<void> {
   const s = input;
   let updates = 0;
+  // A start input copied from another deploy's workflow: end at once.
+  if (workflowInfo().workflowId !== relayConfigWorkflowId(s.deployId)) return;
 
   const sweep = () => {
     const now = Date.now();
@@ -81,7 +87,7 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
   setHandler(setPairCodeUpdate, (code) => {
     s.pairCode = code;
     changed();
-  });
+  }, bound);
 
   setHandler(pairUpdate, ({ codeHash, secretHash, at }) => {
     sweep();
@@ -91,7 +97,7 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
     if (s.agents.length > MAX_AGENTS) s.agents.splice(0, s.agents.length - MAX_AGENTS);
     changed();
     return true;
-  });
+  }, bound);
 
   // The validator refuses an unpair that removes nothing, so it adds no event to the history.
   setHandler(
@@ -104,7 +110,8 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
       return true;
     },
     {
-      validator: ({ secretHash }) => {
+      validator: ({ secretHash }, b) => {
+        checkBound(b);
         if (!s.agents.some((a) => a.hash === secretHash)) throw new Error(NOT_PAIRED);
       },
     },
@@ -121,19 +128,19 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
     s.clients.push({ client, signedIn: false });
     changed();
     return true;
-  });
+  }, bound);
 
   setHandler(markSignedInUpdate, (clientId) => {
     const stored = s.clients.find((c) => c.client.client_id === clientId);
     if (stored) stored.signedIn = true;
     changed();
-  });
+  }, bound);
 
   setHandler(issueTokensUpdate, ({ access, refresh }) => {
     s.access[access.hash] = access.token;
     s.refresh[refresh.hash] = refresh.token;
     changed();
-  });
+  }, bound);
 
   setHandler(rotateRefreshUpdate, ({ oldHash, clientId, next }) => {
     const stored = live(s.refresh[oldHash]);
@@ -143,19 +150,19 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
     s.refresh[next.refresh.hash] = inherit(stored, next.refresh.token, next.inherit);
     changed();
     return stored;
-  });
+  }, bound);
 
   setHandler(revokeUpdate, ({ hash, clientId }) => {
     for (const map of [s.access, s.refresh]) {
       if (map[hash]?.clientId === clientId) delete map[hash];
     }
     changed();
-  });
+  }, bound);
 
   setHandler(setReposUpdate, (repos) => {
     s.repos = repos;
     changed();
-  });
+  }, bound);
 
   await condition(() => updates >= s.updateLimit || workflowInfo().continueAsNewSuggested);
   await condition(allHandlersFinished);

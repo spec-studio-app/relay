@@ -1,7 +1,9 @@
 // The payload codec: AES-256-GCM for every Temporal payload, with the key ID in
 // the metadata and in the GCM additional data. The relay's workers and clients
 // refuse a payload that is not encrypted with a known key, so a person who can
-// write to the namespace but has no key cannot give the workflows input. Spec workflows use the data key; the relay-config workflow uses
+// write to the namespace but has no key cannot make new input. A copy of an
+// encrypted payload still decrypts: workflows/bound.ts binds each update input
+// to its workflow and its time. Spec workflows use the data key; the relay-config workflow uses
 // the config key (it has its own client, worker and task queue). The codec
 // endpoints for the Web UI load only the data key.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";

@@ -18,6 +18,7 @@ import { relayConfigWorkflow, setPairCodeUpdate } from "../src/workflows/relayCo
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows/types.js";
 import { configTaskQueue } from "../src/temporal/connection.js";
+import { boundFor } from "../src/workflows/bound.js";
 import { pairCodeHash } from "../src/startup.js";
 import { temporalAgentBackend } from "../src/backend.js";
 import { OfflineTools } from "../src/offline.js";
@@ -130,7 +131,7 @@ export async function harness(
       if (code) {
         await clients.config.workflow
           .getHandle(relayConfigWorkflowId(deployId))
-          .executeUpdate(setPairCodeUpdate, { args: [code] });
+          .executeUpdate(setPairCodeUpdate, { args: [code, boundFor(relayConfigWorkflowId(deployId))] });
       }
     }
   };

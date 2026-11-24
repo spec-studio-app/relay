@@ -14,6 +14,7 @@ import type { Bucket } from "./bucket.js";
 import type { Logger } from "./log.js";
 import { configTaskQueue } from "./temporal/connection.js";
 import { relayConfigWorkflow, setPairCodeUpdate } from "./workflows/relayConfig.js";
+import { boundFor } from "./workflows/bound.js";
 import { SEARCH_ATTRIBUTE_KEYS, initialRelayConfigState, relayConfigWorkflowId } from "./workflows/types.js";
 
 export class StartupError extends Error {}
@@ -250,7 +251,7 @@ export async function makePairCode(configClient: Client, deployId: string, timeo
   try {
     await Promise.race([
       handle.executeUpdate(setPairCodeUpdate, {
-        args: [{ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }],
+        args: [{ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }, boundFor(relayConfigWorkflowId(deployId))],
       }),
       timeout,
     ]);

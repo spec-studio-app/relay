@@ -19,6 +19,7 @@ import {
   verifyAgentQuery,
   type TokenPair,
 } from "./workflows/relayConfig.js";
+import { boundFor } from "./workflows/bound.js";
 import { relayConfigWorkflowId, type RelayConfigState, type StoredClient, type StoredToken } from "./workflows/types.js";
 
 export class ConfigStore {
@@ -26,6 +27,11 @@ export class ConfigStore {
     private readonly client: Client,
     private readonly deployId: string,
   ) {}
+
+  /** Bind an update input to the relay-config workflow (see workflows/bound.ts). */
+  private bound() {
+    return boundFor(relayConfigWorkflowId(this.deployId));
+  }
 
   private get handle() {
     return this.client.workflow.getHandle(relayConfigWorkflowId(this.deployId));
@@ -40,7 +46,7 @@ export class ConfigStore {
   }
 
   pair(codeHash: string, secretHash: string, at: Date): Promise<boolean> {
-    return this.handle.executeUpdate(pairUpdate, { args: [{ codeHash, secretHash, at: at.toISOString() }] });
+    return this.handle.executeUpdate(pairUpdate, { args: [{ codeHash, secretHash, at: at.toISOString() }, this.bound()] });
   }
 
   /** True when the hash is the live pairing code (a query: no history event). */
@@ -51,7 +57,7 @@ export class ConfigStore {
   /** Forget a paired secret. False when it was not paired (the validator refuses it). */
   async unpair(secretHash: string): Promise<boolean> {
     try {
-      return await this.handle.executeUpdate(unpairUpdate, { args: [{ secretHash }] });
+      return await this.handle.executeUpdate(unpairUpdate, { args: [{ secretHash }, this.bound()] });
     } catch (error) {
       if (error instanceof WorkflowUpdateFailedError) return false;
       throw error;
@@ -59,7 +65,7 @@ export class ConfigStore {
   }
 
   async setRepos(repos: string[], at: Date): Promise<void> {
-    await this.handle.executeUpdate(setReposUpdate, { args: [{ repos, at: at.toISOString() }] });
+    await this.handle.executeUpdate(setReposUpdate, { args: [{ repos, at: at.toISOString() }, this.bound()] });
   }
 
   repos(): Promise<RelayConfigState["repos"]> {
@@ -71,19 +77,19 @@ export class ConfigStore {
   }
 
   registerClient(client: StoredClient["client"]): Promise<boolean> {
-    return this.handle.executeUpdate(registerClientUpdate, { args: [client] });
+    return this.handle.executeUpdate(registerClientUpdate, { args: [client, this.bound()] });
   }
 
   async markSignedIn(clientId: string): Promise<void> {
-    await this.handle.executeUpdate(markSignedInUpdate, { args: [clientId] });
+    await this.handle.executeUpdate(markSignedInUpdate, { args: [clientId, this.bound()] });
   }
 
   async issueTokens(pair: TokenPair): Promise<void> {
-    await this.handle.executeUpdate(issueTokensUpdate, { args: [pair] });
+    await this.handle.executeUpdate(issueTokensUpdate, { args: [pair, this.bound()] });
   }
 
   rotateRefresh(oldHash: string, clientId: string, next: TokenPair): Promise<StoredToken | null> {
-    return this.handle.executeUpdate(rotateRefreshUpdate, { args: [{ oldHash, clientId, next }] });
+    return this.handle.executeUpdate(rotateRefreshUpdate, { args: [{ oldHash, clientId, next }, this.bound()] });
   }
 
   token(kind: "access" | "refresh", hash: string): Promise<StoredToken | null> {
@@ -91,7 +97,7 @@ export class ConfigStore {
   }
 
   async revoke(hash: string, clientId: string): Promise<void> {
-    await this.handle.executeUpdate(revokeUpdate, { args: [{ hash, clientId }] });
+    await this.handle.executeUpdate(revokeUpdate, { args: [{ hash, clientId }, this.bound()] });
   }
 }
 

@@ -13,6 +13,7 @@ import {
   workflowInfo,
 } from "@temporalio/workflow";
 import type { Activities } from "../activities.js";
+import { checkBound, type Bound } from "./bound.js";
 import {
   CLOSING_TEXT,
   DROPPED_TEXT,
@@ -22,6 +23,7 @@ import {
   FINISHED_GRACE_MS,
   SA,
   effectiveTurn,
+  specWorkflowId,
   mirrorFields,
   unreadForCoordinator,
   type Attachment,
@@ -74,12 +76,12 @@ export interface ReadResult {
   syncedAt: string | null;
 }
 
-export const syncUpdate = defineUpdate<SyncResult, [SyncInput]>("sync");
-export const sendUpdate = defineUpdate<{ seq: number; message: Message }, [SendInput]>("send");
-export const ackUpdate = defineUpdate<{ removed: boolean }, [AckInput]>("ack");
-export const readUpdate = defineUpdate<ReadResult, [ReadInput]>("read");
+export const syncUpdate = defineUpdate<SyncResult, [SyncInput, Bound]>("sync");
+export const sendUpdate = defineUpdate<{ seq: number; message: Message }, [SendInput, Bound]>("send");
+export const ackUpdate = defineUpdate<{ removed: boolean }, [AckInput, Bound]>("ack");
+export const readUpdate = defineUpdate<ReadResult, [ReadInput, Bound]>("read");
 /** The agent's gone frame: the spec no longer exists on the Mac. */
-export const goneUpdate = defineUpdate<{ dropped: boolean }, [{ at: string }]>("gone");
+export const goneUpdate = defineUpdate<{ dropped: boolean }, [{ at: string }, Bound]>("gone");
 export const stateQuery = defineQuery<SpecWorkflowState>("state");
 
 const { removeAttachments } = proxyActivities<Activities>({
@@ -111,6 +113,8 @@ function attachmentsOf(value: unknown): Attachment[] | undefined {
 
 export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   const s = input;
+  // A start input copied from another spec's workflow: end at once.
+  if (workflowInfo().workflowId !== specWorkflowId(s.deployId, s.spec.repoKey, s.spec.slug)) return;
   let updates = 0;
 
   const publish = () => {
@@ -158,7 +162,9 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   let activity = 0;
   /** True when the workflow removes the attachments and ends: the validators refuse updates. */
   let closing = false;
-  const refuseWhenClosing = () => {
+  /** Every validator: the input is bound to this workflow (bound.ts), and the workflow is not closing. */
+  const open = (b: Bound) => {
+    checkBound(b);
     if (closing) throw new Error(CLOSING_TEXT);
   };
 
@@ -225,7 +231,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     if (isFinished(s, event)) s.finished = true;
     changed();
     return { line: s.line, applied: true };
-  }, { validator: (_: SyncInput) => refuseWhenClosing() });
+  }, { validator: (_: SyncInput, b: Bound) => open(b) });
 
   setHandler(sendUpdate, (send) => {
     const seq = s.mac.nextSeq++;
@@ -244,8 +250,8 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     changed();
     return { seq, message };
   }, {
-    validator: (_: SendInput) => {
-      refuseWhenClosing();
+    validator: (_: SendInput, b: Bound) => {
+      open(b);
       if (s.dropped) throw new Error(DROPPED_TEXT);
     },
   });
@@ -267,7 +273,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     }
     changed();
     return { removed: true };
-  }, { validator: (_: AckInput) => refuseWhenClosing() });
+  }, { validator: (_: AckInput, b: Bound) => open(b) });
 
   setHandler(goneUpdate, (gone) => {
     if (s.dropped) return { dropped: false };
@@ -277,7 +283,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     bounceMacMessages(DROPPED_TEXT, gone.at);
     changed();
     return { dropped: true };
-  }, { validator: (_: { at: string }) => refuseWhenClosing() });
+  }, { validator: (_: { at: string }, b: Bound) => open(b) });
 
   setHandler(readUpdate, async (read) => {
     activity++;
@@ -295,7 +301,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       }
     }
     return { messages, stage: mirrorFields(s.state).stage, syncedAt: s.syncedAt };
-  }, { validator: (_: ReadInput) => refuseWhenClosing() });
+  }, { validator: (_: ReadInput, b: Bound) => open(b) });
 
   publish();
 

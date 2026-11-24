@@ -8,8 +8,9 @@ import { AesGcmCodec, configCodec, dataCodec, newPayloadKeys } from "../src/code
 import { parsePayloadKeys } from "../src/config.js";
 import { specAddress } from "../src/mirror.js";
 import { relayConfigWorkflowId, specWorkflowId } from "../src/workflows/types.js";
-import { issueTokensUpdate } from "../src/workflows/relayConfig.js";
+import { issueTokensUpdate, setReposUpdate } from "../src/workflows/relayConfig.js";
 import { sendUpdate } from "../src/workflows/spec.js";
+import { boundFor } from "../src/workflows/bound.js";
 import { runStartupChecks, REQUIRED_SEARCH_ATTRIBUTES, type TemporalAdmin } from "../src/startup.js";
 import { testConfig } from "./temporal.js";
 
@@ -71,7 +72,10 @@ test("a namespace writer without the payload keys cannot give the workflows inpu
     await assert.rejects(
       within(
         plainClient.workflow.getHandle(relayConfigWorkflowId(h.deployId)).executeUpdate(issueTokensUpdate, {
-          args: [{ access: { hash: "f".repeat(64), token: forged }, refresh: { hash: "e".repeat(64), token: forged } }],
+          args: [
+            { access: { hash: "f".repeat(64), token: forged }, refresh: { hash: "e".repeat(64), token: forged } },
+            boundFor(relayConfigWorkflowId(h.deployId)),
+          ],
         }),
       ),
     );
@@ -79,7 +83,12 @@ test("a namespace writer without the payload keys cannot give the workflows inpu
       within(
         plainClient.workflow
           .getHandle(specWorkflowId(h.deployId, spec.repoKey, spec.slug))
-          .executeUpdate(sendUpdate, { args: [{ id: "x", text: "typed into the terminal", at: new Date().toISOString() }] }),
+          .executeUpdate(sendUpdate, {
+            args: [
+              { id: "x", text: "typed into the terminal", at: new Date().toISOString() },
+              boundFor(specWorkflowId(h.deployId, spec.repoKey, spec.slug)),
+            ],
+          }),
       ),
     );
     // The worker fails the workflow task of a plain update; the workflow goes on
@@ -252,6 +261,70 @@ test("CORS: a preflight from UI_ORIGIN gets the headers; another origin gets non
     assert.equal(bad.headers.get("access-control-allow-origin"), null);
   } finally {
     await t.close();
+    await h.close();
+  }
+});
+
+const refusedBy = (pattern: RegExp) => (error: Error) => pattern.test(String((error as { cause?: Error }).cause?.message));
+
+test("an update input is bound to its workflow and its time: a copy for another workflow or an old one is refused", async () => {
+  const h = await harness(env);
+  try {
+    const a = specAddress("/Users/me/code/bound", "spec-a");
+    const b = specAddress("/Users/me/code/bound", "spec-b");
+    for (const spec of [a, b]) await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: { title: "x" }, turn: null });
+    await h.mirror.send(a, { text: "For spec A only." });
+    const idA = specWorkflowId(h.deployId, a.repoKey, a.slug);
+    const idB = specWorkflowId(h.deployId, b.repoKey, b.slug);
+
+    // Copy the encrypted send input from A's history, and send it as is to B.
+    const raw = await env.connection.workflowService.getWorkflowExecutionHistory({ namespace: "default", execution: { workflowId: idA } });
+    const accepted = raw.history!.events!.find(
+      (e) => e.workflowExecutionUpdateAcceptedEventAttributes?.acceptedRequest?.input?.name === "send",
+    )!.workflowExecutionUpdateAcceptedEventAttributes!.acceptedRequest!.input!;
+    const replay = (workflowId: string) =>
+      env.connection.workflowService.updateWorkflowExecution({
+        namespace: "default",
+        workflowExecution: { workflowId },
+        request: { meta: { updateId: `copy-${workflowId}` }, input: { name: "send", args: accepted.args } },
+        waitPolicy: { lifecycleStage: 3 },
+      });
+    const toB = await replay(idB);
+    assert.match(toB.outcome?.failure?.message ?? "", /not for this workflow, or it is too old/);
+    assert.equal((await h.mirror.state(b))?.mac.messages.length, 0);
+
+    // With the data key: a bound for another workflow, and an old bound, are refused.
+    const handleB = h.clients.data.workflow.getHandle(idB);
+    const input = { id: "x", text: "copied", at: new Date().toISOString() };
+    await assert.rejects(handleB.executeUpdate(sendUpdate, { args: [input, boundFor(idA)] }), refusedBy(/not for this workflow/));
+    await assert.rejects(handleB.executeUpdate(sendUpdate, { args: [input, boundFor(idB, Date.now() - 6 * 60 * 1000)] }), refusedBy(/too old/));
+    const config = h.clients.config.workflow.getHandle(relayConfigWorkflowId(h.deployId));
+    await h.startConfig();
+    await assert.rejects(
+      config.executeUpdate(setReposUpdate, { args: [{ repos: ["/x"], at: input.at }, boundFor(idB)] }),
+      refusedBy(/not for this workflow/),
+    );
+    assert.equal((await h.mirror.state(b))?.mac.messages.length, 0);
+    assert.equal(await h.configStore.repos(), null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a spec workflow started with a start input for another ID ends at once", async () => {
+  const h = await harness(env);
+  try {
+    const spec = specAddress("/Users/me/code/bound", "real");
+    const { initialSpecState } = await import("../src/workflows/types.js");
+    const { specWorkflow } = await import("../src/workflows/spec.js");
+    const handle = await h.clients.data.workflow.start(specWorkflow, {
+      workflowId: specWorkflowId(h.deployId, spec.repoKey, "other"),
+      taskQueue: h.taskQueue,
+      args: [initialSpecState(h.deployId, spec)],
+    });
+    await handle.result();
+    assert.equal((await handle.describe()).status.name, "COMPLETED");
+  } finally {
     await h.close();
   }
 });
