@@ -14,7 +14,7 @@ after(async () => {
   await env?.teardown();
 });
 
-// Spec workflow IDs do not hold the deploy ID, so each test uses its own repos.
+// Each test uses its own repos.
 let REPO = "";
 let OTHER = "";
 beforeEach(() => {
@@ -183,6 +183,44 @@ test("online, the read tools still go to the agent", async () => {
       assert.equal(result.content[0].text, `from the Mac: ${tool}`);
     }
     await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("with no turn from the app, the offline answers derive the turn from the status like studio specs", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "waiting"), {
+      line: 1,
+      event: { kind: "status", to: "awaiting-approval" },
+      state: show("waiting", { status: "awaiting-approval" }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "stuck"), { line: 1, event: { kind: "note" }, state: show("stuck", { status: "blocked" }), turn: null });
+    await h.mirror.sync(specAddress(REPO, "busy"), { line: 1, event: { kind: "note" }, state: show("busy"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const list = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 3 ? l : null;
+    });
+    const bySlug = Object.fromEntries(list.specs.map((s: any) => [s.slug, s]));
+    assert.deepEqual([bySlug.waiting.turn, bySlug.waiting.needsYou], ["yours", true]);
+    assert.deepEqual([bySlug.stuck.turn, bySlug.stuck.needsYou], ["blocked", true]);
+    assert.deepEqual([bySlug.busy.turn, bySlug.busy.needsYou], ["working", false]);
+    // The NeedsYou search attribute agrees.
+    const needing = await eventually(async () => {
+      const found: string[] = [];
+      for await (const wf of h.clients.data.workflow.list({ query: `RelayDeployId = '${h.deployId}' AND NeedsYou = true` })) found.push(wf.workflowId);
+      return found.length === 2 ? found : null;
+    });
+    assert.equal(needing.length, 2);
+
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "waiting" });
+    assert.match(read.content[0].text, /## Turn\n\nyours\. Needs the user: yes\./);
   } finally {
     await t.close();
     await h.close();

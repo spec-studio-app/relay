@@ -152,6 +152,32 @@ export function mirrorFields(state: Record<string, unknown> | null): MirrorField
   };
 }
 
+/**
+ * The turn of a spec. The sync's turn comes from the app's turns.json; when the
+ * app does not run it is null, and the turn comes from the state the way
+ * `studio specs` does it: blocked and awaiting-approval need the user.
+ */
+export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null): Turn | null {
+  if (turn) return turn;
+  if (!state) return null;
+  const { stage, status } = mirrorFields(state);
+  if (stage === "merged") return { turn: "merged", needsYou: false };
+  switch (status) {
+    case "blocked":
+      return { turn: "blocked", needsYou: true };
+    case "awaiting-approval":
+      return { turn: "yours", needsYou: true };
+    case "working":
+      return { turn: "working", needsYou: false };
+    case "idle":
+      return { turn: "idle", needsYou: false };
+    case "draft":
+      return { turn: "asleep", needsYou: false };
+    default:
+      return null;
+  }
+}
+
 export function unreadForCoordinator(s: SpecWorkflowState): number {
   return s.coordinator.messages.filter((m) => m.seq > s.coordinator.readUpTo).length;
 }

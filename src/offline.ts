@@ -4,7 +4,7 @@
 // spec from a query of its workflow. Each answer says how old it is.
 import type { ConfigStore } from "./configStore.js";
 import { repoKeyOf, type Mirror } from "./mirror.js";
-import { EVENT_LIMIT, mirrorFields } from "./workflows/types.js";
+import { EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
 
 export interface ToolText {
   ok: boolean;
@@ -85,11 +85,12 @@ export class OfflineTools implements OfflineReader {
     }
     const fields = mirrorFields(state.state);
     const waiting = state.mac.messages.length;
+    const turn = effectiveTurn(state.turn, state.state);
     const parts = [
       `${offlineText} This copy of the spec is from its last sync at ${state.syncedAt ?? "an unknown time"}.`,
       NO_SPEC_TEXT,
       "## State\n\n```json\n" + JSON.stringify(state.state ?? {}, null, 2) + "\n```",
-      `## Turn\n\n${state.turn ? `${state.turn.turn}. Needs the user: ${state.turn.needsYou ? "yes" : "no"}.` : "Not known."}`,
+      `## Turn\n\n${turn ? `${turn.turn}. Needs the user: ${turn.needsYou ? "yes" : "no"}.` : "Not known."}`,
       `## Summary\n\nStage: ${fields.stage || "unknown"}. Status: ${fields.status || "unknown"}.` +
         (fields.note ? ` Note: ${fields.note}` : ""),
       `## Messages\n\n${waiting === 1 ? "1 message waits" : `${waiting} messages wait`} for the Mac.`,

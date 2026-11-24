@@ -17,6 +17,7 @@ import {
   COORDINATOR_KEEP,
   EVENT_LIMIT,
   SA,
+  effectiveTurn,
   mirrorFields,
   unreadForCoordinator,
   type Attachment,
@@ -109,6 +110,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   const publish = () => {
     const fields = mirrorFields(s.state);
     const unread = unreadForCoordinator(s);
+    const turn = effectiveTurn(s.turn, s.state);
     upsertSearchAttributes([
       { key: SA.RelayDeployId, value: s.deployId },
       { key: SA.RepoKey, value: s.spec.repoKey },
@@ -117,7 +119,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       { key: SA.Stage, value: fields.stage },
       { key: SA.Status, value: fields.status },
       { key: SA.Mode, value: fields.mode },
-      { key: SA.NeedsYou, value: s.turn?.needsYou ?? false },
+      { key: SA.NeedsYou, value: turn?.needsYou ?? false },
       { key: SA.PendingForMac, value: s.mac.messages.length > 0 },
       { key: SA.PendingForCoordinator, value: unread > 0 },
     ]);
@@ -128,7 +130,7 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
       status: fields.status,
       note: fields.note,
       mode: fields.mode,
-      turn: s.turn,
+      turn,
       line: s.line,
       syncedAt: s.syncedAt,
       waitingForMac: s.mac.messages.length,
