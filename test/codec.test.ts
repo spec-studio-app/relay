@@ -2,11 +2,14 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { defaultPayloadConverter } from "@temporalio/common";
-import { harness, startTestServer } from "./temporal.js";
+import { Client } from "@temporalio/client";
+import { eventually, harness, startTestServer } from "./temporal.js";
 import { AesGcmCodec, configCodec, dataCodec, newPayloadKeys } from "../src/codec.js";
 import { parsePayloadKeys } from "../src/config.js";
 import { specAddress } from "../src/mirror.js";
 import { relayConfigWorkflowId, specWorkflowId } from "../src/workflows/types.js";
+import { issueTokensUpdate } from "../src/workflows/relayConfig.js";
+import { sendUpdate } from "../src/workflows/spec.js";
 import { runStartupChecks, REQUIRED_SEARCH_ATTRIBUTES, type TemporalAdmin } from "../src/startup.js";
 import { testConfig } from "./temporal.js";
 
@@ -33,6 +36,64 @@ test("the codec encrypts with the key ID and decrypts with any loaded key", asyn
   await assert.rejects(configCodec(keys).decode([encoded]), /No payload key/);
   const kept = await new AesGcmCodec({ encryptKey: keys.config[0], unknownKey: "keep" }).decode([encoded]);
   assert.deepEqual(kept[0], encoded);
+});
+
+test("the codec refuses a payload that is not encrypted; the Web UI codec lets it pass", async () => {
+  const keys = parsePayloadKeys(newPayloadKeys());
+  const plain = defaultPayloadConverter.toPayload({ access: "forged" });
+  await assert.rejects(dataCodec(keys).decode([plain]), /not encrypted/);
+  await assert.rejects(configCodec(keys).decode([plain]), /not encrypted/);
+  await assert.rejects(dataCodec(keys).decode([{ data: new Uint8Array([1, 2]) }]), /not encrypted/);
+  const ui = new AesGcmCodec({ encryptKey: keys.data[0], unknownKey: "keep", plain: "keep" });
+  assert.deepEqual((await ui.decode([plain]))[0], plain);
+});
+
+test("the key ID is bound into the GCM additional data: a payload with another key ID does not decrypt", async () => {
+  const key = parsePayloadKeys(newPayloadKeys()).data[0].key;
+  const codec = new AesGcmCodec({ encryptKey: { id: "a", key }, decryptKeys: [{ id: "b", key }] });
+  const [encoded] = await codec.encode([defaultPayloadConverter.toPayload("hi")]);
+  assert.equal(defaultPayloadConverter.fromPayload((await codec.decode([encoded]))[0]), "hi");
+  const relabeled = { ...encoded, metadata: { ...encoded.metadata, "encryption-key-id": new TextEncoder().encode("b") } };
+  await assert.rejects(codec.decode([relabeled]));
+});
+
+test("a namespace writer without the payload keys cannot give the workflows input", async () => {
+  const h = await harness(env);
+  try {
+    await h.startConfig();
+    const spec = specAddress("/Users/me/code/plain", "plain-input");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: { title: "Plain" }, turn: null });
+    // A client with no codec sends plain JSON.
+    const plainClient = new Client({ connection: env.connection, namespace: "default" });
+    const within = <T>(p: Promise<T>) =>
+      Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no answer")), 3000))]);
+    const forged = { clientId: "x", scopes: [], expiresAt: Date.now() + 3_600_000 };
+    await assert.rejects(
+      within(
+        plainClient.workflow.getHandle(relayConfigWorkflowId(h.deployId)).executeUpdate(issueTokensUpdate, {
+          args: [{ access: { hash: "f".repeat(64), token: forged }, refresh: { hash: "e".repeat(64), token: forged } }],
+        }),
+      ),
+    );
+    await assert.rejects(
+      within(
+        plainClient.workflow
+          .getHandle(specWorkflowId(spec.repoKey, spec.slug))
+          .executeUpdate(sendUpdate, { args: [{ id: "x", text: "typed into the terminal", at: new Date().toISOString() }] }),
+      ),
+    );
+    // The worker fails the workflow task of a plain update; the workflow goes on
+    // when Temporal drops the update.
+    const state = await eventually(() => h.mirror.state(spec).catch(() => null), 90_000);
+    assert.equal(state.mac.messages.length, 0);
+    assert.equal(await eventually(() => h.configStore.token("access", "f".repeat(64)).then(() => true).catch(() => false), 90_000), true);
+    assert.equal(await h.configStore.token("access", "f".repeat(64)), null);
+    // The workflows still work for the relay.
+    const sent = await h.mirror.send(spec, { text: "From the relay." });
+    assert.equal(sent.seq, 1);
+  } finally {
+    await h.close();
+  }
 });
 
 test("R10.S1: the raw history of a spec workflow and the relay-config workflow holds no plain text", async () => {

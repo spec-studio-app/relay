@@ -23,7 +23,7 @@ Run one relay process for each deploy. The relay keeps the one agent connection 
 
 ## Step 1: Make the secrets
 
-Make the payload keys. The relay encrypts every Temporal payload with them. Keep a copy in a safe place: without the same keys, the relay cannot read its data.
+Make the payload keys. The relay encrypts every Temporal payload with them. Keep a copy in a safe place: without the same keys, the relay cannot read its data. The relay refuses a payload that is not encrypted with one of its keys, so a person who can write to the namespace but has no key cannot give input to the relay's workflows.
 
 ```sh
 docker run --rm ghcr.io/spec-studio-app/spec-studio-relay keys

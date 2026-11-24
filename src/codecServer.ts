@@ -42,7 +42,9 @@ export interface CodecServerOptions {
 
 export function codecRouter(o: CodecServerOptions): Router {
   const router = express.Router();
-  const codec = new AesGcmCodec({ encryptKey: o.dataKeys[0], decryptKeys: o.dataKeys, unknownKey: "keep" });
+  // The Web UI also sends payloads that are not encrypted (or use the config
+  // key): they pass unchanged, for display only.
+  const codec = new AesGcmCodec({ encryptKey: o.dataKeys[0], decryptKeys: o.dataKeys, unknownKey: "keep", plain: "keep" });
   const sessionKey = createHash("sha256").update("relay codec session\0").update(o.passwordHash).digest();
   const sign = (value: string) => createHmac("sha256", sessionKey).update(value).digest("base64url");
 
