@@ -602,3 +602,35 @@ test("while a version 2 agent is connected, the relay looks again for waiting me
     await t.close();
   }
 });
+
+test("a message of a new run with the same seq as a message pushed before on this connection is pushed too", async () => {
+  const spec = { repoKey: "0123456789ab", slug: "again", repo: "/Users/me/code/app" };
+  const message = (id: string, text: string) => ({
+    id,
+    seq: 1,
+    from: "coordinator" as const,
+    spec: { repoKey: spec.repoKey, slug: spec.slug },
+    stage: "",
+    text,
+    createdAt: "2026-11-23T12:00:00Z",
+  });
+  const backend: AgentBackend = { ...hangingBackend(), hello: async () => {}, pendingForMac: async () => [] };
+  const t = await startRelay({ agentBackend: backend });
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [] });
+    await agent.next("welcome");
+    assert.equal(t.relay.hub.pushMessage(spec, message("old-run-1", "Old run.")), true);
+    assert.equal((await agent.next("message")).message.text, "Old run.");
+    // The same message again: not pushed twice.
+    t.relay.hub.pushMessage(spec, message("old-run-1", "Old run."));
+    // A new run of the slug: seq 1 again, a new ID.
+    t.relay.hub.pushMessage(spec, message("new-run-1", "New run."));
+    const next = await agent.next("message");
+    assert.equal(next.message.text, "New run.");
+    await sleep(100);
+    assert.equal(agent.frames.filter((f: any) => f.type === "message").length, 0);
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});

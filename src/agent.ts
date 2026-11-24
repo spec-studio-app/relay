@@ -356,7 +356,8 @@ export class AgentHub {
       pushed = new Set();
       this.pushed.set(ws, pushed);
     }
-    const key = `${spec.repoKey}/${spec.slug}#${message.seq}`;
+    // The message ID: a new run of the same slug starts its seqs at 1 again.
+    const key = message.id;
     if (pushed.has(key)) return;
     pushed.add(key);
     this.send(ws, { type: "message", spec: wireSpec(spec, true), seq: message.seq, message });
