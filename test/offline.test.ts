@@ -226,3 +226,39 @@ test("with no turn from the app, the offline answers derive the turn from the st
     await h.close();
   }
 });
+
+test("offline list_specs without all leaves out a merged spec whose workflow still runs", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    const merged = specAddress(REPO, "shipped");
+    await h.mirror.sync(merged, { line: 1, event: { kind: "note" }, state: show("shipped"), turn: null });
+    // A message waits for the Mac, so the workflow stays open after the merge.
+    await h.mirror.send(merged, { text: "Thanks." });
+    await h.mirror.sync(merged, {
+      line: 2,
+      event: { kind: "stage", to: "merged" },
+      state: show("shipped", { stage: "merged", status: "idle" }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "open"), { line: 1, event: { kind: "note" }, state: show("open"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const slugs = async (args: Record<string, unknown>) => {
+      const r = await callTool(t.base, accessToken, "list_specs", args);
+      return JSON.parse(r.content[0].text.split("\n").slice(1).join("\n")).specs.map((s: any) => s.slug).sort();
+    };
+    // Wait until visibility shows both with all, then check the list without all.
+    await eventually(async () => {
+      const all = await slugs({ repo: REPO, all: true });
+      return all.length === 2 && all[1] === "shipped" ? all : null;
+    });
+    await eventually(async () => {
+      const open = await slugs({ repo: REPO });
+      return open.length === 1 && open[0] === "open" ? open : null;
+    });
+    assert.deepEqual(await slugs({ repo: REPO }), ["open"]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

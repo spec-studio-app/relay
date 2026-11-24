@@ -50,9 +50,10 @@ export class OfflineTools implements OfflineReader {
   private async listSpecs(args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     const repo = str(args.repo);
     const all = args.all === true;
-    const listed = await this.deps.mirror.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all });
+    // Like `studio specs`: a merged spec shows only with all.
+    const listed = await this.deps.mirror.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
     const specs = listed
-      .filter((s) => s.memo !== null)
+      .filter((s) => s.memo !== null && (all || s.memo.stage !== "merged"))
       .map((s) => ({
         repo: s.memo!.repo,
         slug: s.slug,

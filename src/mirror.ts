@@ -171,11 +171,14 @@ export class Mirror {
   async list(filter: {
     repoKey?: string;
     all?: boolean;
+    /** Only the open specs: not merged (list_specs without all). */
+    openOnly?: boolean;
     pendingForMac?: boolean;
     pendingForCoordinator?: boolean;
   } = {}): Promise<ListedSpec[]> {
     const parts = [`WorkflowType = ${quote(SPEC_WORKFLOW_TYPE)}`, `RelayDeployId = ${quote(this.o.deployId)}`];
     if (!filter.all) parts.push(`ExecutionStatus = 'Running'`);
+    if (filter.openOnly) parts.push(`Stage != 'merged'`);
     if (filter.repoKey) parts.push(`RepoKey = ${quote(filter.repoKey)}`);
     if (filter.pendingForMac) parts.push(`PendingForMac = true`);
     if (filter.pendingForCoordinator) parts.push(`PendingForCoordinator = true`);
