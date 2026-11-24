@@ -14,8 +14,10 @@ import {
   sendUpdate,
   specWorkflow,
   stateQuery,
+  stateUpdate,
   syncUpdate,
   type ReadResult,
+  type StateInput,
   type SyncInput,
   type SyncResult,
 } from "./workflows/spec.js";
@@ -234,6 +236,23 @@ export class Mirror {
       await this.update(spec, () => this.handle(spec).executeUpdate(goneUpdate, { args: [{ at: this.now() }, this.bound(spec)] }));
     } catch (error) {
       if (error instanceof SpecNotFoundError || error instanceof SpecClosingError) return;
+      throw error;
+    }
+  }
+
+  /**
+   * The agent's state frame: replace the state and the turn of a running spec
+   * that is not finished. An unknown spec gets no new run; a finished or closing
+   * run ignores it. True when the workflow applied it.
+   */
+  async refresh(spec: { repoKey: string; slug: string }, input: StateInput): Promise<boolean> {
+    try {
+      const result = await this.update(spec, () =>
+        this.handle(spec).executeUpdate(stateUpdate, { args: [input, this.bound(spec)] }),
+      );
+      return result.applied;
+    } catch (error) {
+      if (error instanceof SpecNotFoundError || error instanceof SpecClosingError) return false;
       throw error;
     }
   }

@@ -471,6 +471,7 @@ function hangingBackend(): AgentBackend {
     hello: never,
     sync: never,
     gone: never,
+    state: never,
     ack: never,
     pair: never,
     pairCodeValid: never,

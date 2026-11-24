@@ -4,6 +4,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn, sleep } from "./helpers.js";
 import { repoKeyOf } from "../src/mirror.js";
+import { SA, specWorkflowId } from "../src/workflows/types.js";
 import { RELAY_VERSION } from "../src/version.js";
 
 let env: TestWorkflowEnvironment;
@@ -139,6 +140,55 @@ test("a gone frame marks the spec dropped and gets gone-ok; offline list_specs s
     const sent = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "deleted-on-mac", text: "Hi" });
     assert.equal(sent.isError, true);
     assert.match(sent.content[0].text, /no longer exists on the Mac/);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("a state frame replaces the state and the turn after the earlier lines, and keeps the cursor and the events", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2);
+    await agent.next("welcome");
+    const base = { slug: "turns", title: "Turns", stage: "plan", status: "working", mode: "guided" };
+    agent.send({ type: "sync", spec: { ...spec("turns"), repo: REPO }, line: 1, event: { kind: "note" }, state: base, turn: { turn: "claude", needsYou: false } });
+    // Sent at once: it applies after line 1.
+    agent.send({
+      type: "state",
+      spec: spec("turns"),
+      state: { ...base, title: "Turns now", stage: "build", status: "awaiting-approval", mode: "autopilot" },
+      turn: { turn: "you", needsYou: true },
+    });
+    await agent.next("synced", (f) => f.line === 1);
+    const mirrored = await eventually(async () => {
+      const s = await h.mirror.state(spec("turns"));
+      return s?.turn?.needsYou ? s : null;
+    });
+    assert.equal(mirrored.line, 1);
+    assert.equal(mirrored.events.length, 1);
+    assert.equal((mirrored.state as Record<string, unknown>).status, "awaiting-approval");
+    const handle = h.clients.data.workflow.getHandle(specWorkflowId(h.deployId, spec("turns").repoKey, "turns"));
+    const sa = await eventually(async () => {
+      const d = (await handle.describe()).typedSearchAttributes;
+      return d.get(SA.NeedsYou) === true ? d : null;
+    });
+    assert.equal(sa.get(SA.Status), "awaiting-approval");
+    assert.equal(sa.get(SA.Stage), "build");
+    assert.equal(sa.get(SA.Mode), "autopilot");
+    assert.equal(sa.get(SA.SpecTitle), "Turns now");
+    // The next line still applies after it.
+    agent.send({ type: "sync", spec: spec("turns"), line: 2, event: { kind: "note" }, state: base, turn: null });
+    assert.equal((await agent.next("synced", (f) => f.line === 2)).error, undefined);
+
+    // A state frame for a spec with no workflow starts no run, and gets no answer.
+    agent.send({ type: "state", spec: spec("no-run"), state: base, turn: null });
+    await sleep(500);
+    assert.equal(await h.mirror.state(spec("no-run")), null);
+    assert.equal(agent.frames.length, 0);
+    await agent.close();
   } finally {
     await t.close();
     await h.close();

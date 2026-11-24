@@ -4,7 +4,7 @@ import type { ConfigStore } from "./configStore.js";
 import type { Attachments, UploadUrlAnswer } from "./attachments.js";
 import type { Mirror } from "./mirror.js";
 import type { SyncInput, SyncResult } from "./workflows/spec.js";
-import type { Message, SpecAddress } from "./workflows/types.js";
+import type { Message, SpecAddress, Turn } from "./workflows/types.js";
 
 export interface AgentBackend {
   /** True when the SHA-256 (hex) of an agent secret belongs to a paired Mac. */
@@ -12,6 +12,8 @@ export interface AgentBackend {
   /** A version 2 hello: keep the repos and the time. */
   hello(repos: string[], at: Date): Promise<void>;
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
+  /** The agent's state frame: a new state and turn with no new line. True when applied. */
+  state(spec: SpecAddress, state: Record<string, unknown>, turn: Turn | null): Promise<boolean>;
   /** The agent's gone frame: the spec no longer exists on the Mac. */
   gone(spec: SpecAddress): Promise<void>;
   /** The agent wrote a message to disk, or refused it with an error. */
@@ -41,6 +43,7 @@ export function temporalAgentBackend(deps: { mirror: Mirror; configStore: Config
     pairCodeValid: (codeHash) => deps.configStore.pairCodeValid(codeHash),
     sync: (spec, input) => deps.mirror.sync(spec, input),
     gone: (spec) => deps.mirror.gone(spec),
+    state: (spec, state, turn) => deps.mirror.refresh(spec, { state, turn }),
     ack: async (spec, seq, error) => {
       await deps.mirror.ack(spec, seq, error);
     },

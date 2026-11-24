@@ -80,6 +80,19 @@ export const syncUpdate = defineUpdate<SyncResult, [SyncInput, Bound]>("sync");
 export const sendUpdate = defineUpdate<{ seq: number; message: Message }, [SendInput, Bound]>("send");
 export const ackUpdate = defineUpdate<{ removed: boolean }, [AckInput, Bound]>("ack");
 export const readUpdate = defineUpdate<ReadResult, [ReadInput, Bound]>("read");
+export interface StateInput {
+  /** `studio show --json` of the spec now. */
+  state: Record<string, unknown>;
+  turn: Turn | null;
+}
+
+/**
+ * The agent's state frame: the state and the turn changed with no new activity
+ * line (for example, the turn moved). It replaces them; the line cursor and the
+ * events stay. A finished run ignores it.
+ */
+export const stateUpdate = defineUpdate<{ applied: boolean }, [StateInput, Bound]>("state");
+
 /** The agent's gone frame: the spec no longer exists on the Mac. */
 export const goneUpdate = defineUpdate<{ dropped: boolean }, [{ at: string }, Bound]>("gone");
 export const stateQuery = defineQuery<SpecWorkflowState>("state");
@@ -274,6 +287,14 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
     changed();
     return { removed: true };
   }, { validator: (_: AckInput, b: Bound) => open(b) });
+
+  setHandler(stateUpdate, (input) => {
+    if (s.finished) return { applied: false };
+    s.state = input.state;
+    s.turn = input.turn;
+    changed();
+    return { applied: true };
+  }, { validator: (_: StateInput, b: Bound) => open(b) });
 
   setHandler(goneUpdate, (gone) => {
     if (s.dropped) return { dropped: false };

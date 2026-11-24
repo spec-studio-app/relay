@@ -453,3 +453,19 @@ test("line 1 while the old run removes its data fails, so the agent sends it aga
     await h.close();
   }
 });
+
+test("a state update on a finished run changes nothing", async () => {
+  const h = await harness(env, { graceMs: 60_000 });
+  try {
+    const spec = specAddress(REPO, "finished-state");
+    await h.mirror.sync(spec, { line: 1, event: { kind: "note" }, state: showJson(), turn: null });
+    assert.equal(await h.mirror.refresh(spec, { state: showJson({ status: "blocked" }), turn: { turn: "you", needsYou: true } }), true);
+    await h.mirror.sync(spec, { line: 2, event: { kind: "stage", to: "merged" }, state: showJson({ stage: "merged" }), turn: null });
+    assert.equal(await h.mirror.refresh(spec, { state: showJson({ stage: "build" }), turn: null }), false);
+    const state = await h.mirror.state(spec);
+    assert.equal((state?.state as Record<string, unknown>).stage, "merged");
+    assert.equal(state?.line, 2);
+  } finally {
+    await h.close();
+  }
+});

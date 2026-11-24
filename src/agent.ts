@@ -12,6 +12,11 @@
 //   relay -> agent: {"type":"gone-ok","spec":{"repoKey":"...","slug":"..."}}
 //     The relay marked the spec dropped: the agent may drop its cursor. With an
 //     "error" field, the relay could not apply it: send it again later.
+//   agent -> relay: {"type":"state","spec":{"repoKey":"...","slug":"..."},"state":{...},"turn":{...}|null}
+//     The state (`studio show --json`) or the turn changed with no new activity
+//     line. The relay replaces the mirror's state and turn of a spec whose
+//     workflow runs and is not finished, after the earlier sync frames of that
+//     spec. No answer frame.
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -280,6 +285,10 @@ export class AgentHub {
       this.sync(ws, m);
       return;
     }
+    if (m.type === "state") {
+      this.stateFrame(ws, m);
+      return;
+    }
     if (m.type === "gone") {
       this.gone(ws, m);
       return;
@@ -465,6 +474,24 @@ export class AgentHub {
     this.syncChains.set(key, next);
     void next.finally(() => {
       if (this.syncChains.get(key) === next) this.syncChains.delete(key);
+    });
+  }
+
+  private stateFrame(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    const spec = parseSpec(m.spec);
+    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec || !isObject(m.state)) {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const state = m.state as Record<string, unknown>;
+    const turn = parseTurn(m.turn);
+    this.chain(spec, async () => {
+      try {
+        await backend.state(spec, state, turn);
+      } catch {
+        this.options.log({ event: "state_failed" });
+      }
     });
   }
 
