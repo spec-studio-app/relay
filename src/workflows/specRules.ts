@@ -11,12 +11,18 @@ import {
   DROPPED_TEXT,
   EVENT_LIMIT,
   RECREATED_TEXT,
+  STATUS_KINDS,
   effectiveTurn,
+  isStale,
+  lastMessageAt,
   mirrorFields,
+  statusChange,
   unreadForCoordinator,
   type Message,
   type SpecMemo,
   type SpecWorkflowState,
+  type StatusChange,
+  type Turn,
 } from "./types.js";
 import {
   ackMac,
@@ -73,6 +79,13 @@ export interface ReadResult {
   messages: Message[];
   stage: string;
   syncedAt: string | null;
+  /** The latest status change (missing from relays before it). */
+  changed?: StatusChange | null;
+  turn?: Turn | null;
+  /** The time of the thread's newest message, of either side. */
+  lastMessageAt?: string | null;
+  /** True when the spec changed after the thread's newest message. */
+  stale?: boolean;
 }
 
 export interface StateInput {
@@ -169,6 +182,9 @@ export function applySync(s: SpecWorkflowState, sync: SyncInput, env: RuleEnv): 
     s.events = [];
     s.line = 0;
     s.syncedAt = null;
+    s.lastStatusAt = null;
+    s.lastStatusLine = null;
+    s.lastMessageLine = null;
   }
   const fresh = lines.filter((l) => l.line > s.line);
   if (fresh.length === 0) {
@@ -190,6 +206,11 @@ export function applySync(s: SpecWorkflowState, sync: SyncInput, env: RuleEnv): 
     if (line <= s.line) continue;
     s.line = line;
     s.events.push({ line, event });
+    if (STATUS_KINDS.has(String(event.kind)) && typeof event.t === "string") {
+      s.lastStatusAt = event.t;
+      s.lastStatusLine = line;
+    }
+    if (event.kind === "message") s.lastMessageLine = line;
     // A message that the inbox already has (a restored spec sends its old lines
     // again after the reset of a first sync) is not added a second time.
     if (event.kind === "message" && !hasCoordinatorMessage(s, event.id)) {
@@ -212,7 +233,9 @@ export function checkSend(s: SpecWorkflowState): void {
 
 /** Add a message from Claude AI to the Mac inbox. Always a change. */
 export function applySend(s: SpecWorkflowState, send: SendInput): { seq: number; message: Message } {
-  return addForMac<Message>(s, send, { spec: specRef(s), stage: "" });
+  const sent = addForMac<Message>(s, send, { spec: specRef(s), stage: "" });
+  s.lastSentAt = send.at;
+  return sent;
 }
 
 /** The Mac took a message (or refused it with an error). */
@@ -253,7 +276,18 @@ export function applyGone(s: SpecWorkflowState, gone: { at: string }, env: RuleE
 /** The answer of a read after its wait. It moves readUpTo when it returns a newer message. */
 export function collectRead(s: SpecWorkflowState, after: number): { result: ReadResult; changed: boolean } {
   const { messages, changed } = collectMessages<Message>(s, after);
-  return { result: { messages, stage: mirrorFields(s.state).stage, syncedAt: s.syncedAt }, changed };
+  return {
+    result: {
+      messages,
+      stage: mirrorFields(s.state).stage,
+      syncedAt: s.syncedAt,
+      changed: statusChange(s),
+      turn: effectiveTurn(s.turn, s.state),
+      lastMessageAt: lastMessageAt(s),
+      stale: isStale(s),
+    },
+    changed,
+  };
 }
 
 /** A finished spec with empty inboxes: it ends after its grace period. */

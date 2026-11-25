@@ -5,7 +5,8 @@ import { repoKeyOf } from "./store/address.js";
 import { DeskNotFoundError, DeskRefusedError, SpecClosingError, SpecDroppedError, SpecNotFoundError } from "./store/errors.js";
 import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
-import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress } from "./workflows/types.js";
+import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
+import type { ReadResult } from "./workflows/specRules.js";
 import { DESK_GONE_TEXT } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
@@ -64,6 +65,18 @@ function shownDesk(message: DeskMessage, repo: string | undefined) {
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.attachments ? { attachments: message.attachments } : {}),
     createdAt: message.createdAt,
+  };
+}
+
+/** The text of a read whose spec changed after the thread's newest message. */
+export const STALE_TEXT = "The spec changed after the last message. Use read_spec for the current state.";
+
+/** The spec's latest status change and turn, and the stale text when the spec changed after the thread's newest message. */
+export function freshness(result: ReadResult): { changed: StatusChange | null; turn: Turn | null; stale?: string } {
+  return {
+    changed: result.changed ?? null,
+    turn: result.turn ?? null,
+    ...(result.stale === true ? { stale: STALE_TEXT } : {}),
   };
 }
 
@@ -227,7 +240,11 @@ export class MessageTools {
       const cursor = messages.length > 0 ? messages[messages.length - 1].seq : (after ?? 0);
       return {
         ok: true,
-        text: JSON.stringify({ spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, cursor, messages }, null, 2),
+        text: JSON.stringify(
+          { spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, ...freshness(result), cursor, messages },
+          null,
+          2,
+        ),
       };
     }
     return this.readAll(repo);
@@ -316,7 +333,9 @@ export class MessageTools {
         pendingForCoordinator: true,
         repoKey: repo ? repoKeyOf(repo) : undefined,
       });
-      const specs: Array<{ repo: string | null; slug: string; stage: string; cursor: number }> = [];
+      const specs: Array<
+        { repo: string | null; slug: string; stage: string; cursor: number } & ReturnType<typeof freshness>
+      > = [];
       const desks: Array<{ repo: string | null; cursor: number }> = [];
       const messages: Array<ReturnType<typeof shown> | ReturnType<typeof shownDesk>> = [];
       for (const item of listed) {
@@ -328,6 +347,7 @@ export class MessageTools {
           repo: path ?? null,
           slug: item.slug,
           stage: result.stage,
+          ...freshness(result),
           cursor: result.messages[result.messages.length - 1].seq,
         });
       }

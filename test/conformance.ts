@@ -269,4 +269,72 @@ export function runConformance(label: string, open: () => Promise<StoreUnderTest
     await config.setPairCode({ hash: pairCodeHash("NEW1-CODE"), expiresAt: hour });
     assert.equal(await config.pairCodeValid(pairCodeHash("NEW1-CODE")), true);
   });
+
+  scenario("relay-threads R3.S2, R2.S3: a local answer is from the user, and it goes only to the coordinator inbox", async ({ specs }) => {
+    const spec = specAddress(repo(), "senders");
+    await specs.sync(spec, {
+      first: true,
+      lines: [
+        { line: 1, event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "build", id: "s-1", text: "A question." } },
+        { line: 2, event: { t: "2026-11-24T14:30:00Z", kind: "message", from: "user", stage: "build", id: "u-1", text: "Yes.", replyTo: "s-1" } },
+        { line: 3, event: { t: "2026-11-24T14:31:00Z", kind: "message", from: "other", stage: "build", id: "x-1", text: "Odd." } },
+      ],
+      state: show("senders"),
+      turn: null,
+    });
+    const state = await specs.state(spec);
+    assert.deepEqual(state?.coordinator.messages.map((m) => [m.id, m.from]), [["s-1", "session"], ["u-1", "user"], ["x-1", "session"]]);
+    assert.equal(state?.coordinator.messages[1].replyTo, "s-1");
+    assert.deepEqual(state?.mac.messages, []);
+  });
+
+  scenario("relay-threads R4.S4: the status change survives the 20-event window; a send is the newest message", async ({ specs }) => {
+    const spec = specAddress(repo(), "window");
+    await specs.sync(spec, {
+      first: true,
+      lines: [{ line: 1, event: { t: "2026-11-24T10:00:00Z", kind: "status", from: "draft", to: "working", stage: "build" } }],
+      state: show("window", { statusNote: "Building." }),
+      turn: null,
+    });
+    await specs.sync(spec, { lines: lines(2, 26, (n) => ({ t: "2026-11-24T11:00:00Z", kind: "triage-decided", text: `T${n}: fix` })) });
+    const read = await specs.read(spec, 0, 0);
+    assert.deepEqual(read.changed, { stage: "build", status: "working", note: "Building.", at: "2026-11-24T10:00:00Z" });
+    assert.deepEqual(read.turn, { turn: "working", needsYou: false });
+    assert.equal(read.lastMessageAt, null);
+    const { message } = await specs.send(spec, { text: "How is it going?" });
+    assert.equal((await specs.read(spec, 0, 0)).lastMessageAt, message.createdAt);
+  });
+
+  scenario("relay-threads R4.S1: the stale rule: same-second order, loop-ended, and a send", async ({ specs }) => {
+    const spec = specAddress(repo(), "stale");
+    const at = "2026-11-24T14:27:00Z";
+    await specs.sync(spec, {
+      first: true,
+      lines: [
+        { line: 1, event: { t: "2026-11-24T14:00:00Z", kind: "status", from: "draft", to: "working", stage: "build" } },
+        { line: 2, event: { t: at, kind: "message", stage: "build", id: "s-1", text: "A question." } },
+      ],
+      state: show("stale"),
+      turn: null,
+    });
+    // A status change before the message, in an earlier second: current.
+    assert.equal((await specs.read(spec, 0, 0)).stale, false);
+    // A status change after the message in the same second: stale.
+    await specs.sync(spec, { lines: [{ line: 3, event: { t: at, kind: "status", from: "working", to: "idle", stage: "build" } }] });
+    assert.equal((await specs.read(spec, 0, 0)).stale, true);
+    // A message after it in the same second: current again.
+    await specs.sync(spec, { lines: [{ line: 4, event: { t: at, kind: "message", stage: "build", id: "s-2", text: "Done." } }] });
+    assert.equal((await specs.read(spec, 0, 0)).stale, false);
+    // studio loop end moved the stage: it counts as a status change.
+    await specs.sync(spec, {
+      lines: [{ line: 5, event: { t: "2026-11-24T15:00:00Z", kind: "loop-ended", stage: "build", text: "Back to Build." } }],
+      state: show("stale", { stage: "build", status: "working" }),
+    });
+    const read = await specs.read(spec, 0, 0);
+    assert.equal(read.stale, true);
+    assert.equal(read.changed?.at, "2026-11-24T15:00:00Z");
+    // The coordinator's message after the change: current.
+    await specs.send(spec, { text: "How is it going?" });
+    assert.equal((await specs.read(spec, 0, 0)).stale, false);
+  });
 }

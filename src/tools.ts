@@ -139,6 +139,9 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
       "Keep the cursor of the result and give it as after in the next call. " +
       "With no repo and no slug, the result gives the unread messages of all specs and all desks. " +
       "A message from a desk shows its repo and desk true. " +
+      "A message from the user is the user's answer in the terminal of the spec, which Spec Studio copied. " +
+      "For a spec, the result also gives its latest status change (stage, status, note and time) and its turn. " +
+      "When the spec changed after the last message, the result says so in stale: then use read_spec. " +
       "When no message is there, the call waits up to 20 seconds for a new message.",
     inputSchema: {
       repo: repo

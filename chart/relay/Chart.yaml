@@ -3,8 +3,8 @@ name: relay
 description: The Spec Studio relay, a self-hosted remote MCP server with a mirror of each spec in JSON files or in Temporal.
 type: application
 # The release workflow sets both versions from the v* tag.
-version: 0.4.0
-appVersion: "0.4.0"
+version: 0.5.0
+appVersion: "0.5.0"
 home: https://github.com/spec-studio-app/relay
 sources:
   - https://github.com/spec-studio-app/relay
