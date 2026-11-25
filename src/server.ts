@@ -278,6 +278,22 @@ export function createRelay(config: RelayConfig): Relay {
   };
 }
 
+/**
+ * The notice that starts each tool result while the last agent hello failed
+ * the handshake, or null. It reads the last sync time only then.
+ */
+async function mismatchNotice(hub: AgentHub, offline?: OfflineReader): Promise<string | null> {
+  const agent = hub.lastAgent;
+  if (!agent || agent.compatible) return null;
+  let lastSync: string | null = null;
+  try {
+    lastSync = (await offline?.lastSyncAt?.()) ?? null;
+  } catch {
+    lastSync = null;
+  }
+  return hub.mismatchNotice(lastSync);
+}
+
 function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, localTools?: LocalTools): McpServer {
   const server = new McpServer({ name: "spec-studio", version: RELAY_VERSION });
   for (const tool of TOOLS) {
@@ -290,8 +306,9 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
         const fromMirror = result.offline === true && offline !== undefined && OFFLINE_READ_TOOLS.has(tool.name);
         if (fromMirror) result = await offline.answer(tool.name, args ?? {}, hub.offlineText());
         log({ event: "tool_call", tool: tool.name, ok: result.ok, offline: fromMirror || undefined, ms: Date.now() - start });
+        const notice = await mismatchNotice(hub, offline);
         return {
-          content: [{ type: "text" as const, text: result.text }],
+          content: [{ type: "text" as const, text: notice ? `${notice}\n${result.text}` : result.text }],
           ...(result.ok ? {} : { isError: true }),
         };
       },
@@ -306,8 +323,9 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
           const start = Date.now();
           const result = await localTools.answer(tool.name, args ?? {});
           log({ event: "tool_call", tool: tool.name, ok: result.ok, ms: Date.now() - start });
+          const notice = await mismatchNotice(hub, offline);
           return {
-            content: [{ type: "text" as const, text: result.text }],
+            content: [{ type: "text" as const, text: notice ? `${notice}\n${result.text}` : result.text }],
             ...(result.ok ? {} : { isError: true }),
           };
         },

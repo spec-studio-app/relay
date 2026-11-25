@@ -15,6 +15,8 @@ export interface MessageToolsOptions {
   attachments: Attachments;
   /** How long read_messages waits for a new message (tests set less). */
   waitMs?: number;
+  /** The time of the newest sync of any spec, for the "no synced spec" error. */
+  lastSyncAt?: () => Promise<string | null>;
 }
 
 function str(value: unknown): string | undefined {
@@ -59,9 +61,20 @@ export class MessageTools {
         return { ok: false, text: `${error.message} It takes no more messages.` };
       }
       if (error instanceof SpecNotFoundError) {
-        return { ok: false, text: "The relay has no synced spec with this repo and slug. Check them with list_specs." };
+        return { ok: false, text: `The relay has no synced spec with this repo and slug. ${await this.lastSyncText()} Check them with list_specs.` };
       }
       return { ok: false, text: "The relay cannot reach Temporal now. Try again later." };
+    }
+  }
+
+  /** The time of the last sync of any spec, so a caller can tell a stopped sync from a wrong slug. */
+  private async lastSyncText(): Promise<string> {
+    if (!this.o.lastSyncAt) return "";
+    try {
+      const at = await this.o.lastSyncAt();
+      return at ? `The last sync of any spec was at ${at}.` : "No spec has synced to this relay.";
+    } catch {
+      return "";
     }
   }
 

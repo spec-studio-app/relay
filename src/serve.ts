@@ -11,7 +11,7 @@ import { createActivities } from "./activities.js";
 import { Mirror } from "./mirror.js";
 import { ConfigStore, temporalOAuthStore } from "./configStore.js";
 import { temporalAgentBackend } from "./backend.js";
-import { OfflineTools } from "./offline.js";
+import { OfflineTools, lastSyncAt } from "./offline.js";
 import { MessageTools } from "./messages.js";
 import { Attachments } from "./attachments.js";
 
@@ -65,7 +65,13 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     agentBackend: temporalAgentBackend({ mirror, configStore, attachments }),
     offline: new OfflineTools({ mirror, configStore }),
     oauthStore: temporalOAuthStore(configStore),
-    localTools: (hub) => new MessageTools({ mirror, attachments, push: (spec, message) => hub.pushMessage(spec, message) }),
+    localTools: (hub) =>
+      new MessageTools({
+        mirror,
+        attachments,
+        push: (spec, message) => hub.pushMessage(spec, message),
+        lastSyncAt: () => lastSyncAt(mirror),
+      }),
   });
   const server = createServer(relay.app);
   relay.attach(server);

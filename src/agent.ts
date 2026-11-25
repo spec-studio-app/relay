@@ -4,6 +4,16 @@
 //   relay -> agent: {"type":"call","id":"<uuid>","tool":"<name>","arguments":{...}}
 //   agent -> relay: {"type":"result","id":"<same>","ok":true|false,"text":"<string>"}
 //   agent -> relay: {"type":"hello","version":1}   (optional, after connect)
+// The handshake (wire version 3): the hello has "version", "agentVersion" and
+// "wires" (the wire versions that the agent speaks; a hello with no list
+// counts as [version]). The relay picks the highest common wire version and
+// sends a welcome with "version", "relayVersion" and its own "wires". With no
+// common version it sends
+//   relay -> agent: {"type":"incompatible","tooOld":"app"|"relay","relayVersion":"...","wires":[...],"minAppVersion":"...","text":"..."}
+// and closes the connection with close code 4002.
+// A frame that the relay refuses gets an answer: a sync frame gets "synced"
+// with an "error", another frame gets
+//   relay -> agent: {"type":"error","frame":"<type of the refused frame>","text":"<reason>"}
 // Version 3 (wire.md in the app's specs/studio-relay): hello with repos,
 // welcome, sync and synced, message and delivered, upload-url and
 // download-url, gone and gone-ok. An agent of an older version gets tool
@@ -33,7 +43,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
-import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
+import { INCOMPATIBLE_CLOSE_CODE, MIN_APP_VERSION_FOR_WIRE, RELAY_VERSION, SUPPORTED_WIRES, WIRE_VERSION } from "./version.js";
 import type { Message, SpecAddress } from "./workflows/types.js";
 
 export interface CallResult {
@@ -97,6 +107,33 @@ interface PendingCall {
 
 export const AGENT_PATH = "/agent";
 
+/** The last hello of an agent: its versions, the time, and whether it got a welcome. */
+export interface AgentRecord {
+  /** The app version from the hello, or null when the hello has none. */
+  appVersion: string | null;
+  /** The wire versions that the agent speaks. */
+  wires: number[];
+  at: Date;
+  compatible: boolean;
+  /** Which side is too old, when the handshake failed. */
+  tooOld?: "app" | "relay";
+}
+
+/** The wire versions of a hello: its "wires" list, or [version] when it has no list. */
+export function agentWires(m: Record<string, unknown>): number[] {
+  if (Array.isArray(m.wires)) {
+    const wires = m.wires.filter((w): w is number => typeof w === "number" && Number.isInteger(w) && w > 0);
+    if (wires.length > 0) return [...new Set(wires)].sort((a, b) => a - b);
+  }
+  return typeof m.version === "number" && Number.isInteger(m.version) ? [m.version] : [];
+}
+
+/** "v0.1.0" for a version that starts with a digit, else the text as it is. */
+function shownVersion(version: string | null): string {
+  if (!version) return "of an unknown version";
+  return /^\d/.test(version) ? `v${version}` : version;
+}
+
 export class AgentHub {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   private readonly startedAt: Date;
@@ -120,6 +157,7 @@ export class AgentHub {
    * a push goes once, until a scan finds it still waiting after resendAfterMs.
    */
   private readonly pushed = new WeakMap<WebSocket, Map<string, number>>();
+  private lastHello: AgentRecord | null = null;
 
   constructor(private readonly options: AgentHubOptions) {
     this.startedAt = options.now();
@@ -293,11 +331,14 @@ export class AgentHub {
     try {
       message = JSON.parse(raw);
     } catch {
-      this.options.log({ event: "agent_bad_message" });
+      this.refuse(ws, "unknown", "The frame is not JSON.");
       return;
     }
-    if (typeof message !== "object" || message === null) return;
-    const m = message as Record<string, unknown>;
+    if (!isObject(message)) {
+      this.refuse(ws, "unknown", "The frame is not a JSON object.");
+      return;
+    }
+    const m = message;
     if (m.type === "hello") {
       this.hello(ws, m);
       return;
@@ -322,8 +363,13 @@ export class AgentHub {
       void this.signedUrl(ws, m);
       return;
     }
-    if (m.type !== "result" || typeof m.id !== "string") {
-      this.options.log({ event: "agent_bad_message" });
+    if (m.type !== "result") {
+      const type = typeof m.type === "string" ? m.type.slice(0, 40) : "unknown";
+      this.refuse(ws, type, `The relay does not know the frame type "${type}".`);
+      return;
+    }
+    if (typeof m.id !== "string") {
+      this.refuse(ws, "result", "The result frame has no call ID.");
       return;
     }
     const call = this.pending.get(m.id);
@@ -339,6 +385,28 @@ export class AgentHub {
     if (ws && this.hashes.get(ws) === hash) ws.close(4001, "unpaired");
   }
 
+  /** The last hello of an agent since the relay started, or null. */
+  get lastAgent(): AgentRecord | null {
+    return this.lastHello;
+  }
+
+  /**
+   * The notice for the MCP tools while the last agent hello failed the
+   * handshake, or null. lastSync is the time of the newest sync of any spec.
+   */
+  mismatchNotice(lastSync: string | null): string | null {
+    const agent = this.lastHello;
+    if (!agent || agent.compatible) return null;
+    const relayVersion = this.options.relayVersion ?? RELAY_VERSION;
+    const since = lastSync ?? `the relay started at ${this.startedAt.toISOString()}`;
+    const ask = agent.tooOld === "relay" ? "Ask the user to update the relay." : "Ask the user to update the app.";
+    return (
+      `The Mac app (${shownVersion(agent.appVersion)}, wire ${agent.wires.join(", ")}) is not compatible with this relay ` +
+      `(${relayVersion}, wire ${SUPPORTED_WIRES.join(", ")}). Nothing has synced since ${since}. ${ask} ` +
+      `The Mac last tried to connect at ${agent.at.toISOString()}.`
+    );
+  }
+
   /** The wire version of the current agent socket (0 when no agent). */
   get wireVersion(): number {
     return this.socket ? (this.versions.get(this.socket) ?? 1) : 0;
@@ -349,20 +417,41 @@ export class AgentHub {
     ws.send(JSON.stringify(frame));
   }
 
+  /** Answer a refused frame with an error frame, and log the refusal. */
+  private refuse(ws: WebSocket, frame: string, text: string): void {
+    this.options.log({ event: "agent_frame_refused", frame, reason: text });
+    this.send(ws, { type: "error", frame, text });
+  }
+
+  /** The reason for a frame that needs a welcome, from an agent that has none. */
+  private notWelcomed(ws: WebSocket): string | null {
+    if (!this.options.backend) return "The relay has no backend, so it takes tool results only.";
+    if (this.versions.get(ws) === WIRE_VERSION) return null;
+    return `The relay did not welcome this agent, so it does not take this frame. Send a hello of wire version ${WIRE_VERSION} first.`;
+  }
+
   private hello(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
-    if (!backend || typeof m.version !== "number" || m.version < 2) return;
-    if (m.version < WIRE_VERSION) {
-      // An older agent (wire version 2 sends one line per sync frame) gets tool
-      // calls only: no welcome, so it does not sync. It tells its user that
-      // the relay and the app do not match.
-      this.options.log({ event: "agent_hello_old", version: m.version });
+    // A version 1 hello (no list of wire versions) keeps tool calls only.
+    if (!backend || typeof m.version !== "number" || (m.version < 2 && !Array.isArray(m.wires))) return;
+    const wires = agentWires(m);
+    const appVersion = typeof m.agentVersion === "string" && m.agentVersion ? m.agentVersion.slice(0, 40) : null;
+    const common = wires.filter((w) => SUPPORTED_WIRES.includes(w));
+    if (common.length === 0) {
+      this.incompatible(ws, appVersion, wires);
       return;
     }
-    this.versions.set(ws, WIRE_VERSION);
-    this.send(ws, { type: "welcome", version: WIRE_VERSION, relayVersion: this.options.relayVersion ?? RELAY_VERSION });
+    const version = Math.max(...common);
+    this.lastHello = { appVersion, wires, at: this.options.now(), compatible: true };
+    this.versions.set(ws, version);
+    this.send(ws, {
+      type: "welcome",
+      version,
+      relayVersion: this.options.relayVersion ?? RELAY_VERSION,
+      wires: [...SUPPORTED_WIRES],
+    });
     const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
-    this.options.log({ event: "agent_hello", version: WIRE_VERSION, repos: repos.length });
+    this.options.log({ event: "agent_hello", version, appVersion: appVersion ?? undefined, repos: repos.length });
     backend.hello(repos, this.options.now()).catch(() => this.options.log({ event: "agent_hello_failed" }));
     void this.afterWelcome(ws);
     if (!this.scanners.has(ws)) {
@@ -374,6 +463,36 @@ export class AgentHub {
       this.scanners.set(ws, scanner);
       ws.once("close", () => clearInterval(scanner));
     }
+  }
+
+  /**
+   * No common wire version: tell the agent which side is too old, then close
+   * the connection with INCOMPATIBLE_CLOSE_CODE. The relay keeps the record,
+   * so the MCP tools can tell Claude AI.
+   */
+  private incompatible(ws: WebSocket, appVersion: string | null, wires: number[]): void {
+    const relayVersion = this.options.relayVersion ?? RELAY_VERSION;
+    const tooOld: "app" | "relay" = wires.length === 0 || Math.max(...wires) < SUPPORTED_WIRES[0] ? "app" : "relay";
+    const minAppVersion = MIN_APP_VERSION_FOR_WIRE[SUPPORTED_WIRES[0]];
+    const head =
+      `The relay ${relayVersion} speaks wire version ${SUPPORTED_WIRES.join(", ")}. ` +
+      `This app (${shownVersion(appVersion)}) speaks wire version ${wires.join(", ") || "unknown"}.`;
+    const text =
+      tooOld === "app"
+        ? `${head} The relay needs app v${minAppVersion} or later. Update the app.`
+        : `${head} Update the relay to a version that speaks wire version ${Math.max(...wires)}.`;
+    this.lastHello = { appVersion, wires, at: this.options.now(), compatible: false, tooOld };
+    this.options.log({ event: "agent_incompatible", appVersion: appVersion ?? undefined, wires: wires.join(","), tooOld });
+    this.send(ws, {
+      type: "incompatible",
+      tooOld,
+      relayVersion,
+      wires: [...SUPPORTED_WIRES],
+      ...(minAppVersion ? { minAppVersion } : {}),
+      text,
+    });
+    // A close reason has at most 123 bytes: the frame carries the full text.
+    ws.close(INCOMPATIBLE_CLOSE_CODE, tooOld === "app" ? "incompatible: update the app" : "incompatible: update the relay");
   }
 
   /**
@@ -422,8 +541,17 @@ export class AgentHub {
   /** The agent asks for a signed URL to upload or download an attachment. */
   private async signedUrl(ws: WebSocket, m: Record<string, unknown>): Promise<void> {
     const backend = this.options.backend;
-    if (!backend || this.versions.get(ws) !== WIRE_VERSION || typeof m.id !== "string") {
-      this.options.log({ event: "agent_bad_message" });
+    const type = m.type as string;
+    const refused = this.notWelcomed(ws) ?? (typeof m.id !== "string" ? `The ${type} frame has no ID.` : null);
+    if (!backend || refused !== null || typeof m.id !== "string") {
+      const text = refused ?? `The ${type} frame is not valid.`;
+      if (typeof m.id !== "string") {
+        this.refuse(ws, type, text);
+        return;
+      }
+      // The agent waits for the answer with this ID.
+      this.options.log({ event: "agent_frame_refused", frame: type, reason: text });
+      this.send(ws, { type, id: m.id, ok: false, text });
       return;
     }
     const id = m.id;
@@ -454,8 +582,9 @@ export class AgentHub {
   private delivered(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
     const spec = parseSpec(m.spec);
-    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec || typeof m.seq !== "number") {
-      this.options.log({ event: "agent_bad_message" });
+    const refused = this.notWelcomed(ws) ?? (!spec || typeof m.seq !== "number" ? "The delivered frame needs a spec and a seq." : null);
+    if (!backend || !spec || typeof m.seq !== "number" || refused !== null) {
+      this.refuse(ws, "delivered", refused ?? "The delivered frame is not valid.");
       return;
     }
     const error = typeof m.error === "string" && m.error ? m.error.slice(0, 500) : undefined;
@@ -465,19 +594,20 @@ export class AgentHub {
 
   private sync(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
-    if (!backend || this.versions.get(ws) !== WIRE_VERSION) {
-      this.options.log({ event: "agent_bad_message" });
-      return;
-    }
+    const notWelcomed = this.notWelcomed(ws);
     const spec = parseSpec(m.spec);
     const lines = parseLines(m.lines);
     const hasState = "state" in m;
-    if (!spec || !lines || (hasState && !isObject(m.state) && m.state !== null)) {
-      this.options.log({ event: "agent_bad_sync" });
-      const last = lastLineNumber(m.lines);
-      if (spec && last !== null) {
-        this.send(ws, { type: "synced", spec: wireSpec(spec), line: last, error: "The sync frame is not valid." });
-      }
+    const refused =
+      notWelcomed ??
+      (!spec || !lines || (hasState && !isObject(m.state) && m.state !== null) ? "The sync frame is not valid." : null);
+    if (!backend || !spec || !lines || refused !== null) {
+      const text = refused ?? "The sync frame is not valid.";
+      this.options.log({ event: "agent_frame_refused", frame: "sync", reason: text });
+      // The agent waits for synced with the frame's last line: answer it when the frame names one.
+      const last = lastLineNumber(m.lines) ?? (typeof m.line === "number" && Number.isInteger(m.line) ? m.line : null);
+      if (spec && last !== null) this.send(ws, { type: "synced", spec: wireSpec(spec), line: last, error: text });
+      else this.send(ws, { type: "error", frame: "sync", text });
       return;
     }
     const line = lines[lines.length - 1].line;
@@ -512,8 +642,9 @@ export class AgentHub {
   private stateFrame(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
     const spec = parseSpec(m.spec);
-    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec || !isObject(m.state)) {
-      this.options.log({ event: "agent_bad_message" });
+    const refused = this.notWelcomed(ws) ?? (!spec || !isObject(m.state) ? "The state frame needs a spec and a state object." : null);
+    if (!backend || !spec || !isObject(m.state) || refused !== null) {
+      this.refuse(ws, "state", refused ?? "The state frame is not valid.");
       return;
     }
     const entry: StateEntry = { ws, spec, state: m.state as Record<string, unknown>, turn: parseTurn(m.turn) };
@@ -560,8 +691,12 @@ export class AgentHub {
   private gone(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
     const spec = parseSpec(m.spec);
-    if (!backend || this.versions.get(ws) !== WIRE_VERSION || !spec) {
-      this.options.log({ event: "agent_bad_message" });
+    const refused = this.notWelcomed(ws) ?? (!spec ? "The gone frame needs a spec." : null);
+    if (!backend || !spec || refused !== null) {
+      const text = refused ?? "The gone frame is not valid.";
+      this.options.log({ event: "agent_frame_refused", frame: "gone", reason: text });
+      if (spec) this.send(ws, { type: "gone-ok", spec: wireSpec(spec), error: text });
+      else this.send(ws, { type: "error", frame: "gone", text });
       return;
     }
     this.chain(spec, async () => {

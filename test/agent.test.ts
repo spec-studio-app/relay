@@ -44,14 +44,14 @@ test("R1.S1: a paired version 1 agent gets tool calls only: no welcome, sync or 
   }
 });
 
-test("a version 3 hello gets a welcome, and the relay keeps the repos with the time", async () => {
+test("R1.S2: a version 3 hello with no wires gets a welcome, and the relay keeps the repos with the time", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await h.startConfig();
     const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     const welcome = await agent.next("welcome");
-    assert.deepEqual(welcome, { type: "welcome", version: 3, relayVersion: RELAY_VERSION });
+    assert.deepEqual(welcome, { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3] });
     assert.equal(t.relay.hub.wireVersion, 3);
     const repos = await eventually(() => h.configStore.repos());
     assert.deepEqual(repos.repos, HELLO.repos);
@@ -200,34 +200,123 @@ test("a state frame replaces the state and the turn after the earlier lines, and
   }
 });
 
-test("a version 1 agent cannot send sync frames", async () => {
+test("R6.S1: a sync frame before the welcome gets synced with an error, and the relay logs it", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     const agent = await connectAgent(t.base);
     agent.send({ type: "sync", spec: spec("v1"), lines: [{ line: 1, event: {} }], state: null, turn: null });
-    await sleep(300);
-    assert.deepEqual(agent.frames, []);
+    const synced = await agent.next("synced");
+    assert.equal(synced.line, 1);
+    assert.match(synced.error, /did not welcome this agent/);
     assert.equal(await h.mirror.state(spec("v1")), null);
-    assert.ok(t.logs.some((e) => e.event === "agent_bad_message"));
+    assert.ok(t.logs.some((e) => e.event === "agent_frame_refused" && e.frame === "sync"));
+    await agent.close();
   } finally {
     await t.close();
     await h.close();
   }
 });
 
-test("R4.S2: a version 2 agent gets no welcome and cannot sync, but its tool calls work", async () => {
+test("R6.S2: a state frame with no spec gets an error frame; a frame of an unknown type and text that is not JSON do too", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 2 });
-    agent.send({ type: "sync", spec: spec("old-app"), line: 1, event: { kind: "note" }, state: null, turn: null });
-    await sleep(300);
-    assert.deepEqual(agent.frames.filter((f) => f.type === "welcome" || f.type === "synced"), []);
-    assert.equal(await h.mirror.state(spec("old-app")), null);
-    assert.ok(t.logs.some((e) => e.event === "agent_hello_old"));
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "state", state: { stage: "build" }, turn: null });
+    const error = await agent.next("error");
+    assert.equal(error.frame, "state");
+    assert.match(error.text, /needs a spec/);
+    assert.ok(t.logs.some((e) => e.event === "agent_frame_refused" && e.frame === "state"));
+
+    agent.send({ type: "teleport" });
+    assert.match((await agent.next("error", (f) => f.frame === "teleport")).text, /does not know the frame type/);
+    agent.ws.send("not json");
+    assert.match((await agent.next("error", (f) => f.frame === "unknown")).text, /not JSON/);
     await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R1.S1: a hello with wires and an app version gets a welcome with the common version and the relay's wires", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, agentVersion: "0.1.2", wires: [3] });
+    assert.deepEqual(await agent.next("welcome"), { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3] });
+    assert.deepEqual(t.relay.hub.lastAgent?.wires, [3]);
+    assert.equal(t.relay.hub.lastAgent?.appVersion, "0.1.2");
+    assert.equal(t.relay.hub.lastAgent?.compatible, true);
+    assert.equal(t.relay.hub.mismatchNotice(null), null);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R2.S1, R5.S1: a version 2 agent gets incompatible (app too old) and close 4002; the tools then start with the notice", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 2, agentVersion: "0.1.0" });
+    const frame = await agent.next("incompatible");
+    assert.equal(frame.tooOld, "app");
+    assert.equal(frame.minAppVersion, "0.1.1");
+    assert.equal(frame.relayVersion, RELAY_VERSION);
+    assert.deepEqual(frame.wires, [3]);
+    assert.match(frame.text, /The relay needs app v0\.1\.1 or later\. Update the app\./);
+    const closed = await agent.closed;
+    assert.equal(closed.code, 4002);
+    assert.match(closed.reason, /update the app/);
+    const log = t.logs.find((e) => e.event === "agent_incompatible");
+    assert.equal(log?.appVersion, "0.1.0");
+    assert.equal(log?.wires, "2");
+    assert.equal(await h.mirror.state(spec("old-app")), null);
+
+    // R5.S1: the MCP tools tell Claude AI.
+    const { accessToken } = await signIn(t.base);
+    const result = await callTool(t.base, accessToken, "list_specs", {});
+    assert.match(
+      result.content[0].text,
+      new RegExp(
+        `^The Mac app \\(v0\\.1\\.0, wire 2\\) is not compatible with this relay \\(${RELAY_VERSION.replace(/\./g, "\\.")}, wire 3\\)\\. ` +
+          `Nothing has synced since .+\\. Ask the user to update the app\\.`,
+      ),
+    );
+    const read = await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "old-app" });
+    assert.match(read.content[0].text, /^The Mac app \(v0\.1\.0, wire 2\) is not compatible/);
+
+    // R5.S2: a good hello clears the notice.
+    const current = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await current.next("welcome");
+    current.answer = () => ({ ok: true, text: '{"specs":[]}' });
+    const after = await callTool(t.base, accessToken, "list_specs", {});
+    assert.equal(after.content[0].text, '{"specs":[]}');
+    await current.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R2.S2: a hello with only a newer wire version gets incompatible (relay too old) and close 4002", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 4, wires: [4] });
+    const frame = await agent.next("incompatible");
+    assert.equal(frame.tooOld, "relay");
+    assert.match(frame.text, /Update the relay/);
+    assert.equal((await agent.closed).code, 4002);
+    assert.match(t.relay.hub.mismatchNotice(null) ?? "", /since the relay started at .+ Ask the user to update the relay\./);
   } finally {
     await t.close();
     await h.close();
