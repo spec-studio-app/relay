@@ -43,7 +43,6 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
         push: (spec, message) => hub.pushMessage(spec, message),
         pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
         lastSyncAt: () => lastSyncAt(store.specs),
-        repos: async () => (await store.config.repos())?.repos ?? null,
       }),
   });
   const server = createServer(relay.app);

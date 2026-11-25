@@ -4,7 +4,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn, sleep, startRelay } from "./helpers.js";
 import { repoKeyOf } from "../src/mirror.js";
-import { DESK_OFF_TEXT, specWorkflowId } from "../src/workflows/types.js";
+import { DESK_GONE_TEXT, DESK_OFF_TEXT, specWorkflowId } from "../src/workflows/types.js";
 import { SA } from "../src/workflows/searchAttributes.js";
 import { RELAY_VERSION } from "../src/version.js";
 
@@ -452,6 +452,13 @@ test("R2.S3, R6.S1: a desks frame saves each desk, and then the relay pushes the
     // A message that is still not acked goes again after the next desks frame.
     agent.send({ type: "desks", desks: [deskEntry({ turn: { turn: "working", needsYou: false } })] });
     assert.equal((await agent.next("desk-message")).message.id, waiting.message.id);
+    // The repo that the frame no longer lists left Spec Studio: its desk takes no more messages.
+    const left = await eventually(async () => {
+      const state = await h.desks.get({ repoKey: repoKeyOf("/Users/me/code/site") });
+      return state?.reason === DESK_GONE_TEXT ? state : null;
+    });
+    assert.equal(left.canMessage, false);
+    assert.equal(left.open, false);
 
     // The Mac takes it.
     agent.send({ type: "desk-delivered", desk: DESK, seq: waiting.seq });

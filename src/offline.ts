@@ -4,7 +4,7 @@
 // old it is.
 import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
-import { EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
+import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
 
 export interface ToolText {
   ok: boolean;
@@ -60,7 +60,7 @@ export class OfflineTools implements OfflineReader {
     // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
     const keys = new Set(repos.repos.map((path) => repoKeyOf(path)));
     const desks = (await this.deps.desks.list())
-      .filter((d) => keys.has(d.repoKey))
+      .filter((d) => keys.has(d.repoKey) && d.memo.reason !== DESK_GONE_TEXT)
       .map((d) => ({
         repo: d.memo.repo,
         open: d.memo.open,

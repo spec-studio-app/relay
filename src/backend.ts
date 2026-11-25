@@ -9,6 +9,8 @@ import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress, Turn }
 export interface DeskBackend {
   /** The agent's desks frame: save each desk. */
   report(desks: DeskReport[]): Promise<void>;
+  /** Every desk record, with its repo and its reason. */
+  list?(): Promise<Array<{ repoKey: string; repo: string | null; reason: string | null }>>;
   /** The agent wrote a desk message to disk, or refused it with an error. */
   ack(desk: DeskAddress, seq: number, error?: string): Promise<void>;
   /** The desk's reply lines (desk-sync). */

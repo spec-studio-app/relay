@@ -43,6 +43,7 @@ export function storeAgentBackend(deps: {
               await desks.ack(desk, seq, error);
             },
             sync: (desk, lines) => desks.sync(desk, lines),
+            list: async () => (await desks.list()).map((d) => ({ repoKey: d.repoKey, repo: d.memo.repo, reason: d.memo.reason })),
             uploadUrl: (desk, filename, contentType, size) =>
               deps.attachments.uploadUrl({ ...desk, desk: true }, filename, contentType, size),
             async pendingForMac() {

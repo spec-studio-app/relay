@@ -6,6 +6,7 @@ import { DeskNotFoundError, DeskRefusedError, SpecClosingError, SpecDroppedError
 import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress } from "./workflows/types.js";
+import { DESK_GONE_TEXT } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
 export const READ_WAIT_MS = 20_000;
@@ -19,8 +20,6 @@ export interface MessageToolsOptions {
   desks?: DeskStore;
   /** Push a new desk message to the Mac. False when no agent that takes desk messages is connected. */
   pushDesk?: (desk: DeskAddress, message: DeskMessage) => boolean;
-  /** The repo paths of the agent's last hello, or null when the relay has none. A name lookup uses only these desks. */
-  repos?: () => Promise<string[] | null>;
   attachments: Attachments;
   /** How long read_messages waits for a new message (tests set less). */
   waitMs?: number;
@@ -125,11 +124,9 @@ export class MessageTools {
     if (byPath) return byPath;
     if (repo.includes("/")) return null;
     // Desk records stay after a repo moves or leaves Spec Studio: a name
-    // matches only the desks of the repos that the Mac has now.
-    const current = this.o.repos ? await this.o.repos() : null;
-    const keys = current ? new Set(current.map((path) => repoKeyOf(path))) : null;
+    // matches only the desks of the Mac's last desks frame.
     const named = (await desks.list()).filter(
-      (d) => d.memo.repo && repoName(d.memo.repo) === repo && (!keys || keys.has(d.repoKey)),
+      (d) => d.memo.repo && repoName(d.memo.repo) === repo && d.memo.reason !== DESK_GONE_TEXT,
     );
     if (named.length > 1) {
       throw new DeskRefusedError(`More than one repo has the name "${repo}". Give the repo path from list_repos.`);

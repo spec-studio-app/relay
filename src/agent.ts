@@ -58,6 +58,7 @@ import type { Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
 import { INCOMPATIBLE_CLOSE_CODE, MIN_APP_VERSION_FOR_WIRE, RELAY_VERSION, SUPPORTED_WIRES, WIRE_VERSION } from "./version.js";
 import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress } from "./workflows/types.js";
+import { DESK_GONE_TEXT } from "./workflows/types.js";
 
 export interface CallResult {
   ok: boolean;
@@ -649,7 +650,32 @@ export class AgentHub {
           }),
         ),
     );
-    void Promise.all(saved).then(async (results) => {
+    // A desk record that the frame does not list belongs to a repo that left
+    // Spec Studio or moved: it takes no more messages, and a name does not find it.
+    const listed = new Set(reports.map((report) => report.repoKey));
+    const gone = (desks.list ? desks.list() : Promise.resolve([]))
+      .then((all) => all.filter((d) => !listed.has(d.repoKey) && d.reason !== DESK_GONE_TEXT))
+      .catch(() => [])
+      .then((stale) =>
+        Promise.all(
+          stale.map(
+            (d) =>
+              new Promise<boolean>((resolve) =>
+                this.chain(deskChainKey({ repoKey: d.repoKey }), async () => {
+                  try {
+                    await desks.report([
+                      { repoKey: d.repoKey, repo: d.repo ?? "", open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
+                    ]);
+                    resolve(true);
+                  } catch {
+                    resolve(false);
+                  }
+                }),
+              ),
+          ),
+        ),
+      );
+    void Promise.all([Promise.all(saved), gone]).then(async ([results]) => {
       if (results.some((ok) => !ok)) {
         this.options.log({ event: "desks_failed" });
         this.send(ws, { type: "error", frame: "desks", text: "The relay cannot save the desks now." });

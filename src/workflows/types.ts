@@ -327,6 +327,12 @@ export interface DeskMemo {
   unreadForCoordinator: number;
 }
 
+/**
+ * The reason of a desk whose repo is not in the Mac's last desks frame (the
+ * user removed or moved the repo). The same text as the agent's.
+ */
+export const DESK_GONE_TEXT = "The repo is not in Spec Studio on this Mac.";
+
 /** The refusal when Claude AI cannot message a desk and the agent gave no reason. */
 export const DESK_OFF_TEXT =
   "Claude AI cannot message this desk. The user can turn it on in Spec Studio, Settings, Remote Relay.";

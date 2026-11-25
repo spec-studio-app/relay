@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import type { DeskStore, SpecStore } from "../src/store/types.js";
 import type { DeskReport } from "../src/workflows/types.js";
-import { DESK_OFF_TEXT } from "../src/workflows/types.js";
+import { DESK_GONE_TEXT, DESK_OFF_TEXT } from "../src/workflows/types.js";
 import { DeskNotFoundError, DeskRefusedError, DeskUnreadableError } from "../src/store/errors.js";
 import { deskFileName } from "../src/store/json/jsonDeskStore.js";
 import { MessageTools } from "../src/messages.js";
@@ -331,7 +331,7 @@ test("review: a desk file that the relay cannot read stays in place, and the nex
   }
 });
 
-test("review: a repo name finds the desk of the repo that the Mac has now, and two such repos need the path", async () => {
+test("review: a repo name finds only a desk of the Mac's last desks frame, and two such repos need the path", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-desk-"));
   try {
     const store = jsonStore(dir);
@@ -341,23 +341,22 @@ test("review: a repo name finds the desk of the repo that the Mac has now, and t
     const moved = `/Users/me/new/app-${suffix}`;
     await store.desks.report(report(old));
     await store.desks.report(report(moved));
-    let current = [moved];
     const tools = new MessageTools({
       specs: store.specs,
       desks: store.desks,
       push: () => {},
       pushDesk: () => false,
-      repos: async () => current,
       attachments: new Attachments({ bucket: null, deployId: "default", maxBytes: 1000 }),
     });
+    const both = await tools.answer("send_message", { repo: `app-${suffix}`, text: "Again?" });
+    assert.equal(both.ok, false);
+    assert.match(both.text, /More than one repo has the name/);
+    // The next desks frame does not list the old path: the relay marks that desk gone.
+    await store.desks.report(report(old, { open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT }));
     const sent = await tools.answer("send_message", { repo: `app-${suffix}`, text: "Is CI green?" });
     assert.equal(sent.ok, true, sent.text);
     assert.equal((await store.desks.get({ repoKey: repoKeyOf(moved) }))?.mac.messages.length, 1);
     assert.equal((await store.desks.get({ repoKey: repoKeyOf(old) }))?.mac.messages.length, 0);
-    current = [old, moved];
-    const both = await tools.answer("send_message", { repo: `app-${suffix}`, text: "Again?" });
-    assert.equal(both.ok, false);
-    assert.match(both.text, /More than one repo has the name/);
     await store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
