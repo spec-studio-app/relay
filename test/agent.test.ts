@@ -4,7 +4,8 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn, sleep } from "./helpers.js";
 import { repoKeyOf } from "../src/mirror.js";
-import { SA, specWorkflowId } from "../src/workflows/types.js";
+import { specWorkflowId } from "../src/workflows/types.js";
+import { SA } from "../src/workflows/searchAttributes.js";
 import { RELAY_VERSION } from "../src/version.js";
 
 let env: TestWorkflowEnvironment;

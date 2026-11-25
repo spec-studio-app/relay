@@ -15,7 +15,8 @@ import {
 } from "@temporalio/workflow";
 import type { Activities } from "../activities.js";
 import { checkBound, type Bound } from "./bound.js";
-import { CLOSING_TEXT, FINISHED_GRACE_MS, SA, specWorkflowId, type Message, type SpecWorkflowState } from "./types.js";
+import { CLOSING_TEXT, FINISHED_GRACE_MS, specWorkflowId, type Message, type SpecWorkflowState } from "./types.js";
+import { SA } from "./searchAttributes.js";
 import {
   MAX_WAIT_MS,
   applyAck,

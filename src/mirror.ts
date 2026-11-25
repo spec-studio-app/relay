@@ -30,8 +30,6 @@ import {
   DEFAULT_UPDATE_LIMIT,
   DROPPED_TEXT,
   FINISHED_GRACE_MS,
-  SA as SAKeys,
-  SPEC_WORKFLOW_TYPE,
   initialSpecState,
   specWorkflowId,
   type Attachment,
@@ -40,6 +38,7 @@ import {
   type SpecMemo,
   type SpecWorkflowState,
 } from "./workflows/types.js";
+import { SA as SAKeys, SPEC_WORKFLOW_TYPE } from "./workflows/searchAttributes.js";
 import { SpecClosingError, SpecDroppedError, SpecNotFoundError, TimeoutError } from "./store/errors.js";
 import type { ListFilter, ListedSpec, SpecStore } from "./store/types.js";
 

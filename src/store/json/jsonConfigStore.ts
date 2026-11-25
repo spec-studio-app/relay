@@ -20,6 +20,13 @@ export class ConfigFileError extends Error {
   }
 }
 
+/** A change to a data folder with no config.json: the relay never started on this folder. */
+export class ConfigMissingError extends Error {
+  constructor() {
+    super("RELAY_DATA_DIR has no config.json. Start the relay on this folder first, or use the relay's RELAY_DATA_DIR.");
+  }
+}
+
 export class JsonConfigStore implements RelayConfigStore {
   /** In-process queue: the calls of this process wait here, not on the lock file. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -76,10 +83,15 @@ export class JsonConfigStore implements RelayConfigStore {
     return run;
   }
 
-  /** Read, apply the rule, and write when it changed something (with a sweep, as the workflow). */
+  /**
+   * Read, apply the rule, and write when it changed something (with a sweep, as
+   * the workflow). The relay's start makes config.json; a change to a folder
+   * without it fails, as a Temporal update fails without the relay-config workflow.
+   */
   private change<T>(fn: (s: RelayConfigState) => { result: T; changed: boolean }): Promise<T> {
     return this.locked(async () => {
-      const s = await this.current();
+      const s = await this.read();
+      if (s === null) throw new ConfigMissingError();
       const out = fn(s);
       if (out.changed) {
         rules.sweep(s, this.now());

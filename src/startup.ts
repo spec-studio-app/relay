@@ -13,16 +13,17 @@ import type { SearchAttributeType } from "@temporalio/common";
 import type { Config, TemporalSettings } from "./config.js";
 import type { Bucket } from "./bucket.js";
 import type { Logger } from "./log.js";
-import type { RelayConfigStore } from "./store/types.js";
 import { configTaskQueue } from "./temporal/connection.js";
 import { relayConfigWorkflow, setPairCodeUpdate } from "./workflows/relayConfig.js";
 import { boundFor } from "./workflows/bound.js";
-import { SEARCH_ATTRIBUTE_KEYS, initialRelayConfigState, relayConfigWorkflowId } from "./workflows/types.js";
+import { initialRelayConfigState, relayConfigWorkflowId } from "./workflows/types.js";
+import { SEARCH_ATTRIBUTE_KEYS } from "./workflows/searchAttributes.js";
 
-export class StartupError extends Error {}
 
 export const NAMESPACE_RETENTION_DAYS = 30;
 export { newPairCode, pairCodeHash, PAIR_CODE_TTL_MS } from "./pairing.js";
+export { StartupError, checkBucket, newPairCodeIn, pairingText } from "./startupCommon.js";
+import { StartupError, checkBucket, pairingText } from "./startupCommon.js";
 
 /** The search attribute type names that Temporal uses. */
 const TYPE_NAMES: Record<SearchAttributeType, string> = {
@@ -107,18 +108,6 @@ export interface StartupResult {
   pairCode: string | null;
 }
 
-/** The text that tells the owner how to pair the Mac. */
-export function pairingText(config: Pick<Config, "publicUrl">, code: string): string {
-  const relayUrl = new URL("/agent", config.publicUrl);
-  relayUrl.protocol = relayUrl.protocol === "http:" ? "ws:" : "wss:";
-  return [
-    `Pairing code: ${code}`,
-    `It works once, for 24 hours. On the Mac, run:`,
-    `  studio agent pair ${relayUrl.href} ${code}`,
-    `Or enter the relay URL and the code in Spec Studio > Settings > Remote Relay.`,
-    `For a new code, run: relay pair-code`,
-  ].join("\n");
-}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -206,20 +195,6 @@ async function checkSearchAttributes(o: StartupOptions): Promise<void> {
   o.log({ event: "search_attributes_registered", count: missing.length });
 }
 
-/** The bucket check of both stores: no bucket, or a bucket that the relay can reach. */
-export async function checkBucket(o: Pick<StartupOptions, "bucket" | "log">): Promise<void> {
-  if (!o.bucket) {
-    o.log({ event: "bucket_not_set" });
-    return;
-  }
-  try {
-    await o.bucket.check();
-  } catch {
-    throw new StartupError(
-      "The relay cannot reach the bucket. Check BUCKET_ENDPOINT, BUCKET_NAME, BUCKET_ACCESS_KEY and BUCKET_SECRET_KEY.",
-    );
-  }
-}
 
 async function ensureRelayConfig(o: StartupOptions): Promise<string | null> {
   const code = newPairCode();
@@ -248,20 +223,6 @@ export async function runStartupChecks(o: StartupOptions): Promise<StartupResult
   return { pairCode };
 }
 
-/** Make a new pairing code in a store (the command `relay pair-code`). */
-export async function newPairCodeIn(store: RelayConfigStore, timeoutMs = 15_000): Promise<string> {
-  const code = newPairCode();
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-  });
-  try {
-    await Promise.race([store.setPairCode({ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-  return code;
-}
 
 /** Make a new pairing code in the relay-config workflow (Temporal). */
 export async function makePairCode(configClient: Client, deployId: string, timeoutMs = 15_000): Promise<string> {

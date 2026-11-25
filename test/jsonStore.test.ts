@@ -6,6 +6,9 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { ConfigMissingError } from "../src/store/json/jsonConfigStore.js";
 import { openJsonStore, type JsonStoreOptions } from "../src/store/json/index.js";
 import { specFileName } from "../src/store/json/jsonSpecStore.js";
 import { writeAtomic, withFileLock } from "../src/store/json/files.js";
@@ -142,7 +145,7 @@ test("R2.S5: a finished spec is removed with its attachments after its grace per
   const dir = tempDir();
   try {
     const bucket = new GatedBucket();
-    const store = open(dir, { bucket, graceMs: 200 });
+    const store = open(dir, { bucket, graceMs: 600 });
     await store.start(quiet);
     const spec = specAddress(REPO, "done");
     const key = `${attachmentPrefix("default", spec.repoKey, "done")}a.png`;
@@ -151,11 +154,11 @@ test("R2.S5: a finished spec is removed with its attachments after its grace per
     const file = join(dir, "specs", specFileName("default", spec.repoKey, "done"));
     assert.ok(existsSync(file));
     // A call in the period starts it again.
-    await sleep(120);
+    await sleep(400);
     await store.specs.read(spec, 0, 0);
-    await sleep(120);
+    await sleep(400);
     assert.equal(bucket.started, false, "the period started again with the read");
-    for (let i = 0; i < 50 && !bucket.started; i++) await sleep(20);
+    for (let i = 0; i < 100 && !bucket.started; i++) await sleep(20);
     assert.equal(bucket.started, true);
     await assert.rejects(store.specs.send(spec, { text: "Late" }), (error) => error instanceof SpecClosingError);
     // A late line of the closing spec changes nothing; a first sync must come again.
@@ -305,4 +308,103 @@ test("a spec file that does not parse is logged and left out; the next first syn
 test("a slug is never part of a file name", () => {
   const name = specFileName("default", "abc", "../../etc/passwd");
   assert.match(name, /^[0-9a-f]{32}\.json$/);
+});
+
+test("review: an empty lock file counts as live until it is stale; a stale one is taken", async () => {
+  const dir = tempDir();
+  try {
+    const path = join(dir, "config.json");
+    writeFileSync(`${path}.lock`, "");
+    await assert.rejects(withFileLock(path, async () => "no", { timeoutMs: 200 }), /could not lock/);
+    assert.equal(await withFileLock(path, async () => "taken", { timeoutMs: 1000, staleMs: 50 }), "taken");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: four processes that lock one file at once lose no write", async () => {
+  const dir = tempDir();
+  try {
+    const counter = join(dir, "counter.json");
+    writeFileSync(counter, "0");
+    const files = fileURLToPath(new URL("../src/store/json/files.js", import.meta.url));
+    const script = `
+      import { readFileSync, writeFileSync } from "node:fs";
+      const { withFileLock } = await import(${JSON.stringify(files)});
+      const path = ${JSON.stringify(counter)};
+      for (let i = 0; i < 25; i++) {
+        await withFileLock(path, async () => {
+          const n = Number(readFileSync(path, "utf8"));
+          await new Promise((r) => setTimeout(r, 1));
+          writeFileSync(path, String(n + 1));
+        }, { retryMs: 2, timeoutMs: 30000 });
+      }`;
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "inherit" });
+          child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+        }),
+      ),
+    );
+    assert.equal(readFileSync(counter, "utf8"), "100");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a read in the grace period is saved, so a restart keeps the period", async () => {
+  const dir = tempDir();
+  try {
+    const first = open(dir, { graceMs: 800 });
+    await first.start(quiet);
+    const spec = specAddress(REPO, "reread");
+    await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "merged" } }], first: true, state: show("reread", { stage: "merged" }), turn: null });
+    await sleep(500);
+    // A read that changes nothing (no message): it still counts.
+    await first.specs.read(spec, 0, 0);
+    await first.close();
+    const second = open(dir, { graceMs: 800 });
+    await second.start(quiet);
+    const file = join(dir, "specs", specFileName("default", spec.repoKey, "reread"));
+    await sleep(500);
+    assert.ok(existsSync(file), "the period counts from the read, not from the sync");
+    for (let i = 0; i < 100 && existsSync(file); i++) await sleep(20);
+    assert.equal(existsSync(file), false);
+    await second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a call that changes nothing does not start the grace period again", async () => {
+  const dir = tempDir();
+  try {
+    const store = open(dir, { graceMs: 800 });
+    await store.start(quiet);
+    const spec = specAddress(REPO, "noop");
+    const start = Date.now();
+    await store.specs.sync(spec, { lines: [{ line: 1, event: { kind: "merged" } }], first: true, state: show("noop", { stage: "merged" }), turn: null });
+    const file = join(dir, "specs", specFileName("default", spec.repoKey, "noop"));
+    await sleep(400);
+    assert.deepEqual(await store.specs.ack(spec, 99), { removed: false });
+    assert.deepEqual(await store.specs.sync(spec, { lines: [{ line: 1, event: { kind: "merged" } }] }), { line: 1, applied: false });
+    for (let i = 0; i < 100 && existsSync(file); i++) await sleep(20);
+    assert.equal(existsSync(file), false);
+    assert.ok(Date.now() - start < 1150, "the spec closed at the end of the first period");
+    await store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: relay pair-code on a data folder with no config.json fails and makes nothing", async () => {
+  const dir = tempDir();
+  try {
+    const command = open(dir);
+    await assert.rejects(newPairCodeIn(command.config), (error) => error instanceof ConfigMissingError && /RELAY_DATA_DIR/.test(error.message));
+    assert.equal(existsSync(join(dir, "config.json")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

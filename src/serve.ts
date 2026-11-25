@@ -10,8 +10,6 @@ import { Attachments } from "./attachments.js";
 import { openStore, storeReasonText } from "./store/index.js";
 import { storeAgentBackend, storeOAuthStore } from "./store/adapters.js";
 
-export { TEMPORAL_UNREACHABLE } from "./store/temporal.js";
-
 /** The /mcp body limit: room for a base64 attachment at the size limit. */
 export function mcpBodyLimit(attachmentMaxBytes: number): number {
   return Math.max(1024 * 1024, Math.ceil((attachmentMaxBytes * 4) / 3) * 2 + 1024 * 1024);

@@ -6,10 +6,10 @@
 //   relay password-hash  Read a password on stdin and print its bcrypt hash.
 import bcrypt from "bcryptjs";
 import { ConfigError, loadConfig } from "./config.js";
-import { newPayloadKeys } from "./codec.js";
-import { StartupError, newPairCodeIn, pairingText } from "./startup.js";
+import { StartupError, newPairCodeIn, pairingText } from "./startupCommon.js";
 import { serve } from "./serve.js";
 import { openStore } from "./store/index.js";
+import { ConfigMissingError } from "./store/json/jsonConfigStore.js";
 import { consoleLogger } from "./log.js";
 
 const USAGE = `Usage:
@@ -34,8 +34,9 @@ async function pairCode(): Promise<void> {
   let code: string;
   try {
     code = await newPairCodeIn(store.config);
-  } catch {
+  } catch (error) {
     void store.close().catch(() => undefined);
+    if (error instanceof ConfigMissingError) throw new StartupError(error.message);
     throw new StartupError(
       config.store === "json"
         ? "The relay cannot make a pairing code. Run the command with the same RELAY_DATA_DIR as the relay, then try again."
@@ -47,7 +48,9 @@ async function pairCode(): Promise<void> {
   process.exit(0);
 }
 
-function keys(): void {
+async function keys(): Promise<void> {
+  // The codec (Temporal payloads) loads only for this command.
+  const { newPayloadKeys } = await import("./codec.js");
   process.stdout.write(
     [
       "Set this value as PAYLOAD_KEYS, in a secret. Keep a copy: without the same keys, the relay cannot read its data.",
@@ -79,7 +82,7 @@ try {
       await pairCode();
       break;
     case "keys":
-      keys();
+      await keys();
       break;
     case "password-hash":
       await passwordHash();

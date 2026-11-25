@@ -209,11 +209,18 @@ export class JsonSpecStore implements SpecStore {
   }
 
   /**
-   * Apply a change to a spec: refuse it while the spec closes, count the call
-   * (the grace period starts again), write the file when the rule changed the
-   * state, and wake the reads when a message for Claude AI came.
+   * Apply a change to a spec: refuse it while the spec closes, write the file
+   * when the rule changed the state, and wake the reads when a message for
+   * Claude AI came. As in the workflow, only a change or a read counts as
+   * activity (the grace period of a finished spec starts again): a call that
+   * changes nothing does not. `read` saves the time of the read too, so a
+   * restart keeps the grace period.
    */
-  private async change<T>(entry: Entry, fn: (s: SpecWorkflowState) => { result: T; changed: boolean }): Promise<T> {
+  private async change<T>(
+    entry: Entry,
+    fn: (s: SpecWorkflowState) => { result: T; changed: boolean },
+    read = false,
+  ): Promise<T> {
     // While the spec closes, a call is refused at once (as the workflow's validators do).
     if (entry.closing) throw new SpecClosingError();
     return this.queued(entry, async () => {
@@ -222,16 +229,21 @@ export class JsonSpecStore implements SpecStore {
       const draft = structuredClone(entry.state);
       const before = draft.coordinator.nextSeq;
       const out = fn(draft);
-      entry.lastActivityAt = this.nowDate().getTime();
       if (out.changed) {
-        const previous = entry.state;
+        const previous = { state: entry.state, lastActivityAt: entry.lastActivityAt };
         entry.state = draft;
+        entry.lastActivityAt = this.nowDate().getTime();
         try {
           await this.write(entry);
         } catch (error) {
-          entry.state = previous;
+          entry.state = previous.state;
+          entry.lastActivityAt = previous.lastActivityAt;
           throw error;
         }
+      } else if (read) {
+        entry.lastActivityAt = this.nowDate().getTime();
+        // Only the time of the read: a failed write does not fail the read.
+        await this.write(entry).catch(() => this.o.log({ event: "spec_write_failed" }));
       }
       if (entry.state.coordinator.nextSeq !== before) this.wake.emit(keyOf(entry.state.spec));
       this.schedule(entry);
@@ -431,7 +443,7 @@ export class JsonSpecStore implements SpecStore {
           this.wake.on(key, onWake);
         });
       }
-      return await this.change(entry, (s) => collectRead(s, cursor));
+      return await this.change(entry, (s) => collectRead(s, cursor), true);
     } finally {
       entry.reading--;
     }

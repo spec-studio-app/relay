@@ -2,7 +2,7 @@
 // R1.S1, R4.S5), and the check that only the Temporal store uses Temporal.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,29 +99,38 @@ test("R1.S1: a relay on the JSON store pairs, syncs, reads offline and carries m
   }
 });
 
-/** The source files of the relay, relative to src/. */
-function sources(dir = join(root, "src")): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name);
-    return statSync(path).isDirectory() ? sources(path) : name.endsWith(".ts") ? [relative(join(root, "src"), path)] : [];
-  });
+/** The modules that a module loads at start: static imports and re-exports, not `import type` or `import()`. */
+function staticImports(file: string): string[] {
+  const text = readFileSync(file, "utf8");
+  const out: string[] = [];
+  for (const m of text.matchAll(/^(?:import|export)\s+(type\s+)?[^;]*?from\s+"([^"]+)";/gms)) {
+    if (m[1]) continue;
+    out.push(m[2]);
+  }
+  for (const m of text.matchAll(/^import\s+"([^"]+)";/gm)) out.push(m[1]);
+  return out;
 }
 
-test("R1: only the Temporal store's files import Temporal", () => {
-  const temporalFiles = [
-    /^mirror\.ts$/,
-    /^configStore\.ts$/,
-    /^startup\.ts$/,
-    /^codec(Server)?\.ts$/,
-    /^worker\.ts$/,
-    /^temporal\//,
-    /^store\/temporal\.ts$/,
-    /^workflows\//,
-  ];
-  const offenders = sources().filter((file) => {
-    if (temporalFiles.some((pattern) => pattern.test(file))) return false;
-    const text = readFileSync(join(root, "src", file), "utf8");
-    return /from "@temporalio\//.test(text);
-  });
-  assert.deepEqual(offenders, []);
+/** Every module that the entry files load at start, as "<file> -> <module>" for the Temporal ones. */
+function temporalLoads(entries: string[]): string[] {
+  const src = join(root, "src");
+  const seen = new Set<string>();
+  const found: string[] = [];
+  const queue = entries.map((e) => join(src, e));
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const spec of staticImports(file)) {
+      if (spec.startsWith("@temporalio/")) found.push(`${relative(src, file)} -> ${spec}`);
+      else if (spec.startsWith(".")) queue.push(join(file, "..", spec.replace(/\.js$/, ".ts")));
+    }
+  }
+  return found;
+}
+
+test("R1: a relay on the JSON store, and its relay command, load no Temporal module", () => {
+  assert.deepEqual(temporalLoads(["cli.ts", "serve.ts", "store/index.ts", "store/json/index.ts"]), []);
+  // The check finds a load when there is one.
+  assert.ok(temporalLoads(["store/temporal.ts"]).length > 0);
 });

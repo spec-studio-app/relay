@@ -1,9 +1,10 @@
 // The file operations of the JSON store. A write goes to a temporary file in
 // the same folder, then a rename replaces the old file, so a reader never sees
-// a half-written file. A lock file (made with O_EXCL) serializes the writes of
-// one file, also between the relay and the `relay pair-code` command.
+// a half-written file. A lock file (made whole with link, which fails when it
+// exists) serializes the writes of one file, also between the relay and the
+// `relay pair-code` command.
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, unlink } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** A test hook: runs after the temporary file is written and before the rename. */
@@ -84,19 +85,58 @@ function alive(pid: number): boolean {
   }
 }
 
-/** True when the lock file's holder is gone, or the lock is older than staleMs. */
-async function isStale(lock: string, staleMs: number): Promise<boolean> {
+/**
+ * The text of a stale lock: its holder is gone, or it is older than staleMs.
+ * Null when the lock is live. A lock file without a valid pid is live until
+ * staleMs (the lock is made whole with link, so this is only a damaged file).
+ */
+async function staleText(lock: string, staleMs: number): Promise<string | null> {
   try {
     const [text, info] = await Promise.all([readFile(lock, "utf8"), stat(lock)]);
+    if (Date.now() - info.mtimeMs > staleMs) return text;
     const pid = Number(text.split(" ")[0]);
-    if (Date.now() - info.mtimeMs > staleMs) return true;
-    // A lock of this process that no call holds is not possible here: the
-    // in-process queue holds it until the call ends.
-    return pid !== process.pid && !alive(pid);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    // A lock of this process is held by a call in its queue.
+    return pid !== process.pid && !alive(pid) ? text : null;
   } catch (error) {
-    // The lock went away between the tries: not stale, try again.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // The lock went away between the tries: try again.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
+  }
+}
+
+/**
+ * Remove a stale lock, but never a new lock that another waiter made after
+ * the check: move the file away, and put it back when its text is not the
+ * stale text.
+ */
+async function removeStale(lock: string, text: string): Promise<void> {
+  const aside = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
+  try {
+    await rename(lock, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    if ((await readFile(aside, "utf8")) !== text) await link(aside, lock).catch(() => undefined);
+  } finally {
+    await unlink(aside).catch(() => undefined);
+  }
+}
+
+/** Make the lock file with its text in one step: link fails when the lock exists. */
+async function tryLock(lock: string): Promise<boolean> {
+  const temp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}${TEMP_SUFFIX}`;
+  await writeFile(temp, `${process.pid} ${Date.now()} ${randomBytes(4).toString("hex")}`, { mode: 0o600 });
+  try {
+    await link(temp, lock);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    await unlink(temp).catch(() => undefined);
   }
 }
 
@@ -110,23 +150,14 @@ export async function withFileLock<T>(path: string, fn: () => Promise<T>, option
   const end = Date.now() + (options.timeoutMs ?? 10_000);
   await mkdir(dirname(path), { recursive: true });
   for (;;) {
-    try {
-      const handle = await open(lock, "wx", 0o600);
-      try {
-        await handle.writeFile(`${process.pid} ${Date.now()}`, "utf8");
-      } finally {
-        await handle.close();
-      }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (await isStale(lock, staleMs)) {
-        await unlink(lock).catch(() => undefined);
-        continue;
-      }
-      if (Date.now() > end) throw new LockTimeoutError(path);
-      await sleep(retryMs);
+    if (await tryLock(lock)) break;
+    const stale = await staleText(lock, staleMs);
+    if (stale !== null) {
+      await removeStale(lock, stale);
+      continue;
     }
+    if (Date.now() > end) throw new LockTimeoutError(path);
+    await sleep(retryMs);
   }
   try {
     return await fn();
