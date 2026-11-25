@@ -38,3 +38,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       key: {{ .key }}
       optional: {{ not .required }}
 {{- end -}}
+
+{{/* The store: .Values.store, else temporal when temporal.address is set, else json (the relay's own rule). */}}
+{{- define "relay.store" -}}
+{{- $store := .Values.store | default (ternary "temporal" "json" (not (empty .Values.temporal.address))) -}}
+{{- if not (has $store (list "json" "temporal")) -}}
+{{- fail "store must be json or temporal" -}}
+{{- end -}}
+{{- $store -}}
+{{- end -}}
+
+{{- define "relay.claimName" -}}
+{{- default (printf "%s-data" (include "relay.fullname" .)) .Values.persistence.existingClaim -}}
+{{- end -}}

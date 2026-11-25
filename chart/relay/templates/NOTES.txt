@@ -1,4 +1,5 @@
 The relay starts at {{ .Values.publicUrl }}.
+It keeps its state in {{ if eq (include "relay.store" .) "json" }}files on the volume {{ include "relay.claimName" . }}{{ else }}Temporal at {{ .Values.temporal.address }}{{ end }}.
 
 On its first start it prints a pairing code. Read it with:
 

@@ -1,5 +1,24 @@
 # The relay keeps one agent connection from the Mac in its process.
 # Run one replica only.
+
+# Where the relay keeps its state: json or temporal.
+#   json: files on a persistent volume (see persistence). No other service.
+#         The state is in the files of one pod, so the chart runs one replica
+#         with the Recreate strategy.
+#   temporal: your own Temporal (see temporal and secrets.payloadKeys).
+# Empty: temporal when temporal.address is set, else json.
+# A switch between stores starts with an empty store: switch when no message
+# waits (see the README).
+store: ""
+
+# The volume of the JSON store (store: json only).
+persistence:
+  size: 1Gi
+  # Empty: the cluster's default storage class.
+  storageClass: ""
+  # The name of a PersistentVolumeClaim that you made. Empty: the chart makes
+  # one, and keeps it when the release is removed.
+  existingClaim: ""
 image:
   repository: ghcr.io/spec-studio-app/relay
   # Empty: the chart's appVersion.
@@ -15,6 +34,7 @@ publicUrl: ""
 # A name for this deploy. Two relays on one Temporal namespace need two names.
 deployId: default
 
+# The Temporal settings (store: temporal only).
 temporal:
   # host:port of the Temporal frontend, or of Temporal Cloud.
   address: ""
@@ -35,7 +55,7 @@ bucket:
 # The largest attachment, in bytes. Default 10 MB.
 attachmentMaxBytes: ""
 
-# The origin of the Temporal Web UI that may call the codec endpoints.
+# The origin of the Temporal Web UI that may call the codec endpoints (store: temporal only).
 uiOrigin: ""
 
 # Exact redirect URIs that OAuth clients may register, besides the defaults.
@@ -47,7 +67,8 @@ existingSecret: ""
 secrets:
   # bcrypt hash of the owner's password. Required.
   ownerPasswordHash: ""
-  # From `relay keys`. Required. Keep a copy: the relay needs the same keys at each start.
+  # From `relay keys`. Required with store: temporal. Keep a copy: the relay
+  # needs the same keys at each start.
   payloadKeys: ""
   temporalApiKey: ""
   # PEM text of the client certificate and key (mtls).

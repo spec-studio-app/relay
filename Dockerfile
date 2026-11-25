@@ -1,4 +1,5 @@
-# Spec Studio relay: a self-hosted remote MCP server with a Temporal worker.
+# Spec Studio relay: a self-hosted remote MCP server. Its state is in JSON
+# files on a volume at /data (the default), or in Temporal with its worker.
 # Multi-arch (linux/amd64, linux/arm64). The Temporal SDK needs glibc, so the
 # image uses Debian slim, not Alpine.
 FROM node:22-bookworm-slim AS build
@@ -22,7 +23,11 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist/src ./dist/src
 COPY package.json ./
-RUN ln -s /app/dist/src/cli.js /usr/local/bin/relay && chmod +x /app/dist/src/cli.js
+RUN ln -s /app/dist/src/cli.js /usr/local/bin/relay && chmod +x /app/dist/src/cli.js \
+ && mkdir -p /data && chown 1000:1000 /data
+# The JSON store's folder. Mount a volume here, or the state is lost with the container.
+ENV RELAY_DATA_DIR=/data
+VOLUME /data
 # The node user (uid 1000), numeric so that runAsNonRoot can check it.
 USER 1000:1000
 EXPOSE 8760
