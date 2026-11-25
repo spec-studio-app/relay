@@ -43,6 +43,13 @@ import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors
 import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
 
+/** A sync of a spec whose file the relay cannot read: the agent sends the lines again later. */
+export class SpecFileUnreadableError extends Error {
+  constructor() {
+    super("The relay cannot read its file of this spec. Correct the file and restart the relay, or pair the Mac again after studio agent unpair --force.");
+  }
+}
+
 /** The suffix of a spec file that did not parse, moved aside. */
 export const UNREADABLE_SUFFIX = ".unreadable";
 
@@ -381,7 +388,10 @@ export class JsonSpecStore implements SpecStore {
       // new pairing sends one): later lines alone would make a part of it.
       const fileName = specFileName(this.o.deployId, spec.repoKey, spec.slug);
       if (this.unreadable.has(fileName)) {
-        if (!startsSpec(input)) return { line: lastSyncLine(input), applied: false };
+        // Refuse the lines (the agent keeps its cursor and sends them again),
+        // so none is lost while the file is aside: a fixed file and a restart,
+        // or a first sync, takes them.
+        if (!startsSpec(input)) throw new SpecFileUnreadableError();
         this.unreadable.delete(fileName);
       }
       entry = this.newEntry(spec);

@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ConfigMissingError } from "../src/store/json/jsonConfigStore.js";
 import { openJsonStore, type JsonStoreOptions } from "../src/store/json/index.js";
-import { specFileName } from "../src/store/json/jsonSpecStore.js";
+import { SpecFileUnreadableError, specFileName } from "../src/store/json/jsonSpecStore.js";
 import { writeAtomic } from "../src/store/json/files.js";
 import { SpecClosingError } from "../src/store/errors.js";
 import { specAddress } from "../src/store/address.js";
@@ -269,13 +269,13 @@ test("a spec file that does not parse is logged and moved aside; only a first sy
     assert.ok(logs.some((e) => e.event === "spec_file_unreadable"));
     assert.ok(existsSync(join(dir, "specs", `${name}.unreadable`)), "the owner keeps the file");
     assert.equal(await second.specs.state(spec), null);
-    // The Mac still has its cursor: its next lines alone make no part of the spec, also after a restart.
-    assert.deepEqual(await second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: false });
+    // The Mac still has its cursor: its next lines are refused (it sends them again), also after a restart.
+    await assert.rejects(second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), SpecFileUnreadableError);
     assert.equal(await second.specs.state(spec), null);
     await second.close();
     const third = open(dir);
     await third.start(quiet);
-    assert.deepEqual(await third.specs.sync(spec, { lines: [{ line: 3, event: { kind: "status" } }] }), { line: 3, applied: false });
+    await assert.rejects(third.specs.sync(spec, { lines: [{ line: 3, event: { kind: "status" } }] }), SpecFileUnreadableError);
     // A new pairing sends the short first sync: it fills the spec.
     const lines = [1, 2, 3, 4].map((line) => ({ line, event: { kind: "status" } }));
     assert.deepEqual(await third.specs.sync(spec, { lines, first: true, state: show("broken"), turn: null }), { line: 4, applied: true });
@@ -395,12 +395,14 @@ test("review: a spec file that the relay cannot read stays in place, and the nex
     await second.start(quiet);
     assert.ok(logs.some((e) => e.event === "spec_file_read_failed"));
     assert.ok(existsSync(file), "the file is not moved aside");
-    assert.deepEqual(await second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: false });
+    await assert.rejects(second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), SpecFileUnreadableError);
     await second.close();
     chmodSync(file, 0o600);
     const third = open(dir);
     await third.start(quiet);
     assert.equal((await third.specs.state(spec))?.line, 1);
+    // The refused line comes again and applies: nothing was lost.
+    assert.deepEqual(await third.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: true });
     await third.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
