@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { ConfigMissingError } from "../src/store/json/jsonConfigStore.js";
 import { openJsonStore, type JsonStoreOptions } from "../src/store/json/index.js";
 import { specFileName } from "../src/store/json/jsonSpecStore.js";
-import { writeAtomic, withFileLock } from "../src/store/json/files.js";
+import { writeAtomic } from "../src/store/json/files.js";
 import { SpecClosingError } from "../src/store/errors.js";
 import { specAddress } from "../src/store/address.js";
 import { attachmentPrefix } from "../src/activities.js";
@@ -253,34 +253,6 @@ test("R4.S6: relay pair-code on the data folder of a running relay: the new code
   }
 });
 
-test("the file lock: a second holder waits, and a stale lock of a dead process is taken", async () => {
-  const dir = tempDir();
-  try {
-    const path = join(dir, "config.json");
-    const order: string[] = [];
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    const first = withFileLock(path, async () => {
-      order.push("first in");
-      await held;
-      order.push("first out");
-    });
-    await sleep(30);
-    const second = withFileLock(path, async () => {
-      order.push("second");
-    });
-    await sleep(60);
-    release();
-    await Promise.all([first, second]);
-    assert.deepEqual(order, ["first in", "first out", "second"]);
-    // A lock file of a process that no longer runs.
-    writeFileSync(`${path}.lock`, `999999 ${Date.now()}`);
-    assert.equal(await withFileLock(path, async () => "taken", { timeoutMs: 1000 }), "taken");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("a spec file that does not parse is logged and left out; the next first sync fills the spec again", async () => {
   const dir = tempDir();
   try {
@@ -310,49 +282,39 @@ test("a slug is never part of a file name", () => {
   assert.match(name, /^[0-9a-f]{32}\.json$/);
 });
 
-test("review: an empty lock file counts as live until it is stale; a stale one is taken", async () => {
+test("review: relay pair-code in other processes while the relay writes tokens: no write is lost", async () => {
   const dir = tempDir();
   try {
-    const path = join(dir, "config.json");
-    writeFileSync(`${path}.lock`, "");
-    await assert.rejects(withFileLock(path, async () => "no", { timeoutMs: 200 }), /could not lock/);
-    assert.equal(await withFileLock(path, async () => "taken", { timeoutMs: 1000, staleMs: 50 }), "taken");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("review: four processes that lock one file at once lose no write", async () => {
-  const dir = tempDir();
-  try {
-    const counter = join(dir, "counter.json");
-    writeFileSync(counter, "0");
-    const files = fileURLToPath(new URL("../src/store/json/files.js", import.meta.url));
+    const relay = open(dir);
+    await relay.start(quiet);
+    const store = fileURLToPath(new URL("../src/store/json/index.js", import.meta.url));
+    const startup = fileURLToPath(new URL("../src/startupCommon.js", import.meta.url));
     const script = `
-      import { readFileSync, writeFileSync } from "node:fs";
-      const { withFileLock } = await import(${JSON.stringify(files)});
-      const path = ${JSON.stringify(counter)};
-      for (let i = 0; i < 25; i++) {
-        await withFileLock(path, async () => {
-          const n = Number(readFileSync(path, "utf8"));
-          await new Promise((r) => setTimeout(r, 1));
-          writeFileSync(path, String(n + 1));
-        }, { retryMs: 2, timeoutMs: 30000 });
-      }`;
-    await Promise.all(
-      Array.from({ length: 4 }, () =>
-        new Promise<void>((resolve, reject) => {
-          const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "inherit" });
-          child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
-        }),
-      ),
+      const { openJsonStore } = await import(${JSON.stringify(store)});
+      const { newPairCodeIn } = await import(${JSON.stringify(startup)});
+      const s = openJsonStore({ dataDir: ${JSON.stringify(dir)}, deployId: "default", publicUrl: "https://r" }, { bucket: null, log: () => {} });
+      for (let i = 0; i < 10; i++) await newPairCodeIn(s.config);`;
+    const commands = Array.from({ length: 3 }, () =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "inherit" });
+        child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+      }),
     );
-    assert.equal(readFileSync(counter, "utf8"), "100");
+    const token = { clientId: "c1", scopes: ["mcp"], expiresAt: Date.now() + 3_600_000 };
+    const writes = Array.from({ length: 50 }, (_, i) =>
+      relay.config.issueTokens({ access: { hash: `a${i}`, token }, refresh: { hash: `r${i}`, token } }),
+    );
+    await Promise.all([...commands, ...writes]);
+    for (let i = 0; i < 50; i++) assert.ok(await relay.config.token("access", `a${i}`), `token a${i} was lost`);
+    // The last code from the commands is the live code, and it pairs once.
+    const last = JSON.parse(readFileSync(join(dir, "pair-code.json"), "utf8")) as { hash: string };
+    assert.equal(await relay.config.pair(last.hash, "p".repeat(64), new Date()), true);
+    assert.equal(await relay.config.pair(last.hash, "q".repeat(64), new Date()), false);
+    await relay.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
 test("review: a read in the grace period is saved, so a restart keeps the period", async () => {
   const dir = tempDir();
   try {

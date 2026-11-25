@@ -264,10 +264,11 @@ A restart loses no message and no sign-in.
 ### In the JSON store
 
 - `config.json`: the deploy's data. It holds only hashes of secrets and tokens.
+- `pair-code.json`: the last pairing code from `relay pair-code` (a hash).
 - `specs/<hash>.json`: one file per spec. The name is a hash of the deploy ID, the repo key and the slug, so a slug never makes a path.
 - `closed.json`: the specs that the relay removed in the last 30 days, so `list_specs` with `all` still shows them and a late line starts nothing.
 
-Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. A lock file serializes the writes of one file, also between the relay and `relay pair-code`. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read is logged (`spec_file_unreadable`) and left out; the Mac's next first sync of that spec fills it again.
+Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. Only the relay process writes `config.json` and the spec files, and its writes of one file never interleave. `relay pair-code` writes only `pair-code.json`, each time with a new ID; the relay takes that code as its pairing code at its next call. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read is logged (`spec_file_unreadable`) and left out; the Mac's next first sync of that spec fills it again.
 
 ### In the Temporal store
 
