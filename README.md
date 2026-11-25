@@ -89,7 +89,7 @@ Set `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE`. At start, the relay registers t
 
 The relay does not move data from one store to the other. A relay on a new store starts empty:
 
-- The Mac fills the new store with a short first sync of each spec: its state, its last 20 activity lines and its messages for Claude AI.
+- When you pair the Mac again, it fills the new store with a short first sync of each spec: its state, its last 20 activity lines and its messages for Claude AI. A new pairing removes the Mac's sync cursors. With a Spec Studio from before relay 0.4.0, run `studio agent unpair --force` before you pair, so the Mac removes them.
 - The messages that wait for the Mac in the old store are lost, and so are the messages for Claude AI that it did not read. So switch when no message waits: the Mac is online and took every message, and Claude AI read its messages.
 - The pairing and the sign-ins are in the store too. After the switch, pair the Mac again (Step 5) and sign in to the connector in Claude AI again.
 
@@ -268,7 +268,7 @@ A restart loses no message and no sign-in.
 - `specs/<hash>.json`: one file per spec. The name is a hash of the deploy ID, the repo key and the slug, so a slug never makes a path.
 - `closed.json`: the specs that the relay removed in the last 30 days, so `list_specs` with `all` still shows them and a late line starts nothing.
 
-Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. Only the relay process writes `config.json` and the spec files, and its writes of one file never interleave. `relay pair-code` writes only `pair-code.json`, each time with a new ID; the relay takes that code as its pairing code at its next call. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read is logged (`spec_file_unreadable`) and left out; the Mac's next first sync of that spec fills it again.
+Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. Only the relay process writes `config.json` and the spec files, and its writes of one file never interleave. `relay pair-code` writes only `pair-code.json`, each time with a new ID; the relay takes that code as its pairing code at its next call. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read is logged (`spec_file_unreadable`) and moved aside as `<name>.unreadable`. The relay then takes that spec again only from a first sync, so the Mac's later lines alone never make a part of it. To fill it, pair the Mac again: a new pairing sends a first sync of each spec.
 
 ### In the Temporal store
 

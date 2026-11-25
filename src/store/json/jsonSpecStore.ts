@@ -4,7 +4,7 @@
 // and writes the file after each change.
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readdir } from "node:fs/promises";
+import { readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "../../log.js";
 import {
@@ -42,6 +42,9 @@ import {
 import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors.js";
 import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
+
+/** The suffix of a spec file that did not parse, moved aside. */
+export const UNREADABLE_SUFFIX = ".unreadable";
 
 /** A closed spec stays in lists with all, and blocks a late line, this long (as the Temporal retention). */
 export const CLOSED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -104,6 +107,8 @@ function keyOf(spec: SpecRef): string {
 export class JsonSpecStore implements SpecStore {
   private readonly entries = new Map<string, Entry>();
   private readonly closed = new Map<string, ClosedSpec>();
+  /** The file names of spec files that did not parse (moved aside as <name>.unreadable). */
+  private readonly unreadable = new Set<string>();
   private closedQueue: Promise<unknown> = Promise.resolve();
   /** Emits the key of a spec when it gets a new message for Claude AI, or closes. */
   private readonly wake = new EventEmitter();
@@ -150,9 +155,20 @@ export class JsonSpecStore implements SpecStore {
         await removeFile(path);
         continue;
       }
+      if (name.endsWith(UNREADABLE_SUFFIX)) {
+        this.unreadable.add(name.slice(0, -UNREADABLE_SUFFIX.length));
+        continue;
+      }
       if (!name.endsWith(".json")) continue;
       const file = await this.parse(path, name);
-      if (!file || file.state.deployId !== this.o.deployId) continue;
+      if (!file) {
+        // Keep the file for the owner, and wait for a first sync of the spec:
+        // its later lines alone would make a part of the spec.
+        await rename(path, path + UNREADABLE_SUFFIX).catch(() => undefined);
+        this.unreadable.add(name);
+        continue;
+      }
+      if (file.state.deployId !== this.o.deployId) continue;
       const entry: Entry = {
         state: file.state,
         lastActivityAt: file.lastActivityAt,
@@ -344,6 +360,13 @@ export class JsonSpecStore implements SpecStore {
       // A spec that closed takes no late line: only a first sync starts it again
       // (as a completed workflow).
       if (this.closed.has(key) && !startsSpec(input)) return { line: lastSyncLine(input), applied: false };
+      // A spec whose file did not parse comes back only with a first sync (a
+      // new pairing sends one): later lines alone would make a part of it.
+      const fileName = specFileName(this.o.deployId, spec.repoKey, spec.slug);
+      if (this.unreadable.has(fileName)) {
+        if (!startsSpec(input)) return { line: lastSyncLine(input), applied: false };
+        this.unreadable.delete(fileName);
+      }
       entry = this.newEntry(spec);
     }
     const sync: SyncInput = { ...input, repo: input.repo ?? spec.repo, at: this.env.now() };

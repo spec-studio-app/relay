@@ -253,7 +253,7 @@ test("R4.S6: relay pair-code on the data folder of a running relay: the new code
   }
 });
 
-test("a spec file that does not parse is logged and left out; the next first sync fills the spec again", async () => {
+test("a spec file that does not parse is logged and moved aside; only a first sync fills the spec again", async () => {
   const dir = tempDir();
   try {
     const logs: LogEntry[] = [];
@@ -262,21 +262,29 @@ test("a spec file that does not parse is logged and left out; the next first syn
     const spec = specAddress(REPO, "broken");
     await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("broken"), turn: null });
     await first.close();
-    writeFileSync(join(dir, "specs", specFileName("default", spec.repoKey, "broken")), "{ not json");
+    const name = specFileName("default", spec.repoKey, "broken");
+    writeFileSync(join(dir, "specs", name), "{ not json");
     const second = open(dir, { log: (e) => logs.push(e) });
     await second.start(quiet);
     assert.ok(logs.some((e) => e.event === "spec_file_unreadable"));
+    assert.ok(existsSync(join(dir, "specs", `${name}.unreadable`)), "the owner keeps the file");
     assert.equal(await second.specs.state(spec), null);
-    assert.deepEqual(
-      await second.specs.sync(spec, { lines: [{ line: 4, event: { kind: "status" } }], first: true, state: show("broken"), turn: null }),
-      { line: 4, applied: true },
-    );
+    // The Mac still has its cursor: its next lines alone make no part of the spec, also after a restart.
+    assert.deepEqual(await second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: false });
+    assert.equal(await second.specs.state(spec), null);
     await second.close();
+    const third = open(dir);
+    await third.start(quiet);
+    assert.deepEqual(await third.specs.sync(spec, { lines: [{ line: 3, event: { kind: "status" } }] }), { line: 3, applied: false });
+    // A new pairing sends the short first sync: it fills the spec.
+    const lines = [1, 2, 3, 4].map((line) => ({ line, event: { kind: "status" } }));
+    assert.deepEqual(await third.specs.sync(spec, { lines, first: true, state: show("broken"), turn: null }), { line: 4, applied: true });
+    assert.equal((await third.specs.state(spec))?.events.length, 4);
+    await third.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
 test("a slug is never part of a file name", () => {
   const name = specFileName("default", "abc", "../../etc/passwd");
   assert.match(name, /^[0-9a-f]{32}\.json$/);
