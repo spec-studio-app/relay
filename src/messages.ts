@@ -1,6 +1,8 @@
-// The tools send_message and read_messages. They use the spec workflows, with
-// the Mac online or offline.
-import { repoKeyOf, SpecClosingError, SpecDroppedError, SpecNotFoundError, type Mirror } from "./mirror.js";
+// The tools send_message and read_messages. They use the spec store, with the
+// Mac online or offline.
+import { repoKeyOf } from "./store/address.js";
+import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "./store/errors.js";
+import type { SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, Message, SpecAddress } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type Attachments } from "./attachments.js";
@@ -9,7 +11,7 @@ export const READ_WAIT_MS = 20_000;
 const POLL_MS = 1000;
 
 export interface MessageToolsOptions {
-  mirror: Mirror;
+  specs: SpecStore;
   /** Push a new message to the Mac when the agent is connected. */
   push: (spec: SpecAddress, message: Message) => void;
   attachments: Attachments;
@@ -81,7 +83,7 @@ export class MessageTools {
       }
       attachments.push(found);
     }
-    const { seq, message } = await this.o.mirror.send(spec, {
+    const { seq, message } = await this.o.specs.send(spec, {
       text,
       replyTo: str(args.replyTo),
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -100,7 +102,7 @@ export class MessageTools {
       if (!repo) return { ok: false, text: "Give the repo with the slug." };
       const after = typeof args.after === "number" ? args.after : undefined;
       const spec = { repoKey: repoKeyOf(repo), slug };
-      const result = await this.o.mirror.read(spec, after, this.waitMs);
+      const result = await this.o.specs.read(spec, after, this.waitMs);
       const messages = await this.withUrls(result.messages.map((m) => shown(m, repo)));
       const cursor = messages.length > 0 ? messages[messages.length - 1].seq : (after ?? 0);
       return {
@@ -149,7 +151,7 @@ export class MessageTools {
     const body = Buffer.from(base64, "base64");
     if (body.length > max) return { ok: false, text: `The file is ${body.length} bytes. ${limitText(max)}` };
     const spec: SpecAddress = { repoKey: repoKeyOf(repo), slug, repo };
-    if (!(await this.o.mirror.state(spec))) throw new SpecNotFoundError();
+    if (!(await this.o.specs.state(spec))) throw new SpecNotFoundError();
     const attachment = await this.o.attachments.upload(spec, filename, contentType, body);
     return { ok: true, text: JSON.stringify(attachment) };
   }
@@ -158,14 +160,14 @@ export class MessageTools {
   private async readAll(repo: string | undefined): Promise<ToolText> {
     const end = Date.now() + this.waitMs;
     for (;;) {
-      const listed = await this.o.mirror.list({
+      const listed = await this.o.specs.list({
         pendingForCoordinator: true,
         repoKey: repo ? repoKeyOf(repo) : undefined,
       });
       const specs: Array<{ repo: string | null; slug: string; stage: string; cursor: number }> = [];
       const messages: ReturnType<typeof shown>[] = [];
       for (const item of listed) {
-        const result = await this.o.mirror.read(item, undefined, 0, true).catch(() => null);
+        const result = await this.o.specs.read(item, undefined, 0, true).catch(() => null);
         if (!result || result.messages.length === 0) continue;
         const path = item.memo?.repo ?? undefined;
         messages.push(...result.messages.map((m) => shown(m, path)));

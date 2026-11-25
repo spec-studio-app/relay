@@ -1,0 +1,108 @@
+// The relay's store: every read and write of relay state goes through these
+// interfaces. Two stores implement them: the JSON store (files on a volume,
+// the default) and the Temporal store (one workflow per spec).
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { Logger } from "../log.js";
+import type { PayloadKey } from "../config.js";
+import type { ListFilter, ReadResult, StateInput, SyncInput, SyncResult } from "../workflows/specRules.js";
+import type { TokenPair } from "../workflows/configRules.js";
+import type {
+  Attachment,
+  Message,
+  RelayConfigState,
+  SpecAddress,
+  SpecMemo,
+  SpecWorkflowState,
+  StoredClient,
+  StoredToken,
+} from "../workflows/types.js";
+
+export type { ListFilter, TokenPair };
+
+export type StoreKind = "json" | "temporal";
+
+/** A spec by its repo key and slug. */
+export interface SpecRef {
+  repoKey: string;
+  slug: string;
+}
+
+export interface ListedSpec {
+  repoKey: string;
+  slug: string;
+  running: boolean;
+  memo: SpecMemo | null;
+}
+
+/**
+ * The mirror of each spec and its two inboxes. The errors are the ones in
+ * store/errors.ts: SpecNotFoundError, SpecClosingError, SpecDroppedError.
+ */
+export interface SpecStore {
+  /** Apply a batch of activity lines. The first sync of a spec makes it. */
+  sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
+  /** The spec's state, or null when the store has no such spec. */
+  state(spec: SpecRef): Promise<SpecWorkflowState | null>;
+  /** The agent's state frame. True when the store applied it. */
+  refresh(spec: SpecRef, input: Omit<StateInput, "at">): Promise<boolean>;
+  /** The agent's gone frame: the spec no longer exists on the Mac. */
+  gone(spec: SpecRef): Promise<void>;
+  /** Add a message from Claude AI to the spec's Mac inbox. */
+  send(spec: SpecRef, input: { text: string; replyTo?: string; attachments?: Attachment[] }): Promise<{ seq: number; message: Message }>;
+  /** The Mac wrote the message to disk (or refused it with an error). */
+  ack(spec: SpecRef, seq: number, error?: string): Promise<{ removed: boolean }>;
+  /** Messages for Claude AI after the cursor. Waits up to waitMs for a new one. */
+  read(spec: SpecRef, after: number | undefined, waitMs: number, unreadOnly?: boolean): Promise<ReadResult>;
+  /** The specs of this relay, with their summaries. */
+  list(filter?: ListFilter): Promise<ListedSpec[]>;
+}
+
+/** The pairing, the repos of the agent's hello, and the OAuth clients and tokens. */
+export interface RelayConfigStore {
+  /** True when the SHA-256 (hex) of an agent secret belongs to a paired Mac. */
+  verifyAgent(hash: string): Promise<boolean>;
+  /** The number of paired Macs. */
+  paired(): Promise<number>;
+  /** Pair a Mac: true when the code was valid. The code works once. */
+  pair(codeHash: string, secretHash: string, at: Date): Promise<boolean>;
+  /** True when the hash is the live pairing code. It does not use the code. */
+  pairCodeValid(codeHash: string): Promise<boolean>;
+  /** Set a new pairing code. The old code stops working. */
+  setPairCode(code: { hash: string; expiresAt: number }): Promise<void>;
+  /** Forget a paired secret. False when it was not paired. */
+  unpair(secretHash: string): Promise<boolean>;
+  setRepos(repos: string[], at: Date): Promise<void>;
+  repos(): Promise<RelayConfigState["repos"]>;
+  getClient(id: string): Promise<StoredClient | null>;
+  registerClient(client: StoredClient["client"]): Promise<boolean>;
+  markSignedIn(clientId: string): Promise<void>;
+  issueTokens(pair: TokenPair): Promise<void>;
+  rotateRefresh(oldHash: string, clientId: string, next: TokenPair): Promise<StoredToken | null>;
+  token(kind: "access" | "refresh", hash: string): Promise<StoredToken | null>;
+  revoke(hash: string, clientId: string): Promise<void>;
+}
+
+export interface StoreStartOptions {
+  log: Logger;
+  /** The console for the owner: the pairing code goes here, never to the log. */
+  print: (text: string) => void;
+}
+
+export interface StoreStartResult {
+  /** The pairing code, when this start made the relay's config. */
+  pairCode: string | null;
+}
+
+export interface RelayStore {
+  kind: StoreKind;
+  specs: SpecStore;
+  config: RelayConfigStore;
+  /** The data keys for the codec endpoints (Temporal only). */
+  codecDataKeys?: PayloadKey[];
+  /** The checks at start, the first pairing code, and the background work (workers, timers). */
+  start(options: StoreStartOptions): Promise<StoreStartResult>;
+  close(): Promise<void>;
+}
+
+/** The OAuth client information as the SDK types it. */
+export type OAuthClient = OAuthClientInformationFull;

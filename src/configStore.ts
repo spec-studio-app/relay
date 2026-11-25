@@ -1,7 +1,6 @@
-// The relay's side of the relay-config workflow (payloads use the config key).
+// The Temporal config store: the relay-config workflow (payloads use the config key).
 import { WorkflowUpdateFailedError, type Client } from "@temporalio/client";
-import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { OAuthStore } from "./oauth.js";
+import type { RelayConfigStore } from "./store/types.js";
 import {
   clientQuery,
   issueTokensUpdate,
@@ -13,6 +12,7 @@ import {
   reposQuery,
   revokeUpdate,
   rotateRefreshUpdate,
+  setPairCodeUpdate,
   setReposUpdate,
   tokenQuery,
   unpairUpdate,
@@ -22,7 +22,7 @@ import {
 import { boundFor } from "./workflows/bound.js";
 import { relayConfigWorkflowId, type RelayConfigState, type StoredClient, type StoredToken } from "./workflows/types.js";
 
-export class ConfigStore {
+export class ConfigStore implements RelayConfigStore {
   constructor(
     private readonly client: Client,
     private readonly deployId: string,
@@ -47,6 +47,10 @@ export class ConfigStore {
 
   pair(codeHash: string, secretHash: string, at: Date): Promise<boolean> {
     return this.handle.executeUpdate(pairUpdate, { args: [{ codeHash, secretHash, at: at.toISOString() }, this.bound()] });
+  }
+
+  async setPairCode(code: { hash: string; expiresAt: number }): Promise<void> {
+    await this.handle.executeUpdate(setPairCodeUpdate, { args: [code, this.bound()] });
   }
 
   /** True when the hash is the live pairing code (a query: no history event). */
@@ -101,18 +105,3 @@ export class ConfigStore {
   }
 }
 
-/** The OAuth provider's store in the relay-config workflow (R9.S4). */
-export function temporalOAuthStore(store: ConfigStore): OAuthStore {
-  return {
-    async getClient(clientId) {
-      const stored = await store.getClient(clientId);
-      return stored ? (stored.client as unknown as OAuthClientInformationFull) : undefined;
-    },
-    registerClient: (client) => store.registerClient(client as unknown as StoredClient["client"]),
-    markSignedIn: (clientId) => store.markSignedIn(clientId),
-    saveTokens: (pair) => store.issueTokens(pair),
-    accessToken: (hash) => store.token("access", hash),
-    rotateRefresh: (oldHash, clientId, next) => store.rotateRefresh(oldHash, clientId, next),
-    revoke: (hash, clientId) => store.revoke(hash, clientId),
-  };
-}

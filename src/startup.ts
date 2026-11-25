@@ -1,5 +1,6 @@
-// The checks at start: the namespace, the search attributes, the bucket and the
-// relay-config workflow. Each failure tells the owner what to correct.
+// The checks at start of the Temporal store: the namespace, the search
+// attributes, the bucket and the relay-config workflow. Each failure tells the
+// owner what to correct. The bucket check and the pairing text serve both stores.
 import { newPairCode, pairCodeHash, PAIR_CODE_TTL_MS } from "./pairing.js";
 import { WorkflowExecutionAlreadyStartedError, type Client, type Connection } from "@temporalio/client";
 import proto from "@temporalio/proto";
@@ -9,9 +10,10 @@ import Long from "long";
 const { temporal } = proto;
 type IndexedValueType = protoTypes.api.enums.v1.IndexedValueType;
 import type { SearchAttributeType } from "@temporalio/common";
-import type { Config } from "./config.js";
+import type { Config, TemporalSettings } from "./config.js";
 import type { Bucket } from "./bucket.js";
 import type { Logger } from "./log.js";
+import type { RelayConfigStore } from "./store/types.js";
 import { configTaskQueue } from "./temporal/connection.js";
 import { relayConfigWorkflow, setPairCodeUpdate } from "./workflows/relayConfig.js";
 import { boundFor } from "./workflows/bound.js";
@@ -106,7 +108,7 @@ export interface StartupResult {
 }
 
 /** The text that tells the owner how to pair the Mac. */
-export function pairingText(config: Config, code: string): string {
+export function pairingText(config: Pick<Config, "publicUrl">, code: string): string {
   const relayUrl = new URL("/agent", config.publicUrl);
   relayUrl.protocol = relayUrl.protocol === "http:" ? "ws:" : "wss:";
   return [
@@ -125,7 +127,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * API key). Temporal Cloud does not let the relay register a namespace or
  * search attributes.
  */
-export function isTemporalCloud(t: Config["temporal"]): boolean {
+export function isTemporalCloud(t: TemporalSettings): boolean {
   if (t.auth === "api-key") return true;
   const host = t.address.replace(/^[a-z]+:\/\//i, "").replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
   return host === "tmprl.cloud" || host.endsWith(".tmprl.cloud");
@@ -148,8 +150,14 @@ function missingAttributesText(namespace: string, missing: Array<{ name: string;
   ].join("\n");
 }
 
+/** The Temporal settings of a Temporal-store config. */
+function temporalOf(config: Config): TemporalSettings {
+  if (!config.temporal) throw new StartupError("The relay has no Temporal settings. Set TEMPORAL_ADDRESS, or use RELAY_STORE=json.");
+  return config.temporal;
+}
+
 async function checkNamespace(o: StartupOptions): Promise<void> {
-  const { namespace } = o.config.temporal;
+  const { namespace } = temporalOf(o.config);
   let exists: boolean;
   try {
     exists = await o.admin.namespaceExists(namespace);
@@ -157,7 +165,7 @@ async function checkNamespace(o: StartupOptions): Promise<void> {
     throw new StartupError("The relay cannot reach Temporal. Check TEMPORAL_ADDRESS and the Temporal auth settings.");
   }
   if (exists) return;
-  if (isTemporalCloud(o.config.temporal)) {
+  if (isTemporalCloud(temporalOf(o.config))) {
     throw new StartupError(
       `The Temporal namespace ${namespace} does not exist. Make it in Temporal Cloud, or correct TEMPORAL_NAMESPACE.`,
     );
@@ -171,7 +179,7 @@ async function checkNamespace(o: StartupOptions): Promise<void> {
 }
 
 async function checkSearchAttributes(o: StartupOptions): Promise<void> {
-  const { namespace } = o.config.temporal;
+  const { namespace } = temporalOf(o.config);
   const delay = o.retryDelayMs ?? 1000;
   let have: Set<string> | null = null;
   // A namespace that was just registered can take some seconds to be ready.
@@ -185,7 +193,7 @@ async function checkSearchAttributes(o: StartupOptions): Promise<void> {
   }
   const missing = REQUIRED_SEARCH_ATTRIBUTES.filter((a) => !have!.has(a.name));
   if (missing.length === 0) return;
-  if (isTemporalCloud(o.config.temporal)) {
+  if (isTemporalCloud(temporalOf(o.config))) {
     o.print(missingAttributesText(namespace, missing, true));
     throw new StartupError(`The namespace ${namespace} does not have the search attributes of the relay.`);
   }
@@ -198,7 +206,8 @@ async function checkSearchAttributes(o: StartupOptions): Promise<void> {
   o.log({ event: "search_attributes_registered", count: missing.length });
 }
 
-async function checkBucket(o: StartupOptions): Promise<void> {
+/** The bucket check of both stores: no bucket, or a bucket that the relay can reach. */
+export async function checkBucket(o: Pick<StartupOptions, "bucket" | "log">): Promise<void> {
   if (!o.bucket) {
     o.log({ event: "bucket_not_set" });
     return;
@@ -218,7 +227,7 @@ async function ensureRelayConfig(o: StartupOptions): Promise<string | null> {
   try {
     await o.configClient.workflow.start(relayConfigWorkflow, {
       workflowId: relayConfigWorkflowId(o.config.deployId),
-      taskQueue: configTaskQueue(o.config.temporal.taskQueue),
+      taskQueue: configTaskQueue(temporalOf(o.config).taskQueue),
       args: [initialRelayConfigState(o.config.deployId, pairCode)],
       workflowIdConflictPolicy: "FAIL",
     });
@@ -239,7 +248,22 @@ export async function runStartupChecks(o: StartupOptions): Promise<StartupResult
   return { pairCode };
 }
 
-/** Make a new pairing code (the command `relay pair-code`). */
+/** Make a new pairing code in a store (the command `relay pair-code`). */
+export async function newPairCodeIn(store: RelayConfigStore, timeoutMs = 15_000): Promise<string> {
+  const code = newPairCode();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+  });
+  try {
+    await Promise.race([store.setPairCode({ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return code;
+}
+
+/** Make a new pairing code in the relay-config workflow (Temporal). */
 export async function makePairCode(configClient: Client, deployId: string, timeoutMs = 15_000): Promise<string> {
   const code = newPairCode();
   const handle = configClient.workflow.getHandle(relayConfigWorkflowId(deployId));

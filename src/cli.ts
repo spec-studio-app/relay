@@ -7,9 +7,10 @@
 import bcrypt from "bcryptjs";
 import { ConfigError, loadConfig } from "./config.js";
 import { newPayloadKeys } from "./codec.js";
-import { StartupError, makePairCode, pairingText } from "./startup.js";
-import { connectClient, makeClients } from "./temporal/connection.js";
-import { serve, TEMPORAL_UNREACHABLE } from "./serve.js";
+import { StartupError, newPairCodeIn, pairingText } from "./startup.js";
+import { serve } from "./serve.js";
+import { openStore } from "./store/index.js";
+import { consoleLogger } from "./log.js";
 
 const USAGE = `Usage:
   relay [serve]     Run the relay.
@@ -27,22 +28,22 @@ function fail(error: unknown): never {
 
 async function pairCode(): Promise<void> {
   const config = loadConfig(process.env);
-  let connection;
-  try {
-    connection = await connectClient(config.temporal);
-  } catch {
-    throw new StartupError(TEMPORAL_UNREACHABLE);
-  }
-  const clients = makeClients(connection, config.temporal.namespace, config.payloadKeys);
+  // The JSON store writes the config file under its lock; the Temporal store
+  // sends an update that the running relay's worker applies.
+  const store = await openStore(config, { bucket: null, log: consoleLogger, worker: false });
   let code: string;
   try {
-    code = await makePairCode(clients.config, config.deployId);
+    code = await newPairCodeIn(store.config);
   } catch {
-    void connection.close().catch(() => undefined);
-    throw new StartupError("The relay cannot make a pairing code. Check that the relay runs with the same settings, then try again.");
+    void store.close().catch(() => undefined);
+    throw new StartupError(
+      config.store === "json"
+        ? "The relay cannot make a pairing code. Run the command with the same RELAY_DATA_DIR as the relay, then try again."
+        : "The relay cannot make a pairing code. Check that the relay runs with the same settings, then try again.",
+    );
   }
   process.stdout.write(pairingText(config, code) + "\n");
-  await connection.close();
+  await store.close().catch(() => undefined);
   process.exit(0);
 }
 

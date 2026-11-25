@@ -9,6 +9,12 @@ export const DEFAULT_NAMESPACE = "default";
 export const DEFAULT_DEPLOY_ID = "default";
 export const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_BUCKET_REGION = "auto";
+export const DEFAULT_DATA_DIR = "/data";
+
+/** Where the relay keeps its state. */
+export type StoreKind = "json" | "temporal";
+/** Why the relay uses its store: RELAY_STORE, TEMPORAL_ADDRESS without RELAY_STORE, or the default. */
+export type StoreReason = "set" | "temporal-address" | "default";
 
 /** How the relay connects to Temporal. */
 export type TemporalAuth = "plain" | "tls" | "mtls" | "api-key";
@@ -54,10 +60,16 @@ export interface Config {
   callTimeoutMs: number;
   extraRedirectUris: string[];
   deployId: string;
-  temporal: TemporalSettings;
+  store: StoreKind;
+  storeReason: StoreReason;
+  /** The folder of the JSON store (RELAY_DATA_DIR). */
+  dataDir: string;
+  /** The Temporal settings: only with the Temporal store. */
+  temporal: TemporalSettings | null;
   bucket: BucketSettings | null;
   attachmentMaxBytes: number;
-  payloadKeys: PayloadKeys;
+  /** The payload codec keys: only with the Temporal store. */
+  payloadKeys: PayloadKeys | null;
   /** The origin of the Temporal Web UI that may call the codec endpoints. */
   uiOrigin?: string;
 }
@@ -173,17 +185,30 @@ function bucketSettings(env: Env): BucketSettings | null {
   };
 }
 
+/** The store from RELAY_STORE, else Temporal when TEMPORAL_ADDRESS is set, else JSON. */
+function storeOf(env: Env): { store: StoreKind; storeReason: StoreReason } {
+  const given = value(env, "RELAY_STORE");
+  if (given !== undefined) {
+    if (given !== "json" && given !== "temporal") throw new ConfigError("RELAY_STORE must be json or temporal.");
+    return { store: given, storeReason: "set" };
+  }
+  if (value(env, "TEMPORAL_ADDRESS")) return { store: "temporal", storeReason: "temporal-address" };
+  return { store: "json", storeReason: "default" };
+}
+
 /** Read the configuration from the environment. Throws a ConfigError that names the setting. */
 export function loadConfig(env: Env): Config {
   const ownerPasswordHash = value(env, "OWNER_PASSWORD_HASH");
+  const { store, storeReason } = storeOf(env);
   const missing: string[] = [];
   if (!value(env, "PUBLIC_URL")) missing.push("PUBLIC_URL");
   if (!ownerPasswordHash) missing.push("OWNER_PASSWORD_HASH");
-  if (!value(env, "TEMPORAL_ADDRESS")) missing.push("TEMPORAL_ADDRESS");
-  if (!value(env, "PAYLOAD_KEYS")) missing.push("PAYLOAD_KEYS");
+  if (store === "temporal" && !value(env, "TEMPORAL_ADDRESS")) missing.push("TEMPORAL_ADDRESS");
+  if (store === "temporal" && !value(env, "PAYLOAD_KEYS")) missing.push("PAYLOAD_KEYS");
   if (missing.length > 0) {
     const hint = missing.includes("PAYLOAD_KEYS") ? " Run `relay keys` to make PAYLOAD_KEYS." : "";
-    throw new ConfigError(`Missing required settings: ${missing.join(", ")}.${hint}`);
+    const temporal = missing.some((m) => m.startsWith("TEMPORAL_") || m === "PAYLOAD_KEYS") ? " The Temporal store needs them." : "";
+    throw new ConfigError(`Missing required settings: ${missing.join(", ")}.${temporal}${hint}`);
   }
 
   const publicUrl = validUrl(value(env, "PUBLIC_URL")!, "PUBLIC_URL");
@@ -219,10 +244,13 @@ export function loadConfig(env: Env): Config {
     callTimeoutMs: positiveInt(env, "CALL_TIMEOUT_MS", DEFAULT_CALL_TIMEOUT_MS),
     extraRedirectUris,
     deployId,
-    temporal: temporalSettings(env, deployId),
+    store,
+    storeReason,
+    dataDir: value(env, "RELAY_DATA_DIR") ?? DEFAULT_DATA_DIR,
+    temporal: store === "temporal" ? temporalSettings(env, deployId) : null,
     bucket: bucketSettings(env),
     attachmentMaxBytes: positiveInt(env, "ATTACHMENT_MAX_BYTES", DEFAULT_ATTACHMENT_MAX_BYTES),
-    payloadKeys: parsePayloadKeys(value(env, "PAYLOAD_KEYS")!),
+    payloadKeys: store === "temporal" ? parsePayloadKeys(value(env, "PAYLOAD_KEYS")!) : null,
     uiOrigin,
   };
 }
