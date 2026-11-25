@@ -1,6 +1,6 @@
 // The rules of a spec's mirror and inboxes, as plain functions on its state.
 // The spec workflow (Temporal store) and the JSON store both call them, so the
-// two stores cannot drift. Each change function returns `changed`: true when
+// two stores cannot drift. The inbox rules are in inboxRules.ts. Each change function returns `changed`: true when
 // the store must count an update (and publish the memo).
 //
 // This file runs in the workflow sandbox too: keep it free of Node APIs. The
@@ -8,28 +8,32 @@
 // `newId()` calls: a change in that order changes the replay of a history.
 import {
   CLOSING_TEXT,
-  COORDINATOR_KEEP,
   DROPPED_TEXT,
   EVENT_LIMIT,
   RECREATED_TEXT,
   effectiveTurn,
   mirrorFields,
   unreadForCoordinator,
-  type Attachment,
   type Message,
   type SpecMemo,
   type SpecWorkflowState,
 } from "./types.js";
+import {
+  ackMac,
+  addForCoordinator as addToCoordinatorInbox,
+  addForMac,
+  addSessionMessage,
+  bounceMacMessages as bounceInbox,
+  collectMessages,
+  hasCoordinatorMessage,
+  type AckInput,
+  type Origin,
+  type RuleEnv,
+  type SendInput,
+} from "./inboxRules.js";
 
 export { CLOSING_TEXT, DROPPED_TEXT };
-
-/** What a rule needs from its store. */
-export interface RuleEnv {
-  /** A new message ID (uuid4 in the workflow, randomUUID in the JSON store). */
-  newId(): string;
-  /** The time now, as ISO 8601. */
-  now(): string;
-}
+export { MAX_WAIT_MS, hasNewer, readCursor, type AckInput, type ReadInput, type RuleEnv, type SendInput } from "./inboxRules.js";
 
 /** One activity line of a sync batch. */
 export interface SyncLine {
@@ -65,28 +69,6 @@ export interface SyncResult {
   applied: boolean;
 }
 
-export interface SendInput {
-  id: string;
-  text: string;
-  replyTo?: string;
-  attachments?: Attachment[];
-  at: string;
-}
-
-export interface AckInput {
-  seq: number;
-  error?: string;
-}
-
-export interface ReadInput {
-  /** Return the messages with a seq above this cursor. */
-  after?: number;
-  /** Return only the unread messages (above the highest seq that any read returned). */
-  unreadOnly?: boolean;
-  /** Wait this long for a new message when none is there. */
-  waitMs?: number;
-}
-
 export interface ReadResult {
   messages: Message[];
   stage: string;
@@ -100,9 +82,6 @@ export interface StateInput {
   /** The relay's time: the mirror's state is as of this time (syncedAt). */
   at: string;
 }
-
-/** The longest wait of one read. */
-export const MAX_WAIT_MS = 20_000;
 
 /** The lines of a sync input, in the order they came. */
 export function syncLines(input: Pick<SyncInput, "lines" | "line" | "event">): SyncLine[] {
@@ -131,21 +110,6 @@ function isFinished(s: SpecWorkflowState, event: Record<string, unknown>): boole
   return mirrorFields(s.state).stage === "merged" || event.kind === "merged";
 }
 
-function attachmentsOf(value: unknown): Attachment[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  return value
-    .filter((a): a is Record<string, unknown> => typeof a === "object" && a !== null)
-    .map((a) => ({
-      // An attachment that the agent could not upload has no objectKey, and an error.
-      ...(typeof a.objectKey === "string" && a.objectKey ? { objectKey: a.objectKey } : {}),
-      filename: String(a.filename ?? ""),
-      contentType: String(a.contentType ?? "application/octet-stream"),
-      size: Number(a.size ?? 0),
-      sha256: String(a.sha256 ?? ""),
-      ...(typeof a.error === "string" && a.error ? { error: a.error } : {}),
-    }));
-}
-
 /**
  * True when a first sync on a finished run belongs to another spec with the
  * same slug: the run was dropped (the folder came back), or the frame's state
@@ -167,29 +131,19 @@ function specRef(s: SpecWorkflowState) {
   return { repoKey: s.spec.repoKey, slug: s.spec.slug };
 }
 
+/** The origin of a spec's message: the spec and its stage now. */
+function specOrigin(s: SpecWorkflowState): Origin<Message> {
+  return { spec: specRef(s), stage: mirrorFields(s.state).stage };
+}
+
 /** Add a message for Claude AI. The inbox keeps its newest COORDINATOR_KEEP messages. */
 export function addForCoordinator(s: SpecWorkflowState, message: Omit<Message, "seq">): void {
-  const seq = s.coordinator.nextSeq++;
-  s.coordinator.messages.push({ ...message, seq });
-  if (s.coordinator.messages.length > COORDINATOR_KEEP) {
-    s.coordinator.messages.splice(0, s.coordinator.messages.length - COORDINATOR_KEEP);
-  }
+  addToCoordinatorInbox<Message>(s, message);
 }
 
 /** Tell Claude AI that the Mac will not take the messages that wait for it. */
 export function bounceMacMessages(s: SpecWorkflowState, reason: string, at: string, env: RuleEnv): void {
-  for (const message of s.mac.messages) {
-    addForCoordinator(s, {
-      id: env.newId(),
-      from: "session",
-      spec: specRef(s),
-      stage: mirrorFields(s.state).stage,
-      text: `The Mac did not take the message: ${reason}`,
-      replyTo: message.id,
-      createdAt: at,
-    });
-  }
-  s.mac.messages = [];
+  bounceInbox<Message>(s, reason, at, env, () => specOrigin(s));
 }
 
 /** Apply a sync batch: skip the lines the spec has, keep the first-sync rules. */
@@ -238,18 +192,10 @@ export function applySync(s: SpecWorkflowState, sync: SyncInput, env: RuleEnv): 
     s.events.push({ line, event });
     // A message that the inbox already has (a restored spec sends its old lines
     // again after the reset of a first sync) is not added a second time.
-    const knownMessage =
-      typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
-    if (event.kind === "message" && !knownMessage) {
-      addForCoordinator(s, {
-        id: typeof event.id === "string" && event.id ? event.id : env.newId(),
-        from: "session",
+    if (event.kind === "message" && !hasCoordinatorMessage(s, event.id)) {
+      addSessionMessage<Message>(s, event, sync.at, env, {
         spec: specRef(s),
         stage: typeof event.stage === "string" ? event.stage : mirrorFields(s.state).stage,
-        text: typeof event.text === "string" ? event.text : "",
-        ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),
-        ...(attachmentsOf(event.attachments) ? { attachments: attachmentsOf(event.attachments) } : {}),
-        createdAt: typeof event.t === "string" ? event.t : sync.at,
       });
     }
     if (isFinished(s, event)) s.finished = true;
@@ -266,39 +212,12 @@ export function checkSend(s: SpecWorkflowState): void {
 
 /** Add a message from Claude AI to the Mac inbox. Always a change. */
 export function applySend(s: SpecWorkflowState, send: SendInput): { seq: number; message: Message } {
-  const seq = s.mac.nextSeq++;
-  const message: Message = {
-    id: send.id,
-    seq,
-    from: "coordinator",
-    spec: specRef(s),
-    stage: "",
-    text: send.text,
-    ...(send.replyTo ? { replyTo: send.replyTo } : {}),
-    ...(send.attachments && send.attachments.length > 0 ? { attachments: send.attachments } : {}),
-    createdAt: send.at,
-  };
-  s.mac.messages.push(message);
-  return { seq, message };
+  return addForMac<Message>(s, send, { spec: specRef(s), stage: "" });
 }
 
 /** The Mac took a message (or refused it with an error). */
 export function applyAck(s: SpecWorkflowState, ack: AckInput, env: RuleEnv): { result: { removed: boolean }; changed: boolean } {
-  const index = s.mac.messages.findIndex((m) => m.seq === ack.seq);
-  if (index < 0) return { result: { removed: false }, changed: false };
-  const [dropped] = s.mac.messages.splice(index, 1);
-  if (ack.error) {
-    addForCoordinator(s, {
-      id: env.newId(),
-      from: "session",
-      spec: specRef(s),
-      stage: mirrorFields(s.state).stage,
-      text: `The Mac did not take the message: ${ack.error}`,
-      replyTo: dropped.id,
-      createdAt: env.now(),
-    });
-  }
-  return { result: { removed: true }, changed: true };
+  return ackMac<Message>(s, ack, env, () => specOrigin(s));
 }
 
 /**
@@ -331,27 +250,9 @@ export function applyGone(s: SpecWorkflowState, gone: { at: string }, env: RuleE
   return { result: { dropped: true }, changed: true };
 }
 
-/** The cursor of a read: the messages above it are the answer. */
-export function readCursor(s: SpecWorkflowState, read: ReadInput): number {
-  return read.unreadOnly ? s.coordinator.readUpTo : (read.after ?? 0);
-}
-
-/** True when a message above the cursor exists (the end of a read's wait). */
-export function hasNewer(s: SpecWorkflowState, after: number): boolean {
-  return s.coordinator.nextSeq - 1 > after;
-}
-
 /** The answer of a read after its wait. It moves readUpTo when it returns a newer message. */
 export function collectRead(s: SpecWorkflowState, after: number): { result: ReadResult; changed: boolean } {
-  const messages = s.coordinator.messages.filter((m) => m.seq > after);
-  let changed = false;
-  if (messages.length > 0) {
-    const last = messages[messages.length - 1].seq;
-    if (last > s.coordinator.readUpTo) {
-      s.coordinator.readUpTo = last;
-      changed = true;
-    }
-  }
+  const { messages, changed } = collectMessages<Message>(s, after);
   return { result: { messages, stage: mirrorFields(s.state).stage, syncedAt: s.syncedAt }, changed };
 }
 

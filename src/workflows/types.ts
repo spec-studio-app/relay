@@ -18,16 +18,33 @@ export interface Attachment {
   sha256: string;
 }
 
-export interface Message {
+/** The fields that every inbox message has, for a spec or a desk. */
+export interface InboxMessage {
   id: string;
   seq: number;
   from: "coordinator" | "session";
-  spec: { repoKey: string; slug: string };
-  stage: string;
   text: string;
   replyTo?: string;
   attachments?: Attachment[];
   createdAt: string;
+}
+
+/** A message of a spec. */
+export interface Message extends InboxMessage {
+  spec: { repoKey: string; slug: string };
+  stage: string;
+}
+
+/**
+ * The two inboxes of a spec or a desk. `mac`: the messages from Claude AI that
+ * wait for the Mac; the agent's ack removes them. `coordinator`: the messages
+ * for Claude AI. Reads do not remove them, so each chat keeps its own cursor.
+ * `readUpTo` is the highest seq that any read returned: a message above it is
+ * unread.
+ */
+export interface Inboxes<M extends InboxMessage = InboxMessage> {
+  mac: { nextSeq: number; messages: M[] };
+  coordinator: { nextSeq: number; messages: M[]; readUpTo: number };
 }
 
 export interface Turn {
@@ -186,7 +203,7 @@ export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> 
   }
 }
 
-export function unreadForCoordinator(s: SpecWorkflowState): number {
+export function unreadForCoordinator(s: Pick<Inboxes, "coordinator">): number {
   return s.coordinator.messages.filter((m) => m.seq > s.coordinator.readUpTo).length;
 }
 
