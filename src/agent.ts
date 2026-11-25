@@ -187,6 +187,8 @@ export class AgentHub {
   private lastHello: AgentRecord | null = null;
   /** The sockets that sent a desks frame: only they get desk-message frames. */
   private readonly deskCapable = new WeakSet<WebSocket>();
+  /** The repo keys of the newest desks frame. A gone write of an older frame checks it, so it cannot undo a newer frame. */
+  private lastDesksListed = new Set<string>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.startedAt = options.now();
@@ -653,6 +655,7 @@ export class AgentHub {
     // A desk record that the frame does not list belongs to a repo that left
     // Spec Studio or moved: it takes no more messages, and a name does not find it.
     const listed = new Set(reports.map((report) => report.repoKey));
+    this.lastDesksListed = listed;
     const gone = (desks.list ? desks.list() : Promise.resolve([]))
       .then((all) => all.filter((d) => !listed.has(d.repoKey) && d.reason !== DESK_GONE_TEXT))
       .catch(() => [])
@@ -662,6 +665,11 @@ export class AgentHub {
             (d) =>
               new Promise<boolean>((resolve) =>
                 this.chain(deskChainKey({ repoKey: d.repoKey }), async () => {
+                  // A newer desks frame listed the repo again: the desk is not gone.
+                  if (this.lastDesksListed.has(d.repoKey)) {
+                    resolve(true);
+                    return;
+                  }
                   try {
                     await desks.report([
                       { repoKey: d.repoKey, repo: d.repo ?? "", open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
