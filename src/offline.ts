@@ -1,9 +1,9 @@
 // Answers for list_repos, list_specs and read_spec while the Mac is offline.
-// They come from Temporal: the repos from the agent's last hello, the list from
-// visibility (search attributes and memo, scoped by RelayDeployId), and one
-// spec from a query of its workflow. Each answer says how old it is.
-import type { ConfigStore } from "./configStore.js";
-import { repoKeyOf, type Mirror } from "./mirror.js";
+// They come from the store: the repos from the agent's last hello, the list of
+// specs with their summaries, and the state of one spec. Each answer says how
+// old it is.
+import type { RelayConfigStore, SpecStore } from "./store/types.js";
+import { repoKeyOf } from "./store/address.js";
 import { EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
 
 export interface ToolText {
@@ -20,9 +20,9 @@ export interface OfflineReader {
   lastSyncAt?(): Promise<string | null>;
 }
 
-/** The newest syncedAt of the mirror's specs (ISO 8601), or null when none. */
-export async function lastSyncAt(mirror: Pick<Mirror, "list">): Promise<string | null> {
-  const listed = await mirror.list({ all: true });
+/** The newest syncedAt of the store's specs (ISO 8601), or null when none. */
+export async function lastSyncAt(specs: Pick<SpecStore, "list">): Promise<string | null> {
+  const listed = await specs.list({ all: true });
   const times = listed.map((s) => s.memo?.syncedAt).filter((t): t is string => !!t).sort();
   return times.length > 0 ? times[times.length - 1] : null;
 }
@@ -34,10 +34,10 @@ function str(value: unknown): string | undefined {
 }
 
 export class OfflineTools implements OfflineReader {
-  constructor(private readonly deps: { mirror: Mirror; configStore: ConfigStore }) {}
+  constructor(private readonly deps: { specs: SpecStore; config: RelayConfigStore }) {}
 
   lastSyncAt(): Promise<string | null> {
-    return lastSyncAt(this.deps.mirror);
+    return lastSyncAt(this.deps.specs);
   }
 
   async answer(tool: string, args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
@@ -52,7 +52,7 @@ export class OfflineTools implements OfflineReader {
   }
 
   private async listRepos(offlineText: string): Promise<ToolText> {
-    const repos = await this.deps.configStore.repos();
+    const repos = await this.deps.config.repos();
     if (!repos) return { ok: false, text: `${offlineText} The relay has no list of repos from the Mac.` };
     return {
       ok: true,
@@ -64,7 +64,7 @@ export class OfflineTools implements OfflineReader {
     const repo = str(args.repo);
     const all = args.all === true;
     // Like `studio specs`: a merged spec shows only with all.
-    const listed = await this.deps.mirror.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
+    const listed = await this.deps.specs.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
     const specs = listed
       .filter((s) => s.memo !== null && (all || (s.memo.stage !== "merged" && !s.memo.dropped)))
       .map((s) => ({
@@ -94,7 +94,7 @@ export class OfflineTools implements OfflineReader {
     const repo = str(args.repo);
     const slug = str(args.slug);
     if (!repo || !slug) return { ok: false, text: "Give the repo and the slug of the spec." };
-    const state = await this.deps.mirror.state({ repoKey: repoKeyOf(repo), slug });
+    const state = await this.deps.specs.state({ repoKey: repoKeyOf(repo), slug });
     if (!state) {
       return { ok: false, text: `${offlineText} The relay has no copy of the spec ${slug} in this repo.` };
     }

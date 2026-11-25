@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { SpecClosingError, SpecDroppedError, specAddress } from "../src/mirror.js";
-import { SA, specWorkflowId } from "../src/workflows/types.js";
+import { specWorkflowId } from "../src/workflows/types.js";
+import { SA } from "../src/workflows/searchAttributes.js";
 import { attachmentPrefix } from "../src/activities.js";
 import { sleep } from "./helpers.js";
 

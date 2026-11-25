@@ -13,14 +13,14 @@ import { REQUIRED_SEARCH_ATTRIBUTES, temporalAdmin } from "../src/startup.js";
 import { MemoryBucket } from "../src/bucket.js";
 import { Mirror } from "../src/mirror.js";
 import type { LogEntry } from "../src/log.js";
-import { ConfigStore, temporalOAuthStore } from "../src/configStore.js";
+import { ConfigStore } from "../src/configStore.js";
+import { storeAgentBackend, storeOAuthStore } from "../src/store/adapters.js";
 import { relayConfigWorkflow, setPairCodeUpdate } from "../src/workflows/relayConfig.js";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows/types.js";
 import { configTaskQueue } from "../src/temporal/connection.js";
 import { boundFor } from "../src/workflows/bound.js";
 import { makePairCode, pairCodeHash } from "../src/startup.js";
-import { temporalAgentBackend } from "../src/backend.js";
 import { OfflineTools, lastSyncAt } from "../src/offline.js";
 import { MessageTools } from "../src/messages.js";
 import { Attachments } from "../src/attachments.js";
@@ -157,14 +157,14 @@ export async function harness(
         testAgentPaired = true;
       }
       return startRelay({
-        agentBackend: temporalAgentBackend({ mirror, configStore, attachments }),
-        offline: new OfflineTools({ mirror, configStore }),
-        oauthStore: temporalOAuthStore(configStore),
+        agentBackend: storeAgentBackend({ specs: mirror, config: configStore, attachments }),
+        offline: new OfflineTools({ specs: mirror, config: configStore }),
+        oauthStore: storeOAuthStore(configStore),
         mcpBodyLimit: mcpBodyLimit(maxBytes),
         codecDataKeys: keys.data,
         localTools: (hub) =>
           new MessageTools({
-            mirror,
+            specs: mirror,
             attachments,
             push: (spec, message) => hub.pushMessage(spec, message),
             waitMs: options.readWaitMs ?? 1500,

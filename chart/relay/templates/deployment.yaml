@@ -1,4 +1,5 @@
 {{- $secret := include "relay.secretName" . }}
+{{- $store := include "relay.store" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +7,9 @@ metadata:
   labels:
     {{- include "relay.labels" . | nindent 4 }}
 spec:
-  # One replica: the relay keeps the one agent connection in its process.
+  # One replica: the relay keeps the one agent connection in its process. With
+  # the JSON store, the state is in the files of one pod: a second replica, or
+  # an old pod that runs beside a new one, would write the same files.
   replicas: 1
   strategy:
     type: Recreate
@@ -36,6 +39,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
+        {{- if eq $store "json" }}
+        # The volume of the JSON store belongs to the relay's group.
+        fsGroup: 1000
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -53,8 +60,14 @@ spec:
               value: {{ required "publicUrl is required (the public origin of the relay)" .Values.publicUrl | quote }}
             - name: DEPLOY_ID
               value: {{ .Values.deployId | quote }}
+            - name: RELAY_STORE
+              value: {{ $store | quote }}
+            {{- if eq $store "json" }}
+            - name: RELAY_DATA_DIR
+              value: /data
+            {{- else }}
             - name: TEMPORAL_ADDRESS
-              value: {{ required "temporal.address is required" .Values.temporal.address | quote }}
+              value: {{ required "temporal.address is required with store: temporal" .Values.temporal.address | quote }}
             - name: TEMPORAL_NAMESPACE
               value: {{ .Values.temporal.namespace | quote }}
             {{- with .Values.temporal.auth }}
@@ -64,6 +77,7 @@ spec:
             {{- with .Values.temporal.taskQueue }}
             - name: TASK_QUEUE
               value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.bucket.endpoint }}
             - name: BUCKET_ENDPOINT
@@ -77,18 +91,22 @@ spec:
             - name: ATTACHMENT_MAX_BYTES
               value: {{ . | quote }}
             {{- end }}
+            {{- if eq $store "temporal" }}
             {{- with .Values.uiOrigin }}
             - name: UI_ORIGIN
               value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.extraRedirectUris }}
             - name: EXTRA_REDIRECT_URIS
               value: {{ join "," . | quote }}
             {{- end }}
             {{- include "relay.secretEnv" (dict "name" "OWNER_PASSWORD_HASH" "key" "OWNER_PASSWORD_HASH" "secret" $secret "required" true) | nindent 12 }}
+            {{- if eq $store "temporal" }}
             {{- include "relay.secretEnv" (dict "name" "PAYLOAD_KEYS" "key" "PAYLOAD_KEYS" "secret" $secret "required" true) | nindent 12 }}
             {{- range $key := list "TEMPORAL_API_KEY" "TEMPORAL_TLS_CERT" "TEMPORAL_TLS_KEY" }}
             {{- include "relay.secretEnv" (dict "name" $key "key" $key "secret" $secret "required" false) | nindent 12 }}
+            {{- end }}
             {{- end }}
             {{- if .Values.bucket.endpoint }}
             {{- range $key := list "BUCKET_ACCESS_KEY" "BUCKET_SECRET_KEY" }}
@@ -117,6 +135,10 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if eq $store "json" }}
+            - name: data
+              mountPath: /data
+            {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -124,6 +146,11 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if eq $store "json" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "relay.claimName" . }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

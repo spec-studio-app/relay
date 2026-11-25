@@ -1,7 +1,12 @@
 # Spec Studio relay with Docker Compose.
 #
-#   With your own Temporal:   docker compose up
-#   With a local dev Temporal: docker compose --profile dev up
+#   The JSON store (the default):  docker compose up
+#   Your own Temporal:             set TEMPORAL_ADDRESS and PAYLOAD_KEYS in .env
+#                                  (RELAY_STORE=temporal is optional), then
+#                                  docker compose up
+#   A local dev Temporal:          set TEMPORAL_ADDRESS=temporal:7233 and
+#                                  PAYLOAD_KEYS in .env, then
+#                                  docker compose --profile dev up
 #
 # Put the settings in a .env file next to this file (see README.md). Quote the
 # password hash in single quotes: it holds `$` characters.
@@ -15,8 +20,12 @@ services:
     environment:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8760}
       OWNER_PASSWORD_HASH: "${OWNER_PASSWORD_HASH:?Set OWNER_PASSWORD_HASH to a bcrypt hash of the owner password}"
-      PAYLOAD_KEYS: "${PAYLOAD_KEYS:?Set PAYLOAD_KEYS. Make it with docker run --rm ghcr.io/spec-studio-app/relay keys}"
-      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
+      # json or temporal. Empty: temporal when TEMPORAL_ADDRESS is set, else json.
+      RELAY_STORE: ${RELAY_STORE:-}
+      # The Temporal store only: make PAYLOAD_KEYS with docker run --rm ghcr.io/spec-studio-app/relay keys
+      PAYLOAD_KEYS: "${PAYLOAD_KEYS:-}"
+      # The dev profile's Temporal is temporal:7233.
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_AUTH: ${TEMPORAL_AUTH:-}
       TEMPORAL_API_KEY: ${TEMPORAL_API_KEY:-}
@@ -33,6 +42,9 @@ services:
       UI_ORIGIN: ${UI_ORIGIN:-}
       EXTRA_REDIRECT_URIS: ${EXTRA_REDIRECT_URIS:-}
       CALL_TIMEOUT_MS: ${CALL_TIMEOUT_MS:-}
+    volumes:
+      # The JSON store's files. The volume takes the owner of /data in the image.
+      - relay-data:/data
     depends_on:
       temporal:
         condition: service_healthy
@@ -58,4 +70,5 @@ services:
       start_period: 5s
 
 volumes:
+  relay-data:
   temporal-home:

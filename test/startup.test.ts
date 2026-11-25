@@ -105,10 +105,10 @@ test("R2.S1: Temporal Cloud with mTLS (a *.tmprl.cloud address) also prints the 
     TEMPORAL_TLS_CERT: pemCert,
     TEMPORAL_TLS_KEY: pemKey,
   });
-  assert.equal(config.temporal.auth, "mtls");
-  assert.equal(isTemporalCloud(config.temporal), true);
-  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "temporal.example.com:7233" }).temporal), false);
-  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "eu-west-1.aws.api.temporal.io:7233", TEMPORAL_API_KEY: "k" }).temporal), true);
+  assert.equal(config.temporal!.auth, "mtls");
+  assert.equal(isTemporalCloud(config.temporal!), true);
+  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "temporal.example.com:7233" }).temporal!), false);
+  assert.equal(isTemporalCloud(testConfig({ TEMPORAL_ADDRESS: "eu-west-1.aws.api.temporal.io:7233", TEMPORAL_API_KEY: "k" }).temporal!), true);
 
   const admin = new FakeAdmin();
   admin.namespaces.add("acct.studio");

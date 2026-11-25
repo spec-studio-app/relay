@@ -1,5 +1,6 @@
-// The relay's side of the spec workflows: sync lines, messages and reads.
-import { createHash, randomUUID } from "node:crypto";
+// The Temporal spec store: one workflow per spec, with updates for the sync
+// lines, the messages and the reads.
+import { randomUUID } from "node:crypto";
 import {
   WithStartWorkflowOperation,
   WorkflowExecutionAlreadyStartedError,
@@ -29,8 +30,6 @@ import {
   DEFAULT_UPDATE_LIMIT,
   DROPPED_TEXT,
   FINISHED_GRACE_MS,
-  SA as SAKeys,
-  SPEC_WORKFLOW_TYPE,
   initialSpecState,
   specWorkflowId,
   type Attachment,
@@ -39,25 +38,16 @@ import {
   type SpecMemo,
   type SpecWorkflowState,
 } from "./workflows/types.js";
+import { SA as SAKeys, SPEC_WORKFLOW_TYPE } from "./workflows/searchAttributes.js";
+import { SpecClosingError, SpecDroppedError, SpecNotFoundError, TimeoutError } from "./store/errors.js";
+import type { ListFilter, ListedSpec, SpecStore } from "./store/types.js";
 
-/** The first 12 hex characters of the SHA-256 of the home repo's path. */
-export function repoKeyOf(repoPath: string): string {
-  const path = repoPath.length > 1 ? repoPath.replace(/\/+$/, "") : repoPath;
-  return createHash("sha256").update(path, "utf8").digest("hex").slice(0, 12);
-}
-
-export function specAddress(repo: string, slug: string): SpecAddress {
-  return { repoKey: repoKeyOf(repo), slug, repo };
-}
+export { repoKeyOf, specAddress } from "./store/address.js";
+export { SpecClosingError, SpecDroppedError, SpecNotFoundError, TimeoutError } from "./store/errors.js";
+export type { ListedSpec } from "./store/types.js";
 
 /** An update that gets no answer in this time fails (for example, when no worker runs). */
 export const UPDATE_TIMEOUT_MS = 30_000;
-
-export class TimeoutError extends Error {
-  constructor() {
-    super("Temporal did not answer in time.");
-  }
-}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout;
@@ -65,26 +55,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     timer = setTimeout(() => reject(new TimeoutError()), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-export class SpecNotFoundError extends Error {
-  constructor() {
-    super("The relay has no synced spec with this repo and slug.");
-  }
-}
-
-/** The spec is finished and its workflow removes its data: it takes no more updates. */
-export class SpecClosingError extends Error {
-  constructor() {
-    super(CLOSING_TEXT);
-  }
-}
-
-/** The spec no longer exists on the Mac: it takes no messages. */
-export class SpecDroppedError extends Error {
-  constructor() {
-    super(DROPPED_TEXT);
-  }
 }
 
 function isRefusal(error: unknown, text: string): boolean {
@@ -96,13 +66,6 @@ function isRefusal(error: unknown, text: string): boolean {
 /** True when the error is the workflow validators' refusal while the spec closes. */
 export function isClosingRefusal(error: unknown): boolean {
   return isRefusal(error, CLOSING_TEXT);
-}
-
-export interface ListedSpec {
-  repoKey: string;
-  slug: string;
-  running: boolean;
-  memo: SpecMemo | null;
 }
 
 export interface MirrorOptions {
@@ -121,7 +84,7 @@ function quote(text: string): string {
   return `'${text.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 }
 
-export class Mirror {
+export class Mirror implements SpecStore {
   constructor(private readonly o: MirrorOptions) {}
 
   get deployId(): string {
@@ -285,14 +248,7 @@ export class Mirror {
    * The specs of this deploy from visibility. Search attributes are eventually
    * consistent, so a read of one spec queries its workflow instead.
    */
-  async list(filter: {
-    repoKey?: string;
-    all?: boolean;
-    /** Only the open specs: not merged (list_specs without all). */
-    openOnly?: boolean;
-    pendingForMac?: boolean;
-    pendingForCoordinator?: boolean;
-  } = {}): Promise<ListedSpec[]> {
+  async list(filter: ListFilter = {}): Promise<ListedSpec[]> {
     const parts = [`WorkflowType = ${quote(SPEC_WORKFLOW_TYPE)}`, `RelayDeployId = ${quote(this.o.deployId)}`];
     if (!filter.all) parts.push(`ExecutionStatus = 'Running'`);
     if (filter.openOnly) parts.push(`Stage != 'merged'`);

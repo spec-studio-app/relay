@@ -2,7 +2,7 @@
 // relay's own OAuth 2.1 server, and the agent WebSocket at /agent.
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
-import express, { type Express, type NextFunction, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type Response, type Router } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -12,7 +12,6 @@ import { SingleUserProvider, type OAuthStore } from "./oauth.js";
 import { randomBytes } from "node:crypto";
 import { pairCodeHash } from "./pairing.js";
 import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
-import { codecRouter } from "./codecServer.js";
 import type { PayloadKey } from "./config.js";
 import { LOCAL_TOOLS, TOOLS } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
@@ -51,7 +50,7 @@ export interface RelayConfig {
   /** The clock for the agent's last-seen and start times. */
   now?: () => Date;
   log?: Logger;
-  /** Temporal for the agent hub (the agent wire version, paired secrets). */
+  /** The store for the agent hub (the agent wire version, paired secrets). */
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
@@ -155,7 +154,7 @@ export function createRelay(config: RelayConfig): Relay {
       }
     } catch {
       log({ event: "pair_failed" });
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     const secret = randomBytes(32).toString("base64url");
@@ -165,7 +164,7 @@ export function createRelay(config: RelayConfig): Relay {
       ok = await backend.pair(codeHash, secretHash, now());
     } catch {
       log({ event: "pair_failed" });
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     if (!ok) {
@@ -194,7 +193,7 @@ export function createRelay(config: RelayConfig): Relay {
       }
       removed = await backend.unpair(hash);
     } catch {
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     if (!removed) {
@@ -216,15 +215,17 @@ export function createRelay(config: RelayConfig): Relay {
   );
   app.use(provider.loginRouter());
   if (config.codecDataKeys && config.codecDataKeys.length > 0) {
-    app.use(
-      codecRouter({
-        dataKeys: config.codecDataKeys,
-        uiOrigin: config.uiOrigin,
-        provider,
-        passwordHash: config.loginPasswordBcrypt,
-        log,
-      }),
-    );
+    // The codec endpoints decode Temporal payloads. They load on the first
+    // codec request, so a relay without Temporal never loads the Temporal SDK.
+    const dataKeys = config.codecDataKeys;
+    let codec: Promise<Router> | null = null;
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.path !== "/codec" && !req.path.startsWith("/codec/")) return next();
+      codec ??= import("./codecServer.js").then(({ codecRouter }) =>
+        codecRouter({ dataKeys, uiOrigin: config.uiOrigin, provider, passwordHash: config.loginPasswordBcrypt, log }),
+      );
+      codec.then((router) => router(req, res, next), next);
+    });
   }
 
   const bearer = requireBearerAuth({

@@ -1,8 +1,8 @@
 {
   "name": "relay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Self-hosted relay for Spec Studio: a remote MCP server with a Temporal mirror of each spec, messages and attachments.",
+  "description": "Self-hosted relay for Spec Studio: a remote MCP server with a mirror of each spec (JSON files or Temporal), messages and attachments.",
   "repository": {
     "type": "git",
     "url": "https://github.com/spec-studio-app/relay.git"

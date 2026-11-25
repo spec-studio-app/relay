@@ -92,8 +92,8 @@ export const TOOLS: ToolDefinition[] = [
 export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
 
 /**
- * The tools that the relay answers itself, from Temporal, with the Mac online
- * or offline. The relay registers them only when it has Temporal.
+ * The tools that the relay answers itself, from its store, with the Mac online
+ * or offline. The relay registers them only when it has a store.
  */
 export const LOCAL_TOOLS: ToolDefinition[] = [
   {

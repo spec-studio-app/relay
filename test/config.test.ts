@@ -26,8 +26,8 @@ function errorOf(env: Record<string, string>): string {
   assert.fail("loadConfig did not throw");
 }
 
-test("R1.S2: without TEMPORAL_ADDRESS the start fails with a message that names it and holds no value", () => {
-  const env = validEnv();
+test("R1.S2: the Temporal store without TEMPORAL_ADDRESS fails with a message that names it and holds no value", () => {
+  const env: Record<string, string> = { ...validEnv(), RELAY_STORE: "temporal" };
   delete env.TEMPORAL_ADDRESS;
   const message = errorOf(env);
   assert.match(message, /TEMPORAL_ADDRESS/);
@@ -37,12 +37,45 @@ test("R1.S2: without TEMPORAL_ADDRESS the start fails with a message that names 
   for (const part of [DATA_KEY, CONFIG_KEY, BCRYPT]) assert.ok(!message.includes(part));
 });
 
-test("no settings: the message names each required setting", () => {
+test("no settings: the message names each required setting of the JSON store", () => {
   const message = errorOf({});
-  for (const name of ["PUBLIC_URL", "OWNER_PASSWORD_HASH", "TEMPORAL_ADDRESS", "PAYLOAD_KEYS"]) {
-    assert.match(message, new RegExp(name));
-  }
-  assert.match(message, /relay keys/);
+  for (const name of ["PUBLIC_URL", "OWNER_PASSWORD_HASH"]) assert.match(message, new RegExp(name));
+  for (const name of ["TEMPORAL_ADDRESS", "PAYLOAD_KEYS"]) assert.doesNotMatch(message, new RegExp(name));
+});
+
+test("pluggable-relay-store R4.S1: only PUBLIC_URL and OWNER_PASSWORD_HASH give the JSON store in /data", () => {
+  const config = loadConfig({ PUBLIC_URL: "https://relay.example.com", OWNER_PASSWORD_HASH: BCRYPT });
+  assert.equal(config.store, "json");
+  assert.equal(config.storeReason, "default");
+  assert.equal(config.dataDir, "/data");
+  assert.equal(config.temporal, null);
+  assert.equal(config.payloadKeys, null);
+  const other = loadConfig({ PUBLIC_URL: "https://relay.example.com", OWNER_PASSWORD_HASH: BCRYPT, RELAY_DATA_DIR: "/var/relay" });
+  assert.equal(other.dataDir, "/var/relay");
+});
+
+test("pluggable-relay-store R4.S2: TEMPORAL_ADDRESS without RELAY_STORE keeps the Temporal store of an older relay", () => {
+  const config = loadConfig(validEnv());
+  assert.equal(config.store, "temporal");
+  assert.equal(config.storeReason, "temporal-address");
+  assert.equal(config.temporal!.address, "temporal.example.com:7233");
+  const json = loadConfig({ ...validEnv(), RELAY_STORE: "json" });
+  assert.equal(json.store, "json");
+  assert.equal(json.storeReason, "set");
+  assert.equal(json.temporal, null);
+});
+
+test("pluggable-relay-store R4.S3: the Temporal store without its settings names them", () => {
+  const base = { PUBLIC_URL: "https://relay.example.com", OWNER_PASSWORD_HASH: BCRYPT, RELAY_STORE: "temporal" };
+  const both = errorOf(base);
+  assert.match(both, /TEMPORAL_ADDRESS/);
+  assert.match(both, /PAYLOAD_KEYS/);
+  assert.match(both, /The Temporal store needs them/);
+  assert.match(errorOf({ ...base, TEMPORAL_ADDRESS: "t:7233" }), /Missing required settings: PAYLOAD_KEYS\./);
+});
+
+test("pluggable-relay-store R4.S4: a store name that is not valid stops", () => {
+  assert.equal(errorOf({ ...validEnv(), RELAY_STORE: "redis" }), "RELAY_STORE must be json or temporal.");
 });
 
 test("the defaults: namespace, deploy ID, task queue, plain auth, no bucket", () => {
@@ -50,13 +83,13 @@ test("the defaults: namespace, deploy ID, task queue, plain auth, no bucket", ()
   assert.equal(config.port, 8760);
   assert.equal(config.callTimeoutMs, 90_000);
   assert.equal(config.deployId, "default");
-  assert.equal(config.temporal.namespace, "default");
-  assert.equal(config.temporal.taskQueue, "relay-default");
-  assert.equal(config.temporal.auth, "plain");
+  assert.equal(config.temporal!.namespace, "default");
+  assert.equal(config.temporal!.taskQueue, "relay-default");
+  assert.equal(config.temporal!.auth, "plain");
   assert.equal(config.bucket, null);
   assert.equal(config.attachmentMaxBytes, 10 * 1024 * 1024);
-  assert.equal(config.payloadKeys.data[0].id, "d1");
-  assert.equal(config.payloadKeys.config[0].id, "c1");
+  assert.equal(config.payloadKeys!.data[0].id, "d1");
+  assert.equal(config.payloadKeys!.config[0].id, "c1");
 });
 
 test("OWNER_PASSWORD_HASH has no alias: LOGIN_PASSWORD_BCRYPT does not set it", () => {
@@ -67,19 +100,19 @@ test("OWNER_PASSWORD_HASH has no alias: LOGIN_PASSWORD_BCRYPT does not set it", 
 });
 
 test("the task queue follows DEPLOY_ID, and TASK_QUEUE overrides it", () => {
-  assert.equal(loadConfig({ ...validEnv(), DEPLOY_ID: "loomis" }).temporal.taskQueue, "relay-loomis");
-  assert.equal(loadConfig({ ...validEnv(), DEPLOY_ID: "loomis", TASK_QUEUE: "q" }).temporal.taskQueue, "q");
+  assert.equal(loadConfig({ ...validEnv(), DEPLOY_ID: "loomis" }).temporal!.taskQueue, "relay-loomis");
+  assert.equal(loadConfig({ ...validEnv(), DEPLOY_ID: "loomis", TASK_QUEUE: "q" }).temporal!.taskQueue, "q");
   assert.match(errorOf({ ...validEnv(), DEPLOY_ID: "Bad Id" }), /DEPLOY_ID/);
 });
 
 test("Temporal auth: plain, tls, api-key and mtls", () => {
-  assert.equal(loadConfig({ ...validEnv(), TEMPORAL_AUTH: "plain" }).temporal.auth, "plain");
-  assert.equal(loadConfig({ ...validEnv(), TEMPORAL_AUTH: "tls" }).temporal.auth, "tls");
+  assert.equal(loadConfig({ ...validEnv(), TEMPORAL_AUTH: "plain" }).temporal!.auth, "plain");
+  assert.equal(loadConfig({ ...validEnv(), TEMPORAL_AUTH: "tls" }).temporal!.auth, "tls");
   const cloud = loadConfig({ ...validEnv(), TEMPORAL_API_KEY: "key-123" });
-  assert.equal(cloud.temporal.auth, "api-key");
+  assert.equal(cloud.temporal!.auth, "api-key");
   const pem = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----";
   const mtls = loadConfig({ ...validEnv(), TEMPORAL_TLS_CERT: pem, TEMPORAL_TLS_KEY: pem });
-  assert.equal(mtls.temporal.auth, "mtls");
+  assert.equal(mtls.temporal!.auth, "mtls");
   assert.match(errorOf({ ...validEnv(), TEMPORAL_TLS_CERT: pem }), /TEMPORAL_TLS_KEY/);
   assert.match(errorOf({ ...validEnv(), TEMPORAL_AUTH: "api-key" }), /TEMPORAL_API_KEY/);
   const both = errorOf({ ...validEnv(), TEMPORAL_API_KEY: "key-123", TEMPORAL_TLS_CERT: pem, TEMPORAL_TLS_KEY: pem });
