@@ -44,6 +44,8 @@ export interface RelayConfig {
   resendAfterMs?: number;
   /** Try a failed state frame again after this time. */
   stateRetryMs?: number;
+  /** After an incompatible hello, keep the socket open this long before the close. */
+  incompatibleCloseMs?: number;
   /** Redirect URIs that clients may register, in addition to the defaults (see oauth.ts). */
   extraRedirectUris?: string[];
   /** The clock for the agent's last-seen and start times. */
@@ -91,6 +93,7 @@ export function createRelay(config: RelayConfig): Relay {
     pendingScanMs: config.pendingScanMs,
     resendAfterMs: config.resendAfterMs,
     stateRetryMs: config.stateRetryMs,
+    incompatibleCloseMs: config.incompatibleCloseMs,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().
@@ -278,6 +281,23 @@ export function createRelay(config: RelayConfig): Relay {
   };
 }
 
+/**
+ * The notice that starts each tool result while the last agent hello failed
+ * the handshake, or null. It reads the last sync time only then.
+ */
+async function mismatchNotice(hub: AgentHub, offline?: OfflineReader): Promise<string | null> {
+  const agent = hub.lastAgent;
+  if (!agent || agent.compatible) return null;
+  // undefined: the relay cannot tell the time of the last sync, so the notice leaves it out.
+  let lastSync: string | null | undefined;
+  try {
+    lastSync = offline?.lastSyncAt ? await offline.lastSyncAt() : undefined;
+  } catch {
+    lastSync = undefined;
+  }
+  return hub.mismatchNotice(lastSync);
+}
+
 function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, localTools?: LocalTools): McpServer {
   const server = new McpServer({ name: "spec-studio", version: RELAY_VERSION });
   for (const tool of TOOLS) {
@@ -290,8 +310,9 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
         const fromMirror = result.offline === true && offline !== undefined && OFFLINE_READ_TOOLS.has(tool.name);
         if (fromMirror) result = await offline.answer(tool.name, args ?? {}, hub.offlineText());
         log({ event: "tool_call", tool: tool.name, ok: result.ok, offline: fromMirror || undefined, ms: Date.now() - start });
+        const notice = await mismatchNotice(hub, offline);
         return {
-          content: [{ type: "text" as const, text: result.text }],
+          content: [{ type: "text" as const, text: notice ? `${notice}\n${result.text}` : result.text }],
           ...(result.ok ? {} : { isError: true }),
         };
       },
@@ -306,8 +327,9 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
           const start = Date.now();
           const result = await localTools.answer(tool.name, args ?? {});
           log({ event: "tool_call", tool: tool.name, ok: result.ok, ms: Date.now() - start });
+          const notice = await mismatchNotice(hub, offline);
           return {
-            content: [{ type: "text" as const, text: result.text }],
+            content: [{ type: "text" as const, text: notice ? `${notice}\n${result.text}` : result.text }],
             ...(result.ok ? {} : { isError: true }),
           };
         },

@@ -49,6 +49,11 @@ test("R6.S1: send_message with no agent returns seq 1, and read_spec shows one m
     const missing = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "nope", text: "x" });
     assert.equal(missing.isError, true);
     assert.match(missing.content[0].text, /no synced spec/);
+    // R5.S3: the error gives the time of the last sync of any spec (visibility is eventually consistent).
+    await eventually(async () => {
+      const again = await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "nope" });
+      return /The last sync of any spec was at \d{4}-\d\d-\d\dT/.test(again.content[0].text) ? again : null;
+    });
   } finally {
     await t.close();
     await h.close();
