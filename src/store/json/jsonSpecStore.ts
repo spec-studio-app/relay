@@ -4,7 +4,7 @@
 // and writes the file after each change.
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readdir, rename } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "../../log.js";
 import {
@@ -44,14 +44,16 @@ import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
 
 /** A sync of a spec whose file the relay cannot read: the agent sends the lines again later. */
-export class SpecFileUnreadableError extends Error {
-  constructor() {
-    super("The relay cannot read its file of this spec. Correct the file and restart the relay, or pair the Mac again after studio agent unpair --force.");
+/** A spec file that the relay cannot read or parse: the start stops, and the owner fixes it. */
+export class SpecFileError extends Error {
+  constructor(file: string, what: "read" | "parse") {
+    super(
+      `The relay cannot ${what} the spec file ${file} in RELAY_DATA_DIR/specs. ` +
+        (what === "read" ? "Give the relay's user (uid 1000) access to it, " : "Correct the file, ") +
+        "or remove it: the relay then makes the spec again from the Mac's next lines, or from a first sync after studio agent unpair --force and a new pairing.",
+    );
   }
 }
-
-/** The suffix of a spec file that did not parse, moved aside. */
-export const UNREADABLE_SUFFIX = ".unreadable";
 
 /** A closed spec stays in lists with all, and blocks a late line, this long (as the Temporal retention). */
 export const CLOSED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -114,8 +116,6 @@ function keyOf(spec: SpecRef): string {
 export class JsonSpecStore implements SpecStore {
   private readonly entries = new Map<string, Entry>();
   private readonly closed = new Map<string, ClosedSpec>();
-  /** The file names of spec files that did not parse (moved aside as <name>.unreadable). */
-  private readonly unreadable = new Set<string>();
   private closedQueue: Promise<unknown> = Promise.resolve();
   /** Emits the key of a spec when it gets a new message for Claude AI, or closes. */
   private readonly wake = new EventEmitter();
@@ -162,25 +162,10 @@ export class JsonSpecStore implements SpecStore {
         await removeFile(path);
         continue;
       }
-      if (name.endsWith(UNREADABLE_SUFFIX)) {
-        this.unreadable.add(name.slice(0, -UNREADABLE_SUFFIX.length));
-        continue;
-      }
       if (!name.endsWith(".json")) continue;
+      // A file that the relay cannot read or parse stops the start: the owner
+      // fixes it, so no part of a spec is lost or made again in silence.
       const file = await this.parse(path, name);
-      if (file === "unread") {
-        // The file stays: the next start reads it again. Until then, later
-        // lines alone would make a part of the spec, so wait for a first sync.
-        this.unreadable.add(name);
-        continue;
-      }
-      if (file === "broken") {
-        // Keep the file for the owner, and wait for a first sync of the spec:
-        // its later lines alone would make a part of the spec.
-        await rename(path, path + UNREADABLE_SUFFIX).catch(() => undefined);
-        this.unreadable.add(name);
-        continue;
-      }
       if (file.state.deployId !== this.o.deployId) continue;
       const entry: Entry = {
         state: file.state,
@@ -205,17 +190,14 @@ export class JsonSpecStore implements SpecStore {
     }
   }
 
-  /**
-   * The spec file, "broken" when it does not parse, or "unread" when the relay
-   * cannot read it (for example a file that another user owns).
-   */
-  private async parse(path: string, name: string): Promise<SpecFile | "broken" | "unread"> {
+  /** The spec file. Throws SpecFileError when the relay cannot read or parse it. */
+  private async parse(path: string, name: string): Promise<SpecFile> {
     let text: string | null;
     try {
       text = await readText(path);
     } catch {
       this.o.log({ event: "spec_file_read_failed", file: name });
-      return "unread";
+      throw new SpecFileError(name, "read");
     }
     try {
       const file = JSON.parse(text ?? "") as SpecFile;
@@ -223,7 +205,7 @@ export class JsonSpecStore implements SpecStore {
       return file;
     } catch {
       this.o.log({ event: "spec_file_unreadable", file: name });
-      return "broken";
+      throw new SpecFileError(name, "parse");
     }
   }
 
@@ -384,16 +366,6 @@ export class JsonSpecStore implements SpecStore {
       // A spec that closed takes no late line: only a first sync starts it again
       // (as a completed workflow).
       if (this.closed.has(key) && !startsSpec(input)) return { line: lastSyncLine(input), applied: false };
-      // A spec whose file did not parse comes back only with a first sync (a
-      // new pairing sends one): later lines alone would make a part of it.
-      const fileName = specFileName(this.o.deployId, spec.repoKey, spec.slug);
-      if (this.unreadable.has(fileName)) {
-        // Refuse the lines (the agent keeps its cursor and sends them again),
-        // so none is lost while the file is aside: a fixed file and a restart,
-        // or a first sync, takes them.
-        if (!startsSpec(input)) throw new SpecFileUnreadableError();
-        this.unreadable.delete(fileName);
-      }
       entry = this.newEntry(spec);
     }
     const sync: SyncInput = { ...input, repo: input.repo ?? spec.repo, at: this.env.now() };

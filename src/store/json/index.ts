@@ -11,7 +11,7 @@ import { checkBucket, pairingText, StartupError } from "../../startupCommon.js";
 import type { RelayStore } from "../types.js";
 import { removeFile, writeAtomic, type WriteHooks } from "./files.js";
 import { ConfigFileError, JsonConfigStore } from "./jsonConfigStore.js";
-import { JsonSpecStore } from "./jsonSpecStore.js";
+import { JsonSpecStore, SpecFileError } from "./jsonSpecStore.js";
 
 export { JsonConfigStore } from "./jsonConfigStore.js";
 export { JsonSpecStore } from "./jsonSpecStore.js";
@@ -72,7 +72,12 @@ export function openJsonStore(config: Pick<Config, "dataDir" | "deployId" | "pub
         if (error instanceof ConfigFileError) throw new StartupError(error.message);
         throw error;
       }
-      await specs.load();
+      try {
+        await specs.load();
+      } catch (error) {
+        if (error instanceof SpecFileError) throw new StartupError(error.message);
+        throw error;
+      }
       if (!made) return { pairCode: null };
       log({ event: "relay_config_started" });
       print(pairingText(config, code));

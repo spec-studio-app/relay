@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ConfigMissingError } from "../src/store/json/jsonConfigStore.js";
 import { openJsonStore, type JsonStoreOptions } from "../src/store/json/index.js";
-import { SpecFileUnreadableError, specFileName } from "../src/store/json/jsonSpecStore.js";
+import { specFileName } from "../src/store/json/jsonSpecStore.js";
 import { writeAtomic } from "../src/store/json/files.js";
 import { SpecClosingError } from "../src/store/errors.js";
 import { specAddress } from "../src/store/address.js";
@@ -253,38 +253,6 @@ test("R4.S6: relay pair-code on the data folder of a running relay: the new code
   }
 });
 
-test("a spec file that does not parse is logged and moved aside; only a first sync fills the spec again", async () => {
-  const dir = tempDir();
-  try {
-    const logs: LogEntry[] = [];
-    const first = open(dir);
-    await first.start(quiet);
-    const spec = specAddress(REPO, "broken");
-    await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("broken"), turn: null });
-    await first.close();
-    const name = specFileName("default", spec.repoKey, "broken");
-    writeFileSync(join(dir, "specs", name), "{ not json");
-    const second = open(dir, { log: (e) => logs.push(e) });
-    await second.start(quiet);
-    assert.ok(logs.some((e) => e.event === "spec_file_unreadable"));
-    assert.ok(existsSync(join(dir, "specs", `${name}.unreadable`)), "the owner keeps the file");
-    assert.equal(await second.specs.state(spec), null);
-    // The Mac still has its cursor: its next lines are refused (it sends them again), also after a restart.
-    await assert.rejects(second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), SpecFileUnreadableError);
-    assert.equal(await second.specs.state(spec), null);
-    await second.close();
-    const third = open(dir);
-    await third.start(quiet);
-    await assert.rejects(third.specs.sync(spec, { lines: [{ line: 3, event: { kind: "status" } }] }), SpecFileUnreadableError);
-    // A new pairing sends the short first sync: it fills the spec.
-    const lines = [1, 2, 3, 4].map((line) => ({ line, event: { kind: "status" } }));
-    assert.deepEqual(await third.specs.sync(spec, { lines, first: true, state: show("broken"), turn: null }), { line: 4, applied: true });
-    assert.equal((await third.specs.state(spec))?.events.length, 4);
-    await third.close();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 test("a slug is never part of a file name", () => {
   const name = specFileName("default", "abc", "../../etc/passwd");
   assert.match(name, /^[0-9a-f]{32}\.json$/);
@@ -379,7 +347,37 @@ test("review: relay pair-code on a data folder with no config.json fails and mak
   }
 });
 
-test("review: a spec file that the relay cannot read stays in place, and the next start reads it again", async (t) => {
+test("a spec file that does not parse stops the start with a message that names it; a removed file lets the spec come again", async () => {
+  const dir = tempDir();
+  try {
+    const first = open(dir);
+    await first.start(quiet);
+    const spec = specAddress(REPO, "broken");
+    await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("broken"), turn: null });
+    await first.close();
+    const name = specFileName("default", spec.repoKey, "broken");
+    const path = join(dir, "specs", name);
+    writeFileSync(path, "{ not json");
+    const logs: LogEntry[] = [];
+    await assert.rejects(
+      open(dir, { log: (e) => logs.push(e) }).start(quiet),
+      (error) => error instanceof StartupError && error.message.includes(name) && /Correct the file, or remove it/.test(error.message),
+    );
+    assert.ok(logs.some((e) => e.event === "spec_file_unreadable"));
+    assert.ok(existsSync(path), "the relay changes nothing on the volume");
+    // The owner removes the file: the relay starts, and a first sync makes the spec again.
+    rmSync(path);
+    const again = open(dir);
+    await again.start(quiet);
+    const lines = [1, 2].map((line) => ({ line, event: { kind: "status" } }));
+    assert.deepEqual(await again.specs.sync(spec, { lines, first: true, state: show("broken"), turn: null }), { line: 2, applied: true });
+    await again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a spec file that the relay cannot read stops the start; the same file starts after the owner fixes the access", async (t) => {
   if (process.getuid?.() === 0) return t.skip("root can read any file");
   const dir = tempDir();
   try {
@@ -388,22 +386,14 @@ test("review: a spec file that the relay cannot read stays in place, and the nex
     const spec = specAddress(REPO, "locked");
     await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("locked"), turn: null });
     await first.close();
-    const file = join(dir, "specs", specFileName("default", spec.repoKey, "locked"));
-    chmodSync(file, 0o000);
-    const logs: LogEntry[] = [];
-    const second = open(dir, { log: (e) => logs.push(e) });
-    await second.start(quiet);
-    assert.ok(logs.some((e) => e.event === "spec_file_read_failed"));
-    assert.ok(existsSync(file), "the file is not moved aside");
-    await assert.rejects(second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), SpecFileUnreadableError);
-    await second.close();
-    chmodSync(file, 0o600);
-    const third = open(dir);
-    await third.start(quiet);
-    assert.equal((await third.specs.state(spec))?.line, 1);
-    // The refused line comes again and applies: nothing was lost.
-    assert.deepEqual(await third.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: true });
-    await third.close();
+    const path = join(dir, "specs", specFileName("default", spec.repoKey, "locked"));
+    chmodSync(path, 0o000);
+    await assert.rejects(open(dir).start(quiet), (error) => error instanceof StartupError && /cannot read the spec file/.test(error.message));
+    chmodSync(path, 0o600);
+    const again = open(dir);
+    await again.start(quiet);
+    assert.equal((await again.specs.state(spec))?.line, 1);
+    await again.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
