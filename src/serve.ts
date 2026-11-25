@@ -33,13 +33,15 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     codecDataKeys: store.codecDataKeys,
     uiOrigin: config.uiOrigin,
     agentBackend: storeAgentBackend({ specs: store.specs, desks: store.desks, config: store.config, attachments }),
-    offline: new OfflineTools({ specs: store.specs, config: store.config }),
+    offline: new OfflineTools({ specs: store.specs, desks: store.desks, config: store.config }),
     oauthStore: storeOAuthStore(store.config),
     localTools: (hub) =>
       new MessageTools({
         specs: store.specs,
+        desks: store.desks,
         attachments,
         push: (spec, message) => hub.pushMessage(spec, message),
+        pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
         lastSyncAt: () => lastSyncAt(store.specs),
       }),
   });

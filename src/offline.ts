@@ -2,7 +2,7 @@
 // They come from the store: the repos from the agent's last hello, the list of
 // specs with their summaries, and the state of one spec. Each answer says how
 // old it is.
-import type { RelayConfigStore, SpecStore } from "./store/types.js";
+import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
 import { EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
 
@@ -34,7 +34,7 @@ function str(value: unknown): string | undefined {
 }
 
 export class OfflineTools implements OfflineReader {
-  constructor(private readonly deps: { specs: SpecStore; config: RelayConfigStore }) {}
+  constructor(private readonly deps: { specs: SpecStore; config: RelayConfigStore; desks?: DeskStore }) {}
 
   lastSyncAt(): Promise<string | null> {
     return lastSyncAt(this.deps.specs);
@@ -54,9 +54,22 @@ export class OfflineTools implements OfflineReader {
   private async listRepos(offlineText: string): Promise<ToolText> {
     const repos = await this.deps.config.repos();
     if (!repos) return { ok: false, text: `${offlineText} The relay has no list of repos from the Mac.` };
+    const text = `${offlineText} This list of repos is from ${repos.at}.\n${JSON.stringify(repos.repos)}`;
+    if (!this.deps.desks) return { ok: true, text };
+    // The desk of each repo, as the Mac last sent it, with the time of that state.
+    const desks = (await this.deps.desks.list())
+      .map((d) => ({
+        repo: d.memo.repo,
+        open: d.memo.open,
+        turn: d.memo.turn,
+        canMessage: d.memo.canMessage,
+        reason: d.memo.reason,
+        stateAt: d.memo.stateAt,
+      }))
+      .sort((a, b) => (a.repo ?? "").localeCompare(b.repo ?? ""));
     return {
       ok: true,
-      text: `${offlineText} This list of repos is from ${repos.at}.\n${JSON.stringify(repos.repos)}`,
+      text: `${text}\nThe desk of each repo, from the last state that the Mac sent (stateAt):\n${JSON.stringify(desks)}`,
     };
   }
 

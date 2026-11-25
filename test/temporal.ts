@@ -162,15 +162,17 @@ export async function harness(
       }
       return startRelay({
         agentBackend: storeAgentBackend({ specs: mirror, desks, config: configStore, attachments }),
-        offline: new OfflineTools({ specs: mirror, config: configStore }),
+        offline: new OfflineTools({ specs: mirror, desks, config: configStore }),
         oauthStore: storeOAuthStore(configStore),
         mcpBodyLimit: mcpBodyLimit(maxBytes),
         codecDataKeys: keys.data,
         localTools: (hub) =>
           new MessageTools({
             specs: mirror,
+            desks,
             attachments,
             push: (spec, message) => hub.pushMessage(spec, message),
+            pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
             waitMs: options.readWaitMs ?? 1500,
             lastSyncAt: () => lastSyncAt(mirror),
           }),

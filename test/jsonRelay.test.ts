@@ -29,10 +29,17 @@ test("R1.S1: a relay on the JSON store pairs, syncs, reads offline and carries m
   const t = await startRelay({
     testAgentPaired: false,
     agentBackend: storeAgentBackend({ specs: store.specs, desks: store.desks, config: store.config, attachments }),
-    offline: new OfflineTools({ specs: store.specs, config: store.config }),
+    offline: new OfflineTools({ specs: store.specs, desks: store.desks, config: store.config }),
     oauthStore: storeOAuthStore(store.config),
     localTools: (hub) =>
-      new MessageTools({ specs: store.specs, attachments, push: (spec, message) => hub.pushMessage(spec, message), waitMs: 1000 }),
+      new MessageTools({
+        specs: store.specs,
+        desks: store.desks,
+        attachments,
+        push: (spec, message) => hub.pushMessage(spec, message),
+        pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
+        waitMs: 1000,
+      }),
   });
   try {
     // The Mac pairs with the code from the first start.
