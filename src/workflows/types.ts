@@ -22,7 +22,8 @@ export interface Attachment {
 export interface InboxMessage {
   id: string;
   seq: number;
-  from: "coordinator" | "session";
+  /** `user`: the user's answer in the spec's terminal, copied by Spec Studio (a local answer). */
+  from: "coordinator" | "session" | "user";
   text: string;
   replyTo?: string;
   attachments?: Attachment[];
@@ -92,6 +93,17 @@ export interface SpecWorkflowState {
   finished: boolean;
   /** True after the agent's gone frame: the spec no longer exists on the Mac. */
   dropped?: boolean;
+  /**
+   * The time (`t`) of the newest synced status change (STATUS_KINDS). Missing
+   * in runs from before it: then the newest status change in `events` counts.
+   */
+  lastStatusAt?: string | null;
+  /** The activity line of that status change: it orders a status change and a message in the same second. */
+  lastStatusLine?: number | null;
+  /** The activity line of the newest synced message event. */
+  lastMessageLine?: number | null;
+  /** The time of the coordinator's newest message (they leave the Mac inbox after the ack). */
+  lastSentAt?: string | null;
   /** Continue as new after this many updates in one run. */
   updateLimit: number;
   /**
@@ -201,6 +213,65 @@ export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> 
     default:
       return null;
   }
+}
+
+/** The activity events that change the stage or the status of a spec. */
+export const STATUS_KINDS: ReadonlySet<string> = new Set(["status", "approved", "went-back", "merged", "loop-ended"]);
+
+/** The latest status change: the mirror's stage, status and note, and the time of the newest status event. */
+export interface StatusChange {
+  stage: string;
+  status: string;
+  note: string | null;
+  at: string;
+}
+
+/** The newest status event (its time and line), from the state or else from the last events. */
+export function lastStatus(s: SpecWorkflowState): { at: string; line: number | null } | null {
+  if (typeof s.lastStatusAt === "string") return { at: s.lastStatusAt, line: s.lastStatusLine ?? null };
+  for (let i = s.events.length - 1; i >= 0; i--) {
+    const event = s.events[i].event;
+    if (STATUS_KINDS.has(String(event.kind)) && typeof event.t === "string") return { at: event.t, line: s.events[i].line };
+  }
+  return null;
+}
+
+/** The spec's latest status change, or null when no status event was synced. */
+export function statusChange(s: SpecWorkflowState): StatusChange | null {
+  const status = lastStatus(s);
+  if (!status) return null;
+  const { stage, status: value, note } = mirrorFields(s.state);
+  return { stage, status: value, note, at: status.at };
+}
+
+/** The time of the thread's newest message: in the coordinator inbox, or the coordinator's last send. */
+export function lastMessageAt(s: SpecWorkflowState): string | null {
+  const times = s.coordinator.messages.map((m) => m.createdAt);
+  if (typeof s.lastSentAt === "string") times.push(s.lastSentAt);
+  let newest: string | null = null;
+  for (const time of times) {
+    if (newest === null || Date.parse(time) > Date.parse(newest)) newest = time;
+  }
+  return newest;
+}
+
+/**
+ * True when the spec changed after the thread's newest message. The Mac writes
+ * whole seconds, so a status change and a message line in the same second are
+ * ordered by their activity lines: `studio message` then `studio status` is stale.
+ */
+export function isStale(s: SpecWorkflowState): boolean {
+  const status = lastStatus(s);
+  const message = lastMessageAt(s);
+  if (!status || !message) return false;
+  const at = Date.parse(status.at);
+  const last = Date.parse(message);
+  if (Number.isNaN(at) || Number.isNaN(last)) return false;
+  if (at !== last) return at > last;
+  // The same time: a coordinator's send (the relay's time) is not a line; a synced message is.
+  const sent = typeof s.lastSentAt === "string" && Date.parse(s.lastSentAt) === last;
+  if (sent) return false;
+  return status.line !== null && typeof s.lastMessageLine === "number" && status.line > s.lastMessageLine;
 }
 
 export function unreadForCoordinator(s: Pick<Inboxes, "coordinator">): number {

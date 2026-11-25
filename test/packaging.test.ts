@@ -12,14 +12,14 @@ test("the dev compose profile publishes the Temporal Web UI on loopback only", (
   assert.deepEqual(ports, ["127.0.0.1:8233:8233"]);
 });
 
-test("pluggable-relay-store R7.S1: the package and the Helm chart say relay version 0.4.0", () => {
+test("pluggable-relay-store R7.S1: the package and the Helm chart say relay version 0.5.0", () => {
   const pkg = JSON.parse(readFileSync(`${root}package.json`, "utf8")) as { version: string };
   const lock = JSON.parse(readFileSync(`${root}package-lock.json`, "utf8")) as { version: string };
   const chart = readFileSync(`${root}chart/relay/Chart.yaml`, "utf8");
-  assert.equal(pkg.version, "0.4.0");
-  assert.equal(lock.version, "0.4.0");
-  assert.match(chart, /^version: 0\.4\.0$/m);
-  assert.match(chart, /^appVersion: "0\.4\.0"$/m);
+  assert.equal(pkg.version, "0.5.0");
+  assert.equal(lock.version, "0.5.0");
+  assert.match(chart, /^version: 0\.5\.0$/m);
+  assert.match(chart, /^appVersion: "0\.5\.0"$/m);
 });
 
 test("pluggable-relay-store R5.S3: Compose runs the JSON store with a volume, and Temporal only in the dev profile", () => {

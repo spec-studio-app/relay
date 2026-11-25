@@ -205,7 +205,7 @@ The tools:
 | `read_spec` | The Mac answers. | The state, the turn and the last 20 events. No `spec.md` or `plan.md` text. |
 | `make_spec`, `start_spec` | The Mac answers. | Fails at once. |
 | `send_message` | The relay keeps the message and sends it to the Mac. With a repo and no slug, the message goes to the desk of the repo. | The relay keeps the message until the Mac connects. |
-| `read_messages` | The messages that the sessions and the desks sent with `studio message`. | The same. |
+| `read_messages` | The messages that the sessions and the desks sent with `studio message`, and the user's answers in a spec's terminal that Spec Studio copied (`from: user`). Each spec also gets its latest status change (stage, status, note, time), its turn, and `stale` when the spec changed after the last message. | The same. |
 | `upload_attachment` | Stores a file for `send_message`, for a spec or a desk. | The same. |
 
 ### Messages to a desk

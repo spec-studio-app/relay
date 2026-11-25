@@ -117,7 +117,8 @@ export function addSessionMessage<M extends InboxMessage>(
 ): void {
   addForCoordinator(box, {
     id: typeof event.id === "string" && event.id ? event.id : env.newId(),
-    from: "session",
+    // A local answer: Spec Studio copied the user's prompt in the terminal.
+    from: event.from === "user" ? "user" : "session",
     ...origin,
     text: typeof event.text === "string" ? event.text : "",
     ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),

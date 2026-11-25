@@ -404,3 +404,158 @@ test("R4.S4, R4.S5: upload_attachment with no slug stores the file in the desk's
     await h.close();
   }
 });
+
+const showState = (slug: string, stage: string, status: string, note: string) => ({
+  slug,
+  title: slug,
+  stage,
+  status,
+  statusNote: note,
+});
+
+test("R1.S1, R3.S1: a local answer shows as from the user, with its replyTo, and is unread without a slug", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await synced(h, "local", "build");
+    const spec = specAddress(REPO, "local");
+    await h.mirror.sync(spec, {
+      lines: [
+        { line: 2, event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "build", id: "s-1", text: "If Ross agrees, I reopen Build." } },
+        {
+          line: 3,
+          event: {
+            t: "2026-11-24T14:30:00Z",
+            kind: "message",
+            from: "user",
+            stage: "build",
+            id: "u-1",
+            text: "Yes, reopen Build and add the flag.",
+            replyTo: "s-1",
+          },
+        },
+      ],
+      state: null,
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+    await eventually(async () => (await h.mirror.list({ pendingForCoordinator: true })).length === 1);
+    const all = json(await callTool(t.base, accessToken, "read_messages", {}));
+    const user = all.messages.find((m: any) => m.id === "u-1");
+    assert.equal(user.from, "user");
+    assert.equal(user.replyTo, "s-1");
+    assert.equal(user.text, "Yes, reopen Build and add the flag.");
+    assert.equal(all.messages.find((m: any) => m.id === "s-1").from, "session");
+
+    const one = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "local" }));
+    assert.deepEqual(one.messages.map((m: any) => m.from), ["session", "user"]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R4.S1, R4.S2, R4.S5: read_messages gives the status change and the turn, and stale when the spec changed later", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    const spec = specAddress(REPO, "truck-load");
+    // R4.S5: only message lines: no status change, the turn shows, no stale.
+    await h.mirror.sync(spec, {
+      lines: [
+        { line: 1, event: { t: "2026-11-24T14:00:00Z", kind: "note", text: "start" } },
+        { line: 2, event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "merge", id: "s-1", text: "If Ross agrees, I reopen Build." } },
+      ],
+      first: true,
+      state: showState("truck-load", "merge", "awaiting-approval", "Ready."),
+      turn: { turn: "yours", needsYou: true },
+    });
+    const { accessToken } = await signIn(t.base);
+    const quiet = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "truck-load" }));
+    assert.equal(quiet.changed, null);
+    assert.deepEqual(quiet.turn, { turn: "yours", needsYou: true });
+    assert.equal(quiet.stale, undefined);
+
+    // R4.S1: the spec went back to Build and then to Merge after the message.
+    await h.mirror.sync(spec, {
+      lines: [
+        { line: 3, event: { t: "2026-11-24T14:40:00Z", kind: "went-back", from: "merge", to: "build", stage: "build" } },
+        { line: 4, event: { t: "2026-11-24T16:00:00Z", kind: "review-finished", text: "self round 6" } },
+        { line: 5, event: { t: "2026-11-24T17:11:00Z", kind: "status", from: "working", to: "awaiting-approval", stage: "merge", text: "Merge when you are ready." } },
+      ],
+      state: showState("truck-load", "merge", "awaiting-approval", "Merge when you are ready."),
+      turn: { turn: "yours", needsYou: true },
+    });
+    const stale = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "truck-load", after: 0 }));
+    assert.deepEqual(stale.changed, {
+      stage: "merge",
+      status: "awaiting-approval",
+      note: "Merge when you are ready.",
+      at: "2026-11-24T17:11:00Z",
+    });
+    assert.deepEqual(stale.turn, { turn: "yours", needsYou: true });
+    assert.equal(stale.stale, "The spec changed after the last message. Use read_spec for the current state.");
+
+    // R4.S2: a newer message makes the thread current again.
+    await h.mirror.sync(spec, {
+      lines: [{ line: 6, event: { t: "2026-11-24T17:12:00Z", kind: "message", stage: "merge", id: "s-2", text: "Merged the flag." } }],
+      state: null,
+      turn: null,
+    });
+    const current = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "truck-load", after: 0 }));
+    assert.equal(current.changed.at, "2026-11-24T17:11:00Z");
+    assert.equal(current.stale, undefined);
+
+    // The session answers and changes the status in the same second: stale.
+    await h.mirror.sync(spec, {
+      lines: [
+        { line: 7, event: { t: "2026-11-24T17:20:00Z", kind: "message", stage: "merge", id: "s-3", text: "Done." } },
+        { line: 8, event: { t: "2026-11-24T17:20:00Z", kind: "status", from: "awaiting-approval", to: "working", stage: "merge", text: "Merging." } },
+      ],
+      state: null,
+      turn: null,
+    });
+    assert.ok(json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "truck-load", after: 0 })).stale);
+
+    // A message from the coordinator after the change makes the thread current.
+    await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "truck-load", text: "Thanks, I see it." });
+    const answered = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "truck-load", after: 0 }));
+    assert.equal(answered.stale, undefined);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R4.S3: without a slug, each spec has its status change, and only the spec that changed is stale", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    const lines = (stale: boolean) => [
+      { line: 1, event: { t: "2026-11-24T10:00:00Z", kind: "status", from: "draft", to: "working", stage: "build" } },
+      { line: 2, event: { t: "2026-11-24T11:00:00Z", kind: "message", stage: "build", text: "A question." } },
+      ...(stale ? [{ line: 3, event: { t: "2026-11-24T12:00:00Z", kind: "approved", stage: "build" } }] : []),
+    ];
+    for (const [slug, stale] of [["moved", true], ["still", false]] as const) {
+      await h.mirror.sync(specAddress(REPO, slug), {
+        lines: lines(stale),
+        first: true,
+        state: showState(slug, stale ? "check" : "build", "working", "Working."),
+        turn: null,
+      });
+    }
+    await eventually(async () => (await h.mirror.list({ pendingForCoordinator: true, repoKey: repoKeyOf(REPO) })).length === 2);
+    const { accessToken } = await signIn(t.base);
+    const all = json(await callTool(t.base, accessToken, "read_messages", {}));
+    const bySlug = Object.fromEntries(all.specs.map((s: any) => [s.slug, s]));
+    assert.equal(bySlug.moved.changed.at, "2026-11-24T12:00:00Z");
+    assert.equal(bySlug.moved.changed.stage, "check");
+    assert.ok(bySlug.moved.stale);
+    assert.equal(bySlug.still.changed.at, "2026-11-24T10:00:00Z");
+    assert.equal(bySlug.still.stale, undefined);
+    assert.deepEqual(bySlug.still.turn, { turn: "working", needsYou: false });
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
