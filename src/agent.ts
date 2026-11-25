@@ -54,7 +54,7 @@ export interface AgentHubOptions {
   probeTimeoutMs: number;
   now: () => Date;
   log: Logger;
-  /** Temporal: the paired secrets and the wire version of the sync. Without it no agent can connect. */
+  /** The store: the paired secrets and the wire version of the sync. Without it no agent can connect. */
   backend?: AgentBackend;
   relayVersion?: string;
   /** The longest wait for the secret check of an upgrade (10 seconds when not given). */

@@ -49,7 +49,7 @@ export interface RelayConfig {
   /** The clock for the agent's last-seen and start times. */
   now?: () => Date;
   log?: Logger;
-  /** Temporal for the agent hub (the agent wire version, paired secrets). */
+  /** The store for the agent hub (the agent wire version, paired secrets). */
   agentBackend?: AgentBackend;
   /** Answers for the read tools while the Mac is offline. */
   offline?: OfflineReader;
@@ -152,7 +152,7 @@ export function createRelay(config: RelayConfig): Relay {
       }
     } catch {
       log({ event: "pair_failed" });
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     const secret = randomBytes(32).toString("base64url");
@@ -162,7 +162,7 @@ export function createRelay(config: RelayConfig): Relay {
       ok = await backend.pair(codeHash, secretHash, now());
     } catch {
       log({ event: "pair_failed" });
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     if (!ok) {
@@ -191,7 +191,7 @@ export function createRelay(config: RelayConfig): Relay {
       }
       removed = await backend.unpair(hash);
     } catch {
-      res.status(503).json({ error: "The relay cannot reach Temporal now. Try again later." });
+      res.status(503).json({ error: "The relay cannot reach its store now. Try again later." });
       return;
     }
     if (!removed) {

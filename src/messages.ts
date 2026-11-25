@@ -63,7 +63,7 @@ export class MessageTools {
       if (error instanceof SpecNotFoundError) {
         return { ok: false, text: "The relay has no synced spec with this repo and slug. Check them with list_specs." };
       }
-      return { ok: false, text: "The relay cannot reach Temporal now. Try again later." };
+      return { ok: false, text: "The relay cannot reach its store now. Try again later." };
     }
   }
 
