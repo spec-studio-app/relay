@@ -12,6 +12,17 @@ export function attachmentPrefix(deployId: string, repoKey: string, slug: string
   return `${deployId}/${repoKey}/${slug}/`;
 }
 
+/**
+ * The segment of a desk in an object key, in place of the slug. A slug starts
+ * with a letter or a digit, so no slug can be this segment.
+ */
+export const DESK_SEGMENT = "_desk";
+
+/** The object key prefix of a desk's attachments. */
+export function deskAttachmentPrefix(deployId: string, repoKey: string): string {
+  return `${deployId}/${repoKey}/${DESK_SEGMENT}/`;
+}
+
 export function createActivities(deps: { bucket: Bucket | null; log: Logger }): Activities {
   return {
     async removeAttachments({ deployId, repoKey, slug }) {

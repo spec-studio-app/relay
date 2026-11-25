@@ -2,9 +2,9 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
-import { AGENT_SECRET, callTool, connectAgent, signIn, sleep } from "./helpers.js";
+import { AGENT_SECRET, callTool, connectAgent, signIn, sleep, startRelay } from "./helpers.js";
 import { repoKeyOf } from "../src/mirror.js";
-import { specWorkflowId } from "../src/workflows/types.js";
+import { DESK_OFF_TEXT, specWorkflowId } from "../src/workflows/types.js";
 import { SA } from "../src/workflows/searchAttributes.js";
 import { RELAY_VERSION } from "../src/version.js";
 
@@ -52,7 +52,7 @@ test("R1.S2: a version 3 hello with no wires gets a welcome, and the relay keeps
     await h.startConfig();
     const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
     const welcome = await agent.next("welcome");
-    assert.deepEqual(welcome, { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3] });
+    assert.deepEqual(welcome, { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3], desks: true });
     assert.equal(t.relay.hub.wireVersion, 3);
     const repos = await eventually(() => h.configStore.repos());
     assert.deepEqual(repos.repos, HELLO.repos);
@@ -383,6 +383,187 @@ test("a hello with a huge wires list does not crash the relay", async () => {
     assert.equal(frame.tooOld, "relay");
     assert.ok((t.relay.hub.lastAgent?.wires.length ?? 0) <= 16);
     assert.equal((await agent.closed).code, 4002);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+// ---- desks (relay-desk-messages, wire-desks.md) ----
+
+const DESK = { repoKey: repoKeyOf(REPO), repo: REPO };
+const deskEntry = (over: Record<string, unknown> = {}) => ({
+  ...DESK,
+  open: true,
+  turn: { turn: "idle", needsYou: false },
+  canMessage: true,
+  reason: null,
+  ...over,
+});
+
+test("a relay with no desk store says nothing about desks in its welcome", async () => {
+  const t = await startRelay();
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    const welcome = await agent.next("welcome");
+    assert.equal("desks" in welcome, false);
+    // A desks frame on such a relay is ignored.
+    agent.send({ type: "desks", desks: [deskEntry()] });
+    await sleep(200);
+    assert.deepEqual(agent.frames, []);
+    assert.equal(t.relay.hub.desksConnected, false);
+    await agent.close();
+  } finally {
+    await t.close();
+  }
+});
+
+test("R2.S3, R6.S1: a desks frame saves each desk, and then the relay pushes the desk messages that wait", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    // The last state of the desk: Claude AI can message it. A message waits while the Mac is offline.
+    await h.desks.report(deskEntry({ open: false, turn: null }));
+    const waiting = await h.desks.send(DESK, { text: "Is CI green on main?" });
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    assert.equal((await agent.next("welcome")).desks, true);
+    // No desk frame before the agent's desks frame.
+    await sleep(300);
+    assert.equal(agent.frames.some((f) => f.type === "desk-message"), false);
+    assert.equal(t.relay.hub.desksConnected, false);
+
+    agent.send({ type: "desks", desks: [deskEntry(), { repoKey: repoKeyOf("/Users/me/code/site"), repo: "/Users/me/code/site", open: false, turn: null, canMessage: false, reason: "Sync is off for this repo on the Mac." }] });
+    const pushed = await agent.next("desk-message");
+    assert.deepEqual(pushed.desk, DESK);
+    assert.equal(pushed.seq, waiting.seq);
+    assert.equal(pushed.message.id, waiting.message.id);
+    assert.deepEqual(pushed.message.desk, DESK);
+    assert.equal(pushed.message.text, "Is CI green on main?");
+    assert.equal(pushed.message.spec, undefined);
+    assert.equal(t.relay.hub.desksConnected, true);
+    const saved = await h.desks.get(DESK);
+    assert.equal(saved?.open, true);
+    assert.deepEqual(saved?.turn, { turn: "idle", needsYou: false });
+    const site = await h.desks.get({ repoKey: repoKeyOf("/Users/me/code/site") });
+    assert.equal(site?.canMessage, false);
+    assert.equal(site?.reason, "Sync is off for this repo on the Mac.");
+
+    // A message that is still not acked goes again after the next desks frame.
+    agent.send({ type: "desks", desks: [deskEntry({ turn: { turn: "working", needsYou: false } })] });
+    assert.equal((await agent.next("desk-message")).message.id, waiting.message.id);
+
+    // The Mac takes it.
+    agent.send({ type: "desk-delivered", desk: DESK, seq: waiting.seq });
+    await eventually(async () => (await h.desks.get(DESK))?.mac.messages.length === 0);
+
+    // A new message goes at once to the desk-capable connection.
+    const next = await h.desks.send(DESK, { text: "Thanks." });
+    assert.equal(t.relay.hub.pushDeskMessage(DESK, next.message), true);
+    assert.equal((await agent.next("desk-message")).message.text, "Thanks.");
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R2.S4: desk-delivered with an error bounces the message to Claude AI with the reason", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    await h.desks.report(deskEntry());
+    const { seq, message } = await h.desks.send(DESK, { text: "Run the tests." });
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskEntry({ canMessage: false, reason: DESK_OFF_TEXT })] });
+    await agent.next("desk-message");
+    agent.send({ type: "desk-delivered", desk: { repoKey: DESK.repoKey }, seq, error: DESK_OFF_TEXT });
+    const state = await eventually(async () => {
+      const s = await h.desks.get(DESK);
+      return s && s.mac.messages.length === 0 && s.coordinator.messages.length === 1 ? s : null;
+    });
+    const note = state.coordinator.messages[0];
+    assert.equal(note.from, "session");
+    assert.equal(note.replyTo, message.id);
+    assert.equal(note.text, `The Mac did not take the message: ${DESK_OFF_TEXT}`);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R4.S1, R6.S2: desk-sync adds the replies once and answers desk-synced; a frame that is not valid gets an error", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskEntry()] });
+    const lines = [
+      { line: 1, event: { t: "2026-11-24T10:00:00Z", kind: "message", id: "r1", text: "CI is green on main.", replyTo: "abc" } },
+      { line: 2, event: { t: "2026-11-24T10:01:00Z", kind: "message", id: "r2", text: "Done." } },
+    ];
+    agent.send({ type: "desk-sync", desk: DESK, lines });
+    assert.deepEqual(await agent.next("desk-synced"), { type: "desk-synced", desk: DESK, line: 2 });
+    // The same lines again (the agent did not get desk-synced): one copy only.
+    agent.send({ type: "desk-sync", desk: DESK, lines });
+    assert.deepEqual(await agent.next("desk-synced"), { type: "desk-synced", desk: DESK, line: 2 });
+    const state = await h.desks.get(DESK);
+    assert.deepEqual(state?.coordinator.messages.map((m) => [m.id, m.text, m.replyTo ?? null]), [
+      ["r1", "CI is green on main.", "abc"],
+      ["r2", "Done.", null],
+    ]);
+    agent.send({ type: "desk-sync", desk: DESK, lines: [{ line: 3, event: "not an object" }] });
+    assert.match((await agent.next("desk-synced", (f) => f.line === 3)).error, /not valid/);
+    agent.send({ type: "desks", desks: [{ repoKey: "nothex", repo: REPO, open: true, canMessage: true }] });
+    assert.match((await agent.next("error")).text, /not valid/);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R6.S1: the pending scan pushes a desk message that the send did not push", async () => {
+  const h = await harness(env);
+  const t = await h.relay({ pendingScanMs: 300, resendAfterMs: 60_000 });
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskEntry()] });
+    await eventually(async () => (await h.desks.get(DESK))?.canMessage === true);
+    // A send straight to the store (no push): the scan finds it.
+    const { message } = await h.desks.send(DESK, { text: "Found by the scan." });
+    const pushed = await agent.next("desk-message", (f) => f.message.id === message.id);
+    assert.equal(pushed.message.text, "Found by the scan.");
+    // It goes once per resendAfterMs.
+    await sleep(1000);
+    assert.equal(agent.frames.filter((f) => f.type === "desk-message").length, 0);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R4.S4: upload-url with a desk gives an object key in the desk's own prefix", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "upload-url", id: "u1", desk: DESK, filename: "build.log", contentType: "text/plain", size: 12, sha256: "ab" });
+    const answer = await agent.next("upload-url");
+    assert.equal(answer.ok, true);
+    assert.ok(answer.objectKey.startsWith(`${h.deployId}/${DESK.repoKey}/_desk/`), answer.objectKey);
+    assert.ok(answer.objectKey.endsWith("-build.log"));
+    await agent.close();
   } finally {
     await t.close();
     await h.close();

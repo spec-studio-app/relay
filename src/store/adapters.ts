@@ -4,8 +4,8 @@ import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/share
 import type { OAuthStore } from "../oauth.js";
 import type { AgentBackend } from "../backend.js";
 import type { Attachments } from "../attachments.js";
-import type { Message, SpecAddress, StoredClient } from "../workflows/types.js";
-import type { RelayConfigStore, SpecStore } from "./types.js";
+import type { DeskAddress, DeskMessage, Message, SpecAddress, StoredClient } from "../workflows/types.js";
+import type { DeskStore, RelayConfigStore, SpecStore } from "./types.js";
 
 /** The OAuth provider's store in the relay's config store (R9.S4 of studio-relay). */
 export function storeOAuthStore(store: RelayConfigStore): OAuthStore {
@@ -24,8 +24,42 @@ export function storeOAuthStore(store: RelayConfigStore): OAuthStore {
 }
 
 /** The agent hub's backend on a store. */
-export function storeAgentBackend(deps: { specs: SpecStore; config: RelayConfigStore; attachments: Attachments }): AgentBackend {
+export function storeAgentBackend(deps: {
+  specs: SpecStore;
+  config: RelayConfigStore;
+  attachments: Attachments;
+  /** The desks. Without it the relay does not say that it knows desks. */
+  desks?: DeskStore;
+}): AgentBackend {
+  const desks = deps.desks;
   return {
+    ...(desks
+      ? {
+          desks: {
+            async report(reports) {
+              await Promise.all(reports.map((report) => desks.report(report)));
+            },
+            ack: async (desk, seq, error) => {
+              await desks.ack(desk, seq, error);
+            },
+            sync: (desk, lines) => desks.sync(desk, lines),
+            uploadUrl: (desk, filename, contentType, size) =>
+              deps.attachments.uploadUrl({ ...desk, desk: true }, filename, contentType, size),
+            async pendingForMac() {
+              const listed = await desks.list({ pendingForMac: true });
+              const out: Array<{ desk: DeskAddress; message: DeskMessage }> = [];
+              for (const item of listed) {
+                const state = await desks.get(item);
+                if (!state) continue;
+                for (const message of [...state.mac.messages].sort((a, b) => a.seq - b.seq)) {
+                  out.push({ desk: state.desk, message });
+                }
+              }
+              return out;
+            },
+          },
+        }
+      : {}),
     uploadUrl: (spec, filename, contentType, size) => deps.attachments.uploadUrl(spec, filename, contentType, size),
     downloadUrl: (objectKey) => deps.attachments.downloadUrl(objectKey),
     verifyAgent: (hash) => deps.config.verifyAgent(hash),

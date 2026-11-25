@@ -161,7 +161,7 @@ export async function harness(
         testAgentPaired = true;
       }
       return startRelay({
-        agentBackend: storeAgentBackend({ specs: mirror, config: configStore, attachments }),
+        agentBackend: storeAgentBackend({ specs: mirror, desks, config: configStore, attachments }),
         offline: new OfflineTools({ specs: mirror, config: configStore }),
         oauthStore: storeOAuthStore(configStore),
         mcpBodyLimit: mcpBodyLimit(maxBytes),

@@ -28,7 +28,7 @@ test("R1.S1: a relay on the JSON store pairs, syncs, reads offline and carries m
   const attachments = new Attachments({ bucket, deployId: "default", maxBytes: 1024 * 1024 });
   const t = await startRelay({
     testAgentPaired: false,
-    agentBackend: storeAgentBackend({ specs: store.specs, config: store.config, attachments }),
+    agentBackend: storeAgentBackend({ specs: store.specs, desks: store.desks, config: store.config, attachments }),
     offline: new OfflineTools({ specs: store.specs, config: store.config }),
     oauthStore: storeOAuthStore(store.config),
     localTools: (hub) =>
