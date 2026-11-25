@@ -21,7 +21,7 @@ import { initialRelayConfigState, relayConfigWorkflowId } from "../src/workflows
 import { configTaskQueue } from "../src/temporal/connection.js";
 import { boundFor } from "../src/workflows/bound.js";
 import { makePairCode, pairCodeHash } from "../src/startup.js";
-import { OfflineTools } from "../src/offline.js";
+import { OfflineTools, lastSyncAt } from "../src/offline.js";
 import { MessageTools } from "../src/messages.js";
 import { Attachments } from "../src/attachments.js";
 import { mcpBodyLimit } from "../src/serve.js";
@@ -163,7 +163,13 @@ export async function harness(
         mcpBodyLimit: mcpBodyLimit(maxBytes),
         codecDataKeys: keys.data,
         localTools: (hub) =>
-          new MessageTools({ specs: mirror, attachments, push: (spec, message) => hub.pushMessage(spec, message), waitMs: options.readWaitMs ?? 1500 }),
+          new MessageTools({
+            specs: mirror,
+            attachments,
+            push: (spec, message) => hub.pushMessage(spec, message),
+            waitMs: options.readWaitMs ?? 1500,
+            lastSyncAt: () => lastSyncAt(mirror),
+          }),
         ...relayOptions,
         testAgentPaired: false,
       });

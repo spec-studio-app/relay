@@ -49,6 +49,7 @@ export async function startRelay(
     pendingScanMs?: number;
     resendAfterMs?: number;
     stateRetryMs?: number;
+    incompatibleCloseMs?: number;
     now?: () => Date;
     agentBackend?: AgentBackend;
     offline?: OfflineReader;
@@ -86,6 +87,7 @@ export async function startRelay(
     pendingScanMs: options.pendingScanMs,
     resendAfterMs: options.resendAfterMs,
     stateRetryMs: options.stateRetryMs,
+    incompatibleCloseMs: options.incompatibleCloseMs ?? 0,
     now: options.now,
     log: (entry) => logs.push(entry),
   });
@@ -120,6 +122,8 @@ export interface FakeAgent {
   next(type: string, check?: (frame: Record<string, any>) => boolean, ms?: number): Promise<Record<string, any>>;
   /** Reply to each call with this function. Return undefined to never answer. */
   answer: ((call: { tool: string; arguments: Record<string, unknown> }) => { ok: boolean; text: string } | undefined) | null;
+  /** Resolves with the close code and reason when the connection closes. */
+  closed: Promise<{ code: number; reason: string }>;
   close(): Promise<void>;
 }
 
@@ -158,6 +162,7 @@ export async function connectAgent(
         }, 10);
       }),
     answer: null,
+    closed: new Promise((resolve) => ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))),
     close: () =>
       new Promise<void>((resolve) => {
         if (ws.readyState === WebSocket.CLOSED) return resolve();

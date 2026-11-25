@@ -16,6 +16,15 @@ export const NO_SPEC_TEXT =
 
 export interface OfflineReader {
   answer(tool: string, args: Record<string, unknown>, offlineText: string): Promise<ToolText>;
+  /** The time of the newest sync of any spec (ISO 8601), or null when none. */
+  lastSyncAt?(): Promise<string | null>;
+}
+
+/** The newest syncedAt of the store's specs (ISO 8601), or null when none. */
+export async function lastSyncAt(specs: Pick<SpecStore, "list">): Promise<string | null> {
+  const listed = await specs.list({ all: true });
+  const times = listed.map((s) => s.memo?.syncedAt).filter((t): t is string => !!t).sort();
+  return times.length > 0 ? times[times.length - 1] : null;
 }
 
 export const OFFLINE_READ_TOOLS = new Set(["list_repos", "list_specs", "read_spec"]);
@@ -26,6 +35,10 @@ function str(value: unknown): string | undefined {
 
 export class OfflineTools implements OfflineReader {
   constructor(private readonly deps: { specs: SpecStore; config: RelayConfigStore }) {}
+
+  lastSyncAt(): Promise<string | null> {
+    return lastSyncAt(this.deps.specs);
+  }
 
   async answer(tool: string, args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     try {

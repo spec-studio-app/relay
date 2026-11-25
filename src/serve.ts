@@ -4,7 +4,7 @@ import type { Config } from "./config.js";
 import { createRelay } from "./server.js";
 import { consoleLogger, type Logger } from "./log.js";
 import { S3Bucket } from "./bucket.js";
-import { OfflineTools } from "./offline.js";
+import { OfflineTools, lastSyncAt } from "./offline.js";
 import { MessageTools } from "./messages.js";
 import { Attachments } from "./attachments.js";
 import { openStore, storeReasonText } from "./store/index.js";
@@ -35,7 +35,13 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     agentBackend: storeAgentBackend({ specs: store.specs, config: store.config, attachments }),
     offline: new OfflineTools({ specs: store.specs, config: store.config }),
     oauthStore: storeOAuthStore(store.config),
-    localTools: (hub) => new MessageTools({ specs: store.specs, attachments, push: (spec, message) => hub.pushMessage(spec, message) }),
+    localTools: (hub) =>
+      new MessageTools({
+        specs: store.specs,
+        attachments,
+        push: (spec, message) => hub.pushMessage(spec, message),
+        lastSyncAt: () => lastSyncAt(store.specs),
+      }),
   });
   const server = createServer(relay.app);
   relay.attach(server);

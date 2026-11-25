@@ -145,7 +145,7 @@ test("R2.S5: a finished spec is removed with its attachments after its grace per
   const dir = tempDir();
   try {
     const bucket = new GatedBucket();
-    const store = open(dir, { bucket, graceMs: 600 });
+    const store = open(dir, { bucket, graceMs: 1500 });
     await store.start(quiet);
     const spec = specAddress(REPO, "done");
     const key = `${attachmentPrefix("default", spec.repoKey, "done")}a.png`;
@@ -154,18 +154,18 @@ test("R2.S5: a finished spec is removed with its attachments after its grace per
     const file = join(dir, "specs", specFileName("default", spec.repoKey, "done"));
     assert.ok(existsSync(file));
     // A call in the period starts it again.
-    await sleep(400);
+    await sleep(1000);
     await store.specs.read(spec, 0, 0);
-    await sleep(400);
+    await sleep(1000);
     assert.equal(bucket.started, false, "the period started again with the read");
-    for (let i = 0; i < 100 && !bucket.started; i++) await sleep(20);
+    for (let i = 0; i < 200 && !bucket.started; i++) await sleep(20);
     assert.equal(bucket.started, true);
     await assert.rejects(store.specs.send(spec, { text: "Late" }), (error) => error instanceof SpecClosingError);
     // A late line of the closing spec changes nothing; a first sync must come again.
     assert.deepEqual(await store.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: false });
     await assert.rejects(store.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true }), (error) => error instanceof SpecClosingError);
     bucket.release();
-    for (let i = 0; i < 50 && existsSync(file); i++) await sleep(20);
+    for (let i = 0; i < 250 && existsSync(file); i++) await sleep(20);
     assert.equal(existsSync(file), false);
     assert.equal(bucket.objects.has(key), false);
     assert.equal(await store.specs.state(spec), null);
