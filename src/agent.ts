@@ -121,6 +121,8 @@ function specKey(spec: { repoKey: string; slug: string }): string {
 }
 
 export const DEFAULT_PENDING_SCAN_MS = 60_000;
+/** How long after a welcome a current app has sent its desks frame. */
+export const DESKS_FRAME_WAIT_MS = 15_000;
 
 export const DEFAULT_AGENT_AUTH_TIMEOUT_MS = 10_000;
 
@@ -187,6 +189,8 @@ export class AgentHub {
   private lastHello: AgentRecord | null = null;
   /** The sockets that sent a desks frame: only they get desk-message frames. */
   private readonly deskCapable = new WeakSet<WebSocket>();
+  /** When each connection got its welcome (ms). */
+  private readonly welcomedAt = new WeakMap<WebSocket, number>();
   /** The repo keys of the newest desks frame. A gone write of an older frame checks it, so it cannot undo a newer frame. */
   private lastDesksListed = new Set<string>();
 
@@ -495,6 +499,7 @@ export class AgentHub {
     const version = Math.max(...common);
     this.lastHello = { appVersion, wires, at: this.options.now(), compatible: true };
     this.versions.set(ws, version);
+    this.welcomedAt.set(ws, this.options.now().getTime());
     this.send(ws, {
       type: "welcome",
       version,
@@ -623,6 +628,21 @@ export class AgentHub {
     return !!ws && ws.readyState === WebSocket.OPEN && this.deskCapable.has(ws);
   }
 
+  /**
+   * True when the connected Mac takes desk messages, false when its app does
+   * not (a welcome more than DESKS_FRAME_WAIT_MS ago and no desks frame since),
+   * null when it cannot tell yet or no Mac is connected. A current app sends
+   * its desks frame within seconds of the welcome.
+   */
+  macTakesDesks(): boolean | null {
+    const ws = this.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+    if (this.deskCapable.has(ws)) return true;
+    const welcomed = this.welcomedAt.get(ws);
+    if (welcomed === undefined) return null;
+    return this.options.now().getTime() - welcomed > DESKS_FRAME_WAIT_MS ? false : null;
+  }
+
   /** The agent's desks frame: save each desk, then push the waiting desk messages. */
   private desksFrame(ws: WebSocket, m: Record<string, unknown>): void {
     const desks = this.options.backend?.desks;
@@ -644,7 +664,11 @@ export class AgentHub {
         new Promise<boolean>((resolve) =>
           this.chain(deskChainKey(report), async () => {
             try {
-              await desks.report([report]);
+              // A newer desks frame left the repo out: the desk is gone, not open.
+              const listed = this.lastDesksListed.has(report.repoKey);
+              await desks.report([
+                listed ? report : { repoKey: report.repoKey, repo: report.repo, open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
+              ]);
               resolve(true);
             } catch {
               resolve(false);

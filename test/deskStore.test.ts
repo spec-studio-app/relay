@@ -375,11 +375,15 @@ test("review: with a connected Mac whose app does not take desk messages, a desk
       push: () => {},
       pushDesk: () => false,
       macTakesDesks: () => takes,
+      helloRepos: async () => ["/Users/me/code/old-app"],
       attachments: new Attachments({ bucket: null, deployId: "default", maxBytes: 1000 }),
     });
-    const old = await tools.answer("send_message", { repo: "/Users/me/code/none", text: "Hi" });
+    const old = await tools.answer("send_message", { repo: "/Users/me/code/old-app", text: "Hi" });
     assert.equal(old.ok, false);
     assert.match(old.text, /does not take desk messages/);
+    // A repo that the Mac does not have keeps the no-desk text (R1.S3).
+    const unknown = await tools.answer("send_message", { repo: "/Users/me/code/none", text: "Hi" });
+    assert.match(unknown.text, /has no desk for the repo/);
     takes = null;
     const offline = await tools.answer("send_message", { repo: "/Users/me/code/none", text: "Hi" });
     assert.match(offline.text, /has no desk for the repo/);
