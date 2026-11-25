@@ -4,14 +4,17 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import type { DeskStore, SpecStore } from "../src/store/types.js";
 import type { DeskReport } from "../src/workflows/types.js";
 import { DESK_OFF_TEXT } from "../src/workflows/types.js";
-import { DeskNotFoundError, DeskRefusedError } from "../src/store/errors.js";
+import { DeskNotFoundError, DeskRefusedError, DeskUnreadableError } from "../src/store/errors.js";
+import { deskFileName } from "../src/store/json/jsonDeskStore.js";
+import { MessageTools } from "../src/messages.js";
+import { Attachments } from "../src/attachments.js";
 import { repoKeyOf, specAddress } from "../src/store/address.js";
 import { openJsonStore } from "../src/store/json/index.js";
 import { MemoryBucket } from "../src/bucket.js";
@@ -289,6 +292,73 @@ test("JSON desk store: a desk stays after a restart, in its own file under desks
     assert.equal(state?.mac.messages[0]?.text, "Waits");
     assert.equal(state?.canMessage, true);
     await second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a desk file that the relay cannot read stays in place, and the next start reads it again", async (t) => {
+  if (process.getuid?.() === 0) return t.skip("root can read any file");
+  const dir = mkdtempSync(join(tmpdir(), "relay-desk-"));
+  try {
+    const first = jsonStore(dir);
+    await first.start({ log: () => {}, print: () => {} });
+    const path = repo();
+    const key = repoKeyOf(path);
+    await first.desks.report(report(path));
+    await first.desks.send({ repoKey: key }, { text: "Waits" });
+    await first.close();
+    const file = join(dir, "desks", deskFileName("default", key));
+    chmodSync(file, 0o000);
+    const logs: Array<{ event: string }> = [];
+    const second = openJsonStore(
+      { dataDir: dir, deployId: "default", publicUrl: "https://relay.example.com" },
+      { bucket: new MemoryBucket(), log: (e) => logs.push(e as { event: string }), graceMs: 60_000 },
+    );
+    await second.start({ log: () => {}, print: () => {} });
+    assert.ok(logs.some((e) => e.event === "desk_file_read_failed"));
+    // The next desks frame and a desk-sync do not write over the file.
+    await assert.rejects(second.desks.report(report(path)), DeskUnreadableError);
+    await assert.rejects(second.desks.sync({ repoKey: key, repo: path }, [reply(1, "r1", "Done.")]), DeskUnreadableError);
+    await second.close();
+    chmodSync(file, 0o600);
+    const third = jsonStore(dir);
+    await third.start({ log: () => {}, print: () => {} });
+    assert.equal((await third.desks.get({ repoKey: key }))?.mac.messages[0]?.text, "Waits");
+    await third.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a repo name finds the desk of the repo that the Mac has now, and two such repos need the path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-desk-"));
+  try {
+    const store = jsonStore(dir);
+    await store.start({ log: () => {}, print: () => {} });
+    const suffix = randomBytes(4).toString("hex");
+    const old = `/Users/me/old/app-${suffix}`;
+    const moved = `/Users/me/new/app-${suffix}`;
+    await store.desks.report(report(old));
+    await store.desks.report(report(moved));
+    let current = [moved];
+    const tools = new MessageTools({
+      specs: store.specs,
+      desks: store.desks,
+      push: () => {},
+      pushDesk: () => false,
+      repos: async () => current,
+      attachments: new Attachments({ bucket: null, deployId: "default", maxBytes: 1000 }),
+    });
+    const sent = await tools.answer("send_message", { repo: `app-${suffix}`, text: "Is CI green?" });
+    assert.equal(sent.ok, true, sent.text);
+    assert.equal((await store.desks.get({ repoKey: repoKeyOf(moved) }))?.mac.messages.length, 1);
+    assert.equal((await store.desks.get({ repoKey: repoKeyOf(old) }))?.mac.messages.length, 0);
+    current = [old, moved];
+    const both = await tools.answer("send_message", { repo: `app-${suffix}`, text: "Again?" });
+    assert.equal(both.ok, false);
+    assert.match(both.text, /More than one repo has the name/);
+    await store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

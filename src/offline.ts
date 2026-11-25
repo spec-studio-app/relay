@@ -57,7 +57,10 @@ export class OfflineTools implements OfflineReader {
     const text = `${offlineText} This list of repos is from ${repos.at}.\n${JSON.stringify(repos.repos)}`;
     if (!this.deps.desks) return { ok: true, text };
     // The desk of each repo, as the Mac last sent it, with the time of that state.
+    // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
+    const keys = new Set(repos.repos.map((path) => repoKeyOf(path)));
     const desks = (await this.deps.desks.list())
+      .filter((d) => keys.has(d.repoKey))
       .map((d) => ({
         repo: d.memo.repo,
         open: d.memo.open,
