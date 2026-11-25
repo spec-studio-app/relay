@@ -12,7 +12,7 @@ import type { RelayStore } from "../types.js";
 import { removeFile, writeAtomic, type WriteHooks } from "./files.js";
 import { ConfigFileError, JsonConfigStore } from "./jsonConfigStore.js";
 import { JsonSpecStore, SpecFileError } from "./jsonSpecStore.js";
-import { JsonDeskStore } from "./jsonDeskStore.js";
+import { DeskFileError, JsonDeskStore } from "./jsonDeskStore.js";
 
 export { JsonConfigStore } from "./jsonConfigStore.js";
 export { JsonSpecStore } from "./jsonSpecStore.js";
@@ -78,7 +78,12 @@ export function openJsonStore(config: Pick<Config, "dataDir" | "deployId" | "pub
         if (error instanceof SpecFileError) throw new StartupError(error.message);
         throw error;
       }
-      await desks.load();
+      try {
+        await desks.load();
+      } catch (error) {
+        if (error instanceof DeskFileError) throw new StartupError(error.message);
+        throw error;
+      }
       const code = newPairCode();
       let made: boolean;
       try {

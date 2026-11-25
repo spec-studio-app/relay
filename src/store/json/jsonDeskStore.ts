@@ -4,7 +4,7 @@
 // and writes the file after each change. A desk lives as long as the relay.
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readdir, rename } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "../../log.js";
 import {
@@ -30,10 +30,9 @@ import {
   type DeskSyncLine,
   type DeskSyncResult,
 } from "../../workflows/deskRules.js";
-import { DeskNotFoundError, DeskRefusedError, DeskUnreadableError } from "../errors.js";
+import { DeskNotFoundError, DeskRefusedError } from "../errors.js";
 import type { DeskStore, ListedDesk } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
-import { UNREADABLE_SUFFIX } from "./jsonSpecStore.js";
 
 interface DeskFile {
   version: 1;
@@ -61,10 +60,19 @@ export function deskFileName(deployId: string, repoKey: string): string {
   return createHash("sha256").update(`desk/${deployId}/${repoKey}`, "utf8").digest("hex").slice(0, 32) + ".json";
 }
 
+/** A desk file that the relay cannot read or parse at start. The relay does not start. */
+export class DeskFileError extends Error {
+  constructor(file: string, what: "read" | "parse") {
+    super(
+      `The relay cannot ${what} the desk file ${file} in RELAY_DATA_DIR/desks. ` +
+        (what === "read" ? "Give the relay's user (uid 1000) access to it, " : "Correct the file, ") +
+        "or remove it. A removed desk comes back with the next desks frame of the Mac, without the messages that waited in it.",
+    );
+  }
+}
+
 export class JsonDeskStore implements DeskStore {
   private readonly entries = new Map<string, Entry>();
-  /** The names of desk files that the relay could not read at start. They stay as they are until the next start. */
-  private readonly unreadable = new Set<string>();
   /** Emits the repo key of a desk when it gets a new message for Claude AI. */
   private readonly wake = new EventEmitter();
   private readonly env: RuleEnv;
@@ -86,7 +94,11 @@ export class JsonDeskStore implements DeskStore {
     return join(this.desksDir, deskFileName(this.o.deployId, repoKey));
   }
 
-  /** Read the desk files. A file that does not parse is logged and moved aside. */
+  /**
+   * Read the desk files. A file that the relay cannot read or parse stops the
+   * start (DeskFileError), as a spec file does: the owner fixes it, so no
+   * desk message is lost or made again in silence.
+   */
   async load(): Promise<void> {
     let names: string[] = [];
     try {
@@ -105,21 +117,19 @@ export class JsonDeskStore implements DeskStore {
       try {
         text = await readText(path);
       } catch {
-        // The file stays: no write replaces it, and the next start reads it again.
         this.o.log({ event: "desk_file_read_failed", file: name });
-        this.unreadable.add(name);
-        continue;
+        throw new DeskFileError(name, "read");
       }
+      let file: DeskFile;
       try {
-        const file = JSON.parse(text ?? "") as DeskFile;
+        file = JSON.parse(text ?? "") as DeskFile;
         if (file?.version !== 1 || !file.state?.desk?.repoKey) throw new Error("not a desk file");
-        if (file.state.deployId !== this.o.deployId) continue;
-        this.entries.set(file.state.desk.repoKey, { state: file.state, queue: Promise.resolve() });
       } catch {
-        // The agent's next desks frame makes the desk again.
         this.o.log({ event: "desk_file_unreadable", file: name });
-        await rename(path, path + UNREADABLE_SUFFIX).catch(() => undefined);
+        throw new DeskFileError(name, "parse");
       }
+      if (file.state.deployId !== this.o.deployId) continue;
+      this.entries.set(file.state.desk.repoKey, { state: file.state, queue: Promise.resolve() });
     }
   }
 
@@ -139,8 +149,6 @@ export class JsonDeskStore implements DeskStore {
   private entryFor(desk: DeskAddress): { entry: Entry; created: boolean } {
     const found = this.entries.get(desk.repoKey);
     if (found) return { entry: found, created: false };
-    // A new state would replace a file that holds the desk's messages.
-    if (this.unreadable.has(deskFileName(this.o.deployId, desk.repoKey))) throw new DeskUnreadableError();
     const entry: Entry = { state: initialDeskState(this.o.deployId, desk), queue: Promise.resolve() };
     this.entries.set(desk.repoKey, entry);
     return { entry, created: true };

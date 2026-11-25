@@ -253,7 +253,7 @@ test("R1.S1: a hello with wires and an app version gets a welcome with the commo
   try {
     await h.startConfig();
     const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, agentVersion: "0.1.2", wires: [3] });
-    assert.deepEqual(await agent.next("welcome"), { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3] });
+    assert.deepEqual(await agent.next("welcome"), { type: "welcome", version: 3, relayVersion: RELAY_VERSION, wires: [3], desks: true });
     assert.deepEqual(t.relay.hub.lastAgent?.wires, [3]);
     assert.equal(t.relay.hub.lastAgent?.appVersion, "0.1.2");
     assert.equal(t.relay.hub.lastAgent?.compatible, true);

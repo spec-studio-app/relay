@@ -11,7 +11,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import type { DeskStore, SpecStore } from "../src/store/types.js";
 import type { DeskReport } from "../src/workflows/types.js";
 import { DESK_GONE_TEXT, DESK_OFF_TEXT } from "../src/workflows/types.js";
-import { DeskNotFoundError, DeskRefusedError, DeskUnreadableError } from "../src/store/errors.js";
+import { DeskNotFoundError, DeskRefusedError } from "../src/store/errors.js";
 import { deskFileName } from "../src/store/json/jsonDeskStore.js";
 import { MessageTools } from "../src/messages.js";
 import { Attachments } from "../src/attachments.js";
@@ -297,7 +297,7 @@ test("JSON desk store: a desk stays after a restart, in its own file under desks
   }
 });
 
-test("review: a desk file that the relay cannot read stays in place, and the next start reads it again", async (t) => {
+test("review: a desk file that the relay cannot read stops the start, stays in place, and the next start reads it", async (t) => {
   if (process.getuid?.() === 0) return t.skip("root can read any file");
   const dir = mkdtempSync(join(tmpdir(), "relay-desk-"));
   try {
@@ -310,16 +310,9 @@ test("review: a desk file that the relay cannot read stays in place, and the nex
     await first.close();
     const file = join(dir, "desks", deskFileName("default", key));
     chmodSync(file, 0o000);
-    const logs: Array<{ event: string }> = [];
-    const second = openJsonStore(
-      { dataDir: dir, deployId: "default", publicUrl: "https://relay.example.com" },
-      { bucket: new MemoryBucket(), log: (e) => logs.push(e as { event: string }), graceMs: 60_000 },
-    );
-    await second.start({ log: () => {}, print: () => {} });
-    assert.ok(logs.some((e) => e.event === "desk_file_read_failed"));
-    // The next desks frame and a desk-sync do not write over the file.
-    await assert.rejects(second.desks.report(report(path)), DeskUnreadableError);
-    await assert.rejects(second.desks.sync({ repoKey: key, repo: path }, [reply(1, "r1", "Done.")]), DeskUnreadableError);
+    const second = jsonStore(dir);
+    await assert.rejects(second.start({ log: () => {}, print: () => {} }), /cannot read the desk file/);
+    assert.ok(existsSync(file), "the file stays in place");
     await second.close();
     chmodSync(file, 0o600);
     const third = jsonStore(dir);
