@@ -12,6 +12,7 @@ import { createActivities } from "../src/activities.js";
 import { REQUIRED_SEARCH_ATTRIBUTES, temporalAdmin } from "../src/startup.js";
 import { MemoryBucket } from "../src/bucket.js";
 import { Mirror } from "../src/mirror.js";
+import { DeskMirror } from "../src/deskMirror.js";
 import type { LogEntry } from "../src/log.js";
 import { ConfigStore } from "../src/configStore.js";
 import { storeAgentBackend, storeOAuthStore } from "../src/store/adapters.js";
@@ -68,6 +69,7 @@ export interface Harness {
   taskQueue: string;
   bucket: MemoryBucket;
   mirror: Mirror;
+  desks: DeskMirror;
   configStore: ConfigStore;
   logs: LogEntry[];
   /** Start the relay-config workflow with this pairing code. */
@@ -115,6 +117,7 @@ export async function harness(
   };
   await startWorkers();
   const mirror = new Mirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit, graceMs: options.graceMs ?? 300 });
+  const desks = new DeskMirror({ client: clients.data, deployId, taskQueue, updateLimit: options.updateLimit });
   const configStore = new ConfigStore(clients.config, deployId);
   const maxBytes = options.attachmentMaxBytes ?? 5 * 1024 * 1024;
   const attachments = new Attachments({ bucket: options.noBucket ? null : bucket, deployId, maxBytes });
@@ -146,6 +149,7 @@ export async function harness(
     bucket,
     logs,
     mirror,
+    desks,
     configStore,
     startConfig,
     async relay(relayOptions = {}) {
@@ -157,16 +161,18 @@ export async function harness(
         testAgentPaired = true;
       }
       return startRelay({
-        agentBackend: storeAgentBackend({ specs: mirror, config: configStore, attachments }),
-        offline: new OfflineTools({ specs: mirror, config: configStore }),
+        agentBackend: storeAgentBackend({ specs: mirror, desks, config: configStore, attachments }),
+        offline: new OfflineTools({ specs: mirror, desks, config: configStore }),
         oauthStore: storeOAuthStore(configStore),
         mcpBodyLimit: mcpBodyLimit(maxBytes),
         codecDataKeys: keys.data,
         localTools: (hub) =>
           new MessageTools({
             specs: mirror,
+            desks,
             attachments,
             push: (spec, message) => hub.pushMessage(spec, message),
+            pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
             waitMs: options.readWaitMs ?? 1500,
             lastSyncAt: () => lastSyncAt(mirror),
           }),

@@ -12,9 +12,11 @@ import type { RelayStore } from "../types.js";
 import { removeFile, writeAtomic, type WriteHooks } from "./files.js";
 import { ConfigFileError, JsonConfigStore } from "./jsonConfigStore.js";
 import { JsonSpecStore, SpecFileError } from "./jsonSpecStore.js";
+import { DeskFileError, JsonDeskStore } from "./jsonDeskStore.js";
 
 export { JsonConfigStore } from "./jsonConfigStore.js";
 export { JsonSpecStore } from "./jsonSpecStore.js";
+export { JsonDeskStore } from "./jsonDeskStore.js";
 
 export function dataDirText(dir: string): string {
   return (
@@ -34,6 +36,7 @@ export interface JsonStoreOptions {
 export interface JsonRelayStore extends RelayStore {
   kind: "json";
   specs: JsonSpecStore;
+  desks: JsonDeskStore;
   config: JsonConfigStore;
 }
 
@@ -48,15 +51,18 @@ export function openJsonStore(config: Pick<Config, "dataDir" | "deployId" | "pub
     graceMs: o.graceMs,
     writeHooks: o.writeHooks,
   });
+  const desks = new JsonDeskStore({ dir, deployId: config.deployId, log: o.log, writeHooks: o.writeHooks });
   const configStore = new JsonConfigStore({ dir, deployId: config.deployId, writeHooks: o.writeHooks });
   return {
     kind: "json",
     specs,
+    desks,
     config: configStore,
     async start({ log, print }) {
       // The folder must take a write: a missing volume or a wrong owner stops the start.
       try {
         await mkdir(join(dir, "specs"), { recursive: true });
+        await mkdir(join(dir, "desks"), { recursive: true });
         const probe = join(dir, `.probe-${process.pid}`);
         await writeAtomic(probe, "ok");
         await removeFile(probe);
@@ -70,6 +76,12 @@ export function openJsonStore(config: Pick<Config, "dataDir" | "deployId" | "pub
         await specs.load();
       } catch (error) {
         if (error instanceof SpecFileError) throw new StartupError(error.message);
+        throw error;
+      }
+      try {
+        await desks.load();
+      } catch (error) {
+        if (error instanceof DeskFileError) throw new StartupError(error.message);
         throw error;
       }
       const code = newPairCode();

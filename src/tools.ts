@@ -21,13 +21,22 @@ const repo = z
 
 const slug = z.string().min(1).describe("The slug of the spec. Use a slug that list_specs gives.");
 
+/** The slug of the tools that also go to a desk: no slug means the desk of the repo. */
+const specOrDesk = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("The slug of the spec. Use a slug that list_specs gives. Give no slug for the desk of the repo.");
+
 export const TOOLS: ToolDefinition[] = [
   {
     name: "list_repos",
     title: "List the repos",
     description:
       "List the repos in Spec Studio, in sidebar order. Each repo shows its path on the Mac. Use the path as the repo argument of the other tools. " +
-      "When the Mac is offline, the list comes from the last connection of the Mac, and the result gives its time.",
+      "Each repo also shows its desk: open or closed, its turn, and whether Claude AI can message the desk. " +
+      "When the Mac is offline, the list comes from the last connection of the Mac, and the result gives its time. " +
+      "Each desk then shows the time of its last state.",
     inputSchema: {},
   },
   {
@@ -98,55 +107,64 @@ export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
 export const LOCAL_TOOLS: ToolDefinition[] = [
   {
     name: "send_message",
-    title: "Send a message to a spec",
+    title: "Send a message to a spec or a desk",
     description:
-      "Send a message to the session of a spec. The relay keeps the message until the Mac takes it. " +
-      "Spec Studio then types the message into the terminal of the spec at a safe point. " +
+      "Send a message to the session of a spec, or to the desk of a repo. " +
+      "Give the repo and the slug for a spec. Give only the repo for the desk of the repo. " +
+      "A desk is the session of a repo with no spec. " +
+      "The relay keeps the message until the Mac takes it. " +
+      "Spec Studio then types the message into the terminal at a safe point. " +
+      "The user must let Claude AI message a desk in Spec Studio, Settings, Remote Relay. " +
       "The result gives the sequence number of the message at once, also when the Mac is offline. " +
       "A message does not answer a question or a permission prompt of the session.",
     inputSchema: {
       repo,
-      slug,
+      slug: specOrDesk,
       text: z.string().min(1).max(20_000).describe("The text of the message, in Markdown."),
       replyTo: z.string().min(1).optional().describe("The ID of the message that this message answers."),
       attachments: z
         .array(z.string().min(1))
         .max(10)
         .optional()
-        .describe("The object keys of files that upload_attachment gave for this spec."),
+        .describe("The object keys of files that upload_attachment gave for this spec or desk."),
     },
   },
   {
     name: "read_messages",
-    title: "Read the messages from specs",
+    title: "Read the messages from specs and desks",
     description:
-      "Read the messages that the sessions of specs sent with studio message. " +
-      "With a slug, the result gives the messages of that spec after the cursor, with the stage of the spec. " +
+      "Read the messages that the sessions of specs and the desks of repos sent with studio message. " +
+      "With a repo and a slug, the result gives the messages of that spec after the cursor, with the stage of the spec. " +
+      "With only a repo, the result gives the messages of the desk of that repo after the cursor. " +
       "Keep the cursor of the result and give it as after in the next call. " +
-      "Without a slug, the result gives the unread messages of all specs. " +
+      "With no repo and no slug, the result gives the unread messages of all specs and all desks. " +
+      "A message from a desk shows its repo and desk true. " +
       "When no message is there, the call waits up to 20 seconds for a new message.",
     inputSchema: {
-      repo: repo.optional().describe("The path of the repo on the Mac. Give it with the slug, or alone to read one repo."),
-      slug: slug.optional(),
+      repo: repo
+        .optional()
+        .describe("The path of the repo on the Mac. Give it with the slug for a spec, or alone for the desk of the repo."),
+      slug: specOrDesk,
       after: z
         .number()
         .int()
         .min(0)
         .optional()
-        .describe("The cursor: the sequence number of the last message that you read. Use it only with a slug."),
+        .describe("The cursor: the sequence number of the last message that you read. Use it with a repo."),
     },
   },
   {
     name: "upload_attachment",
     title: "Upload an attachment",
     description:
-      "Upload a file for a message to a spec. Give the contents as base64. " +
+      "Upload a file for a message to a spec or to a desk. Give the contents as base64. " +
+      "Give the repo and the slug for a spec, or only the repo for a desk. " +
       "The result gives the object key of the file. Give the object key in the attachments of send_message. " +
       "The relay refuses a file above its size limit, and the result gives the limit. " +
       "Attachments of a message for Claude AI show a link that works for 15 minutes.",
     inputSchema: {
       repo,
-      slug,
+      slug: specOrDesk,
       filename: z.string().min(1).max(200).describe("The name of the file, for example screenshot.png."),
       contentType: z.string().min(1).max(200).describe("The media type of the file, for example image/png."),
       base64: z.string().min(1).describe("The contents of the file, in base64."),

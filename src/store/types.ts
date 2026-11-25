@@ -6,8 +6,14 @@ import type { Logger } from "../log.js";
 import type { PayloadKey } from "../config.js";
 import type { ListFilter, ReadResult, StateInput, SyncInput, SyncResult } from "../workflows/specRules.js";
 import type { TokenPair } from "../workflows/configRules.js";
+import type { DeskListFilter, DeskReadResult, DeskSyncLine, DeskSyncResult } from "../workflows/deskRules.js";
 import type {
   Attachment,
+  DeskAddress,
+  DeskMemo,
+  DeskMessage,
+  DeskReport,
+  DeskState,
   Message,
   RelayConfigState,
   SpecAddress,
@@ -17,7 +23,7 @@ import type {
   StoredToken,
 } from "../workflows/types.js";
 
-export type { ListFilter, TokenPair };
+export type { DeskListFilter, ListFilter, TokenPair };
 
 export type StoreKind = "json" | "temporal";
 
@@ -55,6 +61,33 @@ export interface SpecStore {
   read(spec: SpecRef, after: number | undefined, waitMs: number, unreadOnly?: boolean): Promise<ReadResult>;
   /** The specs of this relay, with their summaries. */
   list(filter?: ListFilter): Promise<ListedSpec[]>;
+}
+
+export interface ListedDesk {
+  repoKey: string;
+  memo: DeskMemo;
+}
+
+/**
+ * The desk of each repo: its last state from the agent and its two inboxes.
+ * The errors are the ones in store/errors.ts: DeskNotFoundError and
+ * DeskRefusedError. A desk is never a spec: SpecStore.list never shows one.
+ */
+export interface DeskStore {
+  /** One entry of the agent's desks frame. It makes the desk when the store has none. */
+  report(report: DeskReport): Promise<void>;
+  /** The desk's state, or null when the store has no such desk. */
+  get(desk: { repoKey: string }): Promise<DeskState | null>;
+  /** Add a message from Claude AI to the desk's Mac inbox. Refused when Claude AI cannot message the desk. */
+  send(desk: { repoKey: string }, input: { text: string; replyTo?: string; attachments?: Attachment[] }): Promise<{ seq: number; message: DeskMessage }>;
+  /** The Mac wrote the message to disk (or refused it with an error). */
+  ack(desk: { repoKey: string }, seq: number, error?: string): Promise<{ removed: boolean }>;
+  /** The desk's reply lines (desk-sync). It makes the desk when the store has none. */
+  sync(desk: DeskAddress, lines: DeskSyncLine[]): Promise<DeskSyncResult>;
+  /** Messages for Claude AI after the cursor. Waits up to waitMs for a new one. */
+  read(desk: { repoKey: string }, after: number | undefined, waitMs: number, unreadOnly?: boolean): Promise<DeskReadResult>;
+  /** The desks of this relay, with their summaries. */
+  list(filter?: DeskListFilter): Promise<ListedDesk[]>;
 }
 
 /** The pairing, the repos of the agent's hello, and the OAuth clients and tokens. */
@@ -96,6 +129,7 @@ export interface StoreStartResult {
 export interface RelayStore {
   kind: StoreKind;
   specs: SpecStore;
+  desks: DeskStore;
   config: RelayConfigStore;
   /** The data keys for the codec endpoints (Temporal only). */
   codecDataKeys?: PayloadKey[];

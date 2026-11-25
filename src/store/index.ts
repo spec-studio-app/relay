@@ -5,7 +5,7 @@ import type { Logger } from "../log.js";
 import { openJsonStore } from "./json/index.js";
 import type { RelayStore } from "./types.js";
 
-export type { RelayStore, SpecStore, RelayConfigStore, ListedSpec, SpecRef, StoreKind } from "./types.js";
+export type { RelayStore, SpecStore, DeskStore, RelayConfigStore, ListedSpec, ListedDesk, SpecRef, StoreKind } from "./types.js";
 
 /** Why the relay uses its store, for the log. */
 export function storeReasonText(config: Pick<Config, "store" | "storeReason">): string {

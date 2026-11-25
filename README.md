@@ -1,6 +1,6 @@
 # Spec Studio relay
 
-The Spec Studio relay is a remote MCP server that you host yourself. Claude AI (claude.ai, the Claude app, or Claude Code on another computer) uses it to list, read, make and start the specs of Spec Studio on your Mac. It also carries messages between Claude AI and the session of a spec.
+The Spec Studio relay is a remote MCP server that you host yourself. Claude AI (claude.ai, the Claude app, or Claude Code on another computer) uses it to list, read, make and start the specs of Spec Studio on your Mac. It also carries messages between Claude AI and the session of a spec, and between Claude AI and the desk of each repo.
 
 New to the relay? The [relay guide](https://spec-studio-app.github.io/site/guides/relay/) takes you from no relay to Claude AI reading a spec, and [Relay backends](https://spec-studio-app.github.io/site/guides/backends/) explains each store, bucket and hosting choice. This README is the full reference.
 
@@ -14,7 +14,7 @@ The Mac opens no port: the Spec Studio agent on the Mac connects out to the rela
 ```
 Claude AI ──HTTPS (OAuth)──▶ relay ◀──WebSocket── studio agent (Mac)
                                │
-                 JSON files on a volume, or Temporal (spec mirror, inboxes, sign-ins)
+                 JSON files on a volume, or Temporal (spec mirror, desks, inboxes, sign-ins)
                  S3 bucket (attachments, optional)
 ```
 
@@ -105,7 +105,7 @@ For Cloudflare R2:
 2. Make an R2 API token with "Object Read & Write" on that bucket.
 3. Set `BUCKET_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`, `BUCKET_NAME`, `BUCKET_ACCESS_KEY` and `BUCKET_SECRET_KEY`.
 
-Any S3-compatible service works (AWS S3, MinIO). Set `BUCKET_REGION` when the service needs a real region. The relay deletes the attachments of a spec when the spec is merged or dropped.
+Any S3-compatible service works (AWS S3, MinIO). Set `BUCKET_REGION` when the service needs a real region. The relay deletes the attachments of a spec when the spec is merged or dropped. The attachments of a desk are under `<DEPLOY_ID>/<repoKey>/_desk/`. The relay does not delete them, because a desk does not end. To remove old desk files, add a lifecycle rule for that prefix to the bucket.
 
 ## Step 4: Run the relay
 
@@ -200,13 +200,26 @@ The tools:
 
 | Tool | Mac online | Mac offline |
 |---|---|---|
-| `list_repos` | The Mac answers. | The repos from the last connection of the Mac, with its time. |
+| `list_repos` | The Mac answers. Each repo shows its desk. | The repos from the last connection of the Mac, with its time, and the last state of each desk, with its time. |
 | `list_specs` | The Mac answers. | The relay's copy of each spec, with the time of its last sync. |
 | `read_spec` | The Mac answers. | The state, the turn and the last 20 events. No `spec.md` or `plan.md` text. |
 | `make_spec`, `start_spec` | The Mac answers. | Fails at once. |
-| `send_message` | The relay keeps the message and sends it to the Mac. | The relay keeps the message until the Mac connects. |
-| `read_messages` | The messages that the sessions sent with `studio message`. | The same. |
-| `upload_attachment` | Stores a file for `send_message`. | The same. |
+| `send_message` | The relay keeps the message and sends it to the Mac. With a repo and no slug, the message goes to the desk of the repo. | The relay keeps the message until the Mac connects. |
+| `read_messages` | The messages that the sessions and the desks sent with `studio message`. | The same. |
+| `upload_attachment` | Stores a file for `send_message`, for a spec or a desk. | The same. |
+
+### Messages to a desk
+
+The desk of a repo is the repo's own Claude session in Spec Studio, with no spec. Use it for a request that needs no spec, for example "Is CI green on main?" or "Make a spec for X".
+
+- `send_message` with a repo and no slug sends the message to the desk of that repo. The repo is the path from `list_repos`, or the name of the repo when one desk has that name. With a slug, the message goes to the spec, as before.
+- Spec Studio types the message into the desk's terminal when Claude is idle, with the same rule as for a spec. A message to a closed desk opens the desk.
+- The desk answers with `studio message --reply-to <id> "<text>"`. `read_messages` with the repo and no slug gives the replies of the desk after the cursor. `read_messages` with no repo and no slug gives the unread replies of all specs and all desks. A reply from a desk shows its repo and `"desk": true`.
+- `upload_attachment` with a repo and no slug stores a file for a desk message. A desk file works only for a message to that desk, and a spec file works only for that spec.
+
+Each repo has the switch "Claude AI can message this desk" in Spec Studio, Settings, Remote Relay. It is off by default. The Mac sends the switch to the relay, and the relay refuses a message at once when the switch is off or sync is off for the repo. The text of the refusal comes from the Mac. A message to a repo that has no desk in the relay fails with a text that tells Claude AI to call `list_repos`. The Mac checks the switch again before it takes a message. When the switch turned off while the message waited, the message goes back to Claude AI as a reply with the reason.
+
+An older Spec Studio that does not know desks sends no desk state, so the relay has no desk for its repos, and messages to a desk fail.
 
 ## The Temporal Web UI (Temporal store)
 
@@ -257,6 +270,7 @@ PAYLOAD_KEYS=data:data-2:<new>,data:data-1:<old>,config:config-1:<key>
 Both stores keep the same data, with the same rules (the conformance tests run each rule on both stores):
 
 - For each spec: the last state of the spec, the turn, the last 20 activity events, the messages that wait for the Mac and the messages for Claude AI. `repoKey` is the first 12 hex characters of the SHA-256 of the home repo path. When the spec is merged or dropped and no message waits, it stays for one more hour after its last update (so the attachment links in a read stay valid and late updates still apply). Then the relay removes the spec's attachments and its data; while it does that, it refuses new updates with a clear error. A sync frame that comes after that gets `synced` and starts nothing, except a first sync (`"first":true`, or a frame that starts at line 1): that is a new spec with the same slug, so it starts again. A first sync that comes while a finished spec is still kept starts it again as a new spec (the messages that waited for the Mac go back to Claude AI as errors) when the spec was dropped or the frame's state has another `createdAt`; the same merged spec sent again does not reset. While the relay removes the data, a first sync gets `synced` with an error, so the agent sends it again. A merged spec in its grace period still takes new states; a dropped one does not.
+- For each desk: the last state that the Mac sent (open or closed, the turn, whether Claude AI can message it, the reason when it cannot, and the relay's time of that state), the messages that wait for the Mac and the messages for Claude AI. A desk has no spec state and no activity events. Its record stays as long as the relay.
 - For the deploy: the hashes of the agent secrets, of the pairing code and of the OAuth tokens, the OAuth clients, and the repos from the last connection of the Mac.
 
 A restart loses no message and no sign-in.
@@ -266,6 +280,7 @@ A restart loses no message and no sign-in.
 - `config.json`: the deploy's data. It holds only hashes of secrets and tokens.
 - `pair-code.json`: the last pairing code from `relay pair-code` (a hash).
 - `specs/<hash>.json`: one file per spec. The name is a hash of the deploy ID, the repo key and the slug, so a slug never makes a path.
+- `desks/<hash>.json`: one file per desk. The name is a hash of the deploy ID and the repo key. A desk file that the relay cannot parse is logged (`desk_file_unreadable`) and moved aside as `<name>.unreadable`; the next desks frame from the Mac makes the desk again.
 - `closed.json`: the specs that the relay removed in the last 30 days, so `list_specs` with `all` still shows them and a late line starts nothing.
 
 Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. Only the relay process writes `config.json` and the spec files, and its writes of one file never interleave. `relay pair-code` writes only `pair-code.json`, each time with a new ID; the relay takes that code as its pairing code at its next call. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read or parse stops the start with a message that names the file (and the log event `spec_file_read_failed` or `spec_file_unreadable`), so nothing is lost or made again in silence. Correct the file (or its access), or remove it. To get a removed spec back in full, first run `studio agent unpair --force` on the Mac, then remove the file and start the relay, then pair the Mac again: with no cursors, the Mac sends a first sync of each spec. (If the relay starts before the unpair, the Mac's waiting lines make a part of the spec, and a later first sync does not fill it.) The relay does not run while the file is bad, so reach the volume with a one-off container: `docker compose run --rm --user 0 --entrypoint sh relay` with Compose (as root, so it can also correct the owner of a file), or a temporary pod that mounts the claim with Helm (scale the relay to 0 first).
@@ -273,6 +288,7 @@ Each write goes to a temporary file, and a rename replaces the old file, so a cr
 ### In the Temporal store
 
 - One workflow per spec, with the ID `spec-<deployId>-<repoKey>-<slug>`. `deployId` is `DEPLOY_ID`, so two relays on one namespace never share a spec workflow. The retention period of the namespace removes the history of a completed spec workflow.
+- One workflow per desk, with the ID `desk-<deployId>-<repoKey>` and the type `deskWorkflow`. The list of specs looks only at the type `specWorkflow`, so it never shows a desk. A desk workflow does not end: it continues as new after its update limit, as a spec workflow does.
 - One workflow per deploy, `relay-config-<DEPLOY_ID>`.
 
 ## The relay command
@@ -293,8 +309,17 @@ npm ci
 npm test
 ```
 
-The tests run each store. The rules of a spec and of the deploy's data are in `src/workflows/specRules.ts` and `src/workflows/configRules.ts`: the Temporal workflows and the JSON store both call them. `test/conformance.ts` runs the same scenarios on both stores. `test/replay.test.ts` replays workflow histories of relay 0.3, so a change of the workflow code that breaks a running workflow fails the tests.
+The tests run each store. The rules of a spec, of a desk and of the deploy's data are in `src/workflows/specRules.ts`, `src/workflows/deskRules.ts` and `src/workflows/configRules.ts`, and the rules of the two inboxes that a spec and a desk share are in `src/workflows/inboxRules.ts`. The Temporal workflows and the JSON store both call them. `test/conformance.ts` and `test/deskStore.test.ts` run the same scenarios on both stores. `test/replay.test.ts` replays workflow histories of relay 0.3, so a change of the workflow code that breaks a running workflow fails the tests.
 
 The Temporal tests run a Temporal dev server. They use the `temporal` CLI when `TEMPORAL_CLI` names it or when it is at `/opt/homebrew/bin/temporal`. Else the Temporal SDK downloads the dev server once.
 
 The wire contract between the relay and the Spec Studio agent (version 3) is in the Spec Studio repo, in `specs/studio-relay/wire.md`. Relay 0.3.0 and later speak version 3 only: they need Spec Studio v0.1.1 or later. When the agent connects, its hello gives its app version (`agentVersion`) and the wire versions that it speaks (`wires`; a hello with no list counts as `[version]`). The relay answers with a `welcome` that has the highest common wire version, the relay version and the relay's own `wires`. With no common version, the relay sends `{"type":"incompatible","tooOld":"app"|"relay","relayVersion":"...","wires":[3],"minAppVersion":"0.1.1","text":"..."}` and closes the connection with close code 4002 after 60 seconds (an app older than v0.1.1 ignores the frame and connects again 1 second after a close, so the wait limits its tries; until the close its tool calls still work). The close reason names the version that the side needs. The relay keeps the last hello in memory, and while it failed, each MCP tool result starts with a notice that names both versions and the time of the last sync. A frame that the relay refuses always gets an answer: a `sync` frame gets `synced` with an `error`, and another frame gets `{"type":"error","frame":"<type>","text":"<reason>"}`. The relay logs each refusal as `agent_frame_refused`. The agent sends the new activity lines of a spec from one drain in one `sync` frame (`"lines":[{"line":<n>,"event":{...}},...]`), with the state and the turn only when they changed; the store applies the frame as one update and answers `synced` with the last line. A spec with no cursor on the Mac gets a short first sync (`"first":true`): its last 20 lines and its earlier messages. The agent sends `{"type":"gone","spec":{"repoKey":"<repoKey>","slug":"<slug>"}}` when a spec that it synced no longer exists on the Mac. The relay marks the spec dropped (list_specs shows it only with `all`, send_message refuses it, and the messages that waited for the Mac go back to Claude AI as errors), ends it like a merged spec, and answers `{"type":"gone-ok","spec":{"repoKey":"<repoKey>","slug":"<slug>"}}`, so the agent can drop its cursor. A `gone-ok` with an `error` field means: send `gone` again later. The agent sends `{"type":"state","spec":{"repoKey":"<repoKey>","slug":"<slug>"},"state":{...},"turn":{"turn":"...","needsYou":true}|null}` when the state (`studio show --json`) or the turn of a spec changes with no new activity line. The relay replaces the mirror's state and turn (and, in the Temporal store, the search attributes NeedsYou, Status, Stage, Mode and SpecTitle), after the earlier `sync` frames of that spec. It keeps the line cursor and the events, sets the time of the copy (`syncedAt`) to the time of the frame, and ignores the frame for a spec that the store does not have or a dropped one. There is no answer frame. When the store fails, the relay keeps the newest state frame of the spec and tries it again every 30 seconds, until it applies, a newer `state` frame or a `sync` frame with a state comes for the spec, or the agent disconnects. After the welcome, and then every 60 seconds while the agent is connected, the relay looks for messages that wait for the Mac and sends each one once per connection (the Temporal search attributes are eventually consistent, so one look can miss a new message).
+
+The desks are an addition to version 3 (`specs/relay-desk-messages/wire-desks.md` in the Spec Studio repo). Each side turns them on only when the other side says that it knows them, so an older app or an older relay sees no new frame:
+
+- The relay's `welcome` has `"desks": true` when the relay has a desk store.
+- The agent sends `{"type":"desks","desks":[{"repoKey","repo","open","turn","canMessage","reason"}]}` after the welcome and when a value changes. The relay saves each desk with its own time (`stateAt`) and marks the connection as one that takes desk messages. Then it pushes every desk message that waits for the Mac. There is no answer frame. A frame that is not valid, or one that the store cannot save, gets `{"type":"error","frame":"desks","text":"..."}`.
+- The relay sends `{"type":"desk-message","desk":{"repoKey","repo"},"seq":<n>,"message":{...}}` only to a connection that sent a desks frame. The message has `desk` in place of `spec`, and no stage. It goes again after each desks frame, and on the scan every 60 seconds, until the agent answers.
+- The agent answers `{"type":"desk-delivered","desk":{...},"seq":<n>}` when the message is on disk. With an `error` field, the relay removes the message and gives Claude AI a reply from the session with the text "The Mac did not take the message: <error>".
+- The agent sends the desk's replies in `{"type":"desk-sync","desk":{...},"lines":[{"line":<n>,"event":{...}}]}`. Each `message` event becomes a message for Claude AI; an ID that the desk has already is skipped. The relay answers `{"type":"desk-synced","desk":{...},"line":<n>}`, with an `error` field when the agent must send the lines again later.
+- `upload-url` takes `"desk":{...}` in place of `"spec"`. The object key is in the desk's own prefix.

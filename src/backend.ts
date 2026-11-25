@@ -2,7 +2,24 @@
 // no backend: the hub then speaks wire version 1 only.
 import type { Attachments, UploadUrlAnswer } from "./attachments.js";
 import type { SyncInput, SyncResult } from "./workflows/spec.js";
-import type { Message, SpecAddress, Turn } from "./workflows/types.js";
+import type { DeskSyncLine, DeskSyncResult } from "./workflows/deskRules.js";
+import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress, Turn } from "./workflows/types.js";
+
+/** What the hub needs for the desks. A relay with it says "desks": true in its welcome. */
+export interface DeskBackend {
+  /** The agent's desks frame: save each desk. */
+  report(desks: DeskReport[]): Promise<void>;
+  /** Every desk record, with its repo and its reason. */
+  list?(): Promise<Array<{ repoKey: string; repo: string | null; reason: string | null }>>;
+  /** The agent wrote a desk message to disk, or refused it with an error. */
+  ack(desk: DeskAddress, seq: number, error?: string): Promise<void>;
+  /** The desk's reply lines (desk-sync). */
+  sync(desk: DeskAddress, lines: DeskSyncLine[]): Promise<DeskSyncResult>;
+  /** A signed PUT URL for a desk attachment (upload-url with desk). */
+  uploadUrl(desk: DeskAddress, filename: string, contentType: string, size: number): Promise<UploadUrlAnswer>;
+  /** Every desk message that waits for the Mac, in seq order per desk. */
+  pendingForMac(): Promise<Array<{ desk: DeskAddress; message: DeskMessage }>>;
+}
 
 export interface AgentBackend {
   /** True when the SHA-256 (hex) of an agent secret belongs to a paired Mac. */
@@ -28,6 +45,8 @@ export interface AgentBackend {
   downloadUrl(objectKey: string): Promise<string | null>;
   /** Every message that waits for the Mac, in seq order per spec. */
   pendingForMac(): Promise<Array<{ spec: SpecAddress; message: Message }>>;
+  /** The desks. Without it the relay does not say that it knows desks. */
+  desks?: DeskBackend;
 }
 
 export { storeAgentBackend } from "./store/adapters.js";

@@ -1,9 +1,16 @@
 // Attachments: files in the private bucket, never in workflow history. Claude AI
 // uploads with upload_attachment (base64); the agent moves files with signed URLs.
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentPrefix } from "./activities.js";
+import { attachmentPrefix, deskAttachmentPrefix } from "./activities.js";
 import type { Bucket } from "./bucket.js";
-import type { Attachment, SpecAddress } from "./workflows/types.js";
+import type { Attachment, DeskAddress, SpecAddress } from "./workflows/types.js";
+
+/** The owner of an attachment: a spec, or a desk (`desk: true`). */
+export type AttachmentOwner = SpecAddress | (DeskAddress & { desk: true });
+
+function isDesk(owner: AttachmentOwner): owner is DeskAddress & { desk: true } {
+  return "desk" in owner && owner.desk === true;
+}
 
 export const NO_BUCKET_TEXT = "The relay has no bucket for attachments. The owner of the relay must set the BUCKET settings.";
 
@@ -37,18 +44,24 @@ export class Attachments {
     return this.o.bucket !== null;
   }
 
-  private newKey(spec: SpecAddress, filename: string): string {
-    return `${attachmentPrefix(this.o.deployId, spec.repoKey, spec.slug)}${randomUUID()}-${safeFilename(filename)}`;
+  /** The object key prefix of a spec's or a desk's attachments. */
+  private prefix(owner: AttachmentOwner): string {
+    return isDesk(owner)
+      ? deskAttachmentPrefix(this.o.deployId, owner.repoKey)
+      : attachmentPrefix(this.o.deployId, owner.repoKey, owner.slug);
   }
 
-  /** True when the object key belongs to this spec of this deploy. */
-  belongsTo(objectKey: string, spec: SpecAddress): boolean {
-    const prefix = attachmentPrefix(this.o.deployId, spec.repoKey, spec.slug);
-    return objectKey.startsWith(prefix) && !objectKey.includes("..");
+  private newKey(owner: AttachmentOwner, filename: string): string {
+    return `${this.prefix(owner)}${randomUUID()}-${safeFilename(filename)}`;
+  }
+
+  /** True when the object key belongs to this spec (or desk) of this deploy. */
+  belongsTo(objectKey: string, owner: AttachmentOwner): boolean {
+    return objectKey.startsWith(this.prefix(owner)) && !objectKey.includes("..");
   }
 
   /** upload_attachment: store a file from Claude AI. */
-  async upload(spec: SpecAddress, filename: string, contentType: string, body: Buffer): Promise<Attachment> {
+  async upload(spec: AttachmentOwner, filename: string, contentType: string, body: Buffer): Promise<Attachment> {
     const bucket = this.o.bucket!;
     const objectKey = this.newKey(spec, filename);
     const sha256 = createHash("sha256").update(body).digest("hex");
@@ -71,7 +84,7 @@ export class Attachments {
   }
 
   /** The agent's upload-url: a signed PUT URL for a session attachment. */
-  async uploadUrl(spec: SpecAddress, filename: string, contentType: string, size: number): Promise<UploadUrlAnswer> {
+  async uploadUrl(spec: AttachmentOwner, filename: string, contentType: string, size: number): Promise<UploadUrlAnswer> {
     if (!this.o.bucket) return { ok: false, text: NO_BUCKET_TEXT };
     if (!Number.isFinite(size) || size < 0) return { ok: false, text: "The size is not valid." };
     if (size > this.o.maxBytes) {

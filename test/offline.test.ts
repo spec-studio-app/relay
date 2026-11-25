@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn } from "./helpers.js";
-import { specAddress } from "../src/mirror.js";
+import { repoKeyOf, specAddress } from "../src/mirror.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -257,6 +257,54 @@ test("offline list_specs without all leaves out a merged spec whose workflow sti
       return open.length === 1 && open[0] === "open" ? open : null;
     });
     assert.deepEqual(await slugs({ repo: REPO }), ["open"]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R5.S3: offline list_repos also lists each desk with the time of its last state", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, OTHER] });
+    await agent.next("welcome");
+    agent.send({
+      type: "desks",
+      desks: [
+        { repoKey: repoKeyOf(REPO), repo: REPO, open: true, turn: { turn: "idle", needsYou: false }, canMessage: true, reason: null },
+        { repoKey: repoKeyOf(OTHER), repo: OTHER, open: false, turn: null, canMessage: false, reason: "Claude AI cannot message this desk. The user can turn it on in Spec Studio, Settings, Remote Relay." },
+      ],
+    });
+    await eventually(async () => (await h.desks.list()).filter((d) => d.memo.stateAt).length === 2);
+    await agent.close();
+    const { accessToken } = await signIn(t.base);
+    const result = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_repos");
+      return r.isError || !r.content[0].text.includes(OTHER) || !r.content[0].text.split("\n")[3]?.includes(OTHER) ? null : r;
+    });
+    const [head, repos, deskHead, desks] = result.content[0].text.split("\n");
+    assert.match(head, /^The Mac is offline\./);
+    assert.deepEqual(JSON.parse(repos), [REPO, OTHER]);
+    assert.match(deskHead, /stateAt/);
+    const parsed = JSON.parse(desks) as Array<Record<string, unknown>>;
+    const byRepo = new Map(parsed.map((d) => [d.repo, d]));
+    assert.deepEqual({ ...byRepo.get(REPO), stateAt: undefined }, {
+      repo: REPO,
+      open: true,
+      turn: { turn: "idle", needsYou: false },
+      canMessage: true,
+      reason: null,
+      stateAt: undefined,
+    });
+    assert.equal(byRepo.get(OTHER)?.open, false);
+    assert.equal(byRepo.get(OTHER)?.canMessage, false);
+    assert.match(String(byRepo.get(OTHER)?.reason), /cannot message this desk/);
+    for (const d of parsed) assert.ok(!Number.isNaN(Date.parse(String(d.stateAt))));
+    // R5.S4: list_specs shows no desk.
+    const specs = await callTool(t.base, accessToken, "list_specs");
+    assert.deepEqual(JSON.parse(specs.content[0].text.split("\n").slice(1).join("\n")).specs, []);
   } finally {
     await t.close();
     await h.close();

@@ -37,6 +37,19 @@
 //     line. The relay replaces the mirror's state and turn of a spec whose
 //     workflow runs and is not dropped, after the earlier sync frames of that
 //     spec. No answer frame.
+// Desks (wire-desks.md in the app's specs/relay-desk-messages; the wire
+// version stays 3). The welcome says "desks": true when the relay has a desk
+// store. An agent sends no desk frame to a relay without it, and the relay
+// sends desk-message frames only to a connection that sent a desks frame.
+//   agent -> relay: {"type":"desks","desks":[{"repoKey","repo","open","turn","canMessage","reason"}]}
+//     The state of each desk. The relay saves each one and pushes every desk
+//     message that waits for the Mac. No answer, or an "error" frame.
+//   relay -> agent: {"type":"desk-message","desk":{"repoKey","repo"},"seq":<n>,"message":{...}}
+//   agent -> relay: {"type":"desk-delivered","desk":{...},"seq":<n>,"error":"<text>"?}
+//     With an error, the message goes back to Claude AI with the reason.
+//   agent -> relay: {"type":"desk-sync","desk":{...},"lines":[{"line":<n>,"event":{...}}]}
+//   relay -> agent: {"type":"desk-synced","desk":{...},"line":<n>,"error"?}
+//   agent -> relay: upload-url with "desk" in place of "spec".
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -44,7 +57,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
 import { INCOMPATIBLE_CLOSE_CODE, MIN_APP_VERSION_FOR_WIRE, RELAY_VERSION, SUPPORTED_WIRES, WIRE_VERSION } from "./version.js";
-import type { Message, SpecAddress } from "./workflows/types.js";
+import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress } from "./workflows/types.js";
+import { DESK_GONE_TEXT } from "./workflows/types.js";
 
 export interface CallResult {
   ok: boolean;
@@ -107,6 +121,8 @@ function specKey(spec: { repoKey: string; slug: string }): string {
 }
 
 export const DEFAULT_PENDING_SCAN_MS = 60_000;
+/** How long after a welcome a current app has sent its desks frame. */
+export const DESKS_FRAME_WAIT_MS = 15_000;
 
 export const DEFAULT_AGENT_AUTH_TIMEOUT_MS = 10_000;
 
@@ -171,6 +187,12 @@ export class AgentHub {
    */
   private readonly pushed = new WeakMap<WebSocket, Map<string, number>>();
   private lastHello: AgentRecord | null = null;
+  /** The sockets that sent a desks frame: only they get desk-message frames. */
+  private readonly deskCapable = new WeakSet<WebSocket>();
+  /** When each connection got its welcome (ms). */
+  private readonly welcomedAt = new WeakMap<WebSocket, number>();
+  /** The repo keys of the newest desks frame. A gone write of an older frame checks it, so it cannot undo a newer frame. */
+  private lastDesksListed = new Set<string>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.startedAt = options.now();
@@ -372,6 +394,18 @@ export class AgentHub {
       this.delivered(ws, m);
       return;
     }
+    if (m.type === "desks") {
+      this.desksFrame(ws, m);
+      return;
+    }
+    if (m.type === "desk-delivered") {
+      this.deskDelivered(ws, m);
+      return;
+    }
+    if (m.type === "desk-sync") {
+      this.deskSync(ws, m);
+      return;
+    }
     if (m.type === "upload-url" || m.type === "download-url") {
       void this.signedUrl(ws, m);
       return;
@@ -465,11 +499,13 @@ export class AgentHub {
     const version = Math.max(...common);
     this.lastHello = { appVersion, wires, at: this.options.now(), compatible: true };
     this.versions.set(ws, version);
+    this.welcomedAt.set(ws, this.options.now().getTime());
     this.send(ws, {
       type: "welcome",
       version,
       relayVersion: this.options.relayVersion ?? RELAY_VERSION,
       wires: [...SUPPORTED_WIRES],
+      ...(backend.desks ? { desks: true } : {}),
     });
     const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
     this.options.log({ event: "agent_hello", version, appVersion: appVersion ?? undefined, repos: repos.length });
@@ -546,6 +582,185 @@ export class AgentHub {
     } catch {
       this.options.log({ event: "push_pending_failed" });
     }
+    if (this.deskCapable.has(ws)) await this.pushPendingDesks(ws, this.options.resendAfterMs ?? DEFAULT_PENDING_SCAN_MS);
+  }
+
+  /**
+   * Push every desk message that waits for the Mac, in seq order per desk.
+   * With resendAfterMs 0 (after a desks frame) each one goes again.
+   */
+  private async pushPendingDesks(ws: WebSocket, resendAfterMs: number): Promise<void> {
+    const desks = this.options.backend?.desks;
+    if (!desks) return;
+    try {
+      const waiting = await desks.pendingForMac();
+      for (const { desk, message } of waiting) this.pushDeskTo(ws, desk, message, resendAfterMs);
+    } catch {
+      this.options.log({ event: "push_pending_desks_failed" });
+    }
+  }
+
+  private pushDeskTo(ws: WebSocket, desk: DeskAddress, message: DeskMessage, resendAfterMs?: number): void {
+    if (this.versions.get(ws) !== WIRE_VERSION || !this.deskCapable.has(ws)) return;
+    let pushed = this.pushed.get(ws);
+    if (!pushed) {
+      pushed = new Map();
+      this.pushed.set(ws, pushed);
+    }
+    const at = pushed.get(message.id);
+    const now = performance.now();
+    if (at !== undefined && (resendAfterMs === undefined || now - at < resendAfterMs)) return;
+    pushed.set(message.id, now);
+    this.send(ws, { type: "desk-message", desk: wireDesk(desk), seq: message.seq, message });
+  }
+
+  /** Push a new desk message to the Mac when a desk-capable agent is connected. */
+  pushDeskMessage(desk: DeskAddress, message: DeskMessage): boolean {
+    const ws = this.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.versions.get(ws) !== WIRE_VERSION || !this.deskCapable.has(ws)) return false;
+    this.pushDeskTo(ws, desk, message);
+    return true;
+  }
+
+  /** True when the agent is connected and takes desk messages. */
+  get desksConnected(): boolean {
+    const ws = this.socket;
+    return !!ws && ws.readyState === WebSocket.OPEN && this.deskCapable.has(ws);
+  }
+
+  /**
+   * True when the connected Mac takes desk messages, false when its app does
+   * not (a welcome more than DESKS_FRAME_WAIT_MS ago and no desks frame since),
+   * null when it cannot tell yet or no Mac is connected. A current app sends
+   * its desks frame within seconds of the welcome.
+   */
+  macTakesDesks(): boolean | null {
+    const ws = this.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+    if (this.deskCapable.has(ws)) return true;
+    const welcomed = this.welcomedAt.get(ws);
+    if (welcomed === undefined) return null;
+    return this.options.now().getTime() - welcomed > DESKS_FRAME_WAIT_MS ? false : null;
+  }
+
+  /** The agent's desks frame: save each desk, then push the waiting desk messages. */
+  private desksFrame(ws: WebSocket, m: Record<string, unknown>): void {
+    const desks = this.options.backend?.desks;
+    if (!desks || this.versions.get(ws) !== WIRE_VERSION) {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const reports = parseDeskReports(m.desks);
+    if (!reports) {
+      this.options.log({ event: "agent_bad_desks" });
+      this.send(ws, { type: "error", frame: "desks", text: "The desks frame is not valid." });
+      return;
+    }
+    this.deskCapable.add(ws);
+    this.options.log({ event: "agent_desks", desks: reports.length });
+    // Each desk's frames apply in order (the desks frame and desk-sync).
+    const saved = reports.map(
+      (report) =>
+        new Promise<boolean>((resolve) =>
+          this.chain(deskChainKey(report), async () => {
+            try {
+              // A newer desks frame left the repo out: the desk is gone, not open.
+              const listed = this.lastDesksListed.has(report.repoKey);
+              await desks.report([
+                listed ? report : { repoKey: report.repoKey, repo: report.repo, open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
+              ]);
+              resolve(true);
+            } catch {
+              resolve(false);
+            }
+          }),
+        ),
+    );
+    // A desk record that the frame does not list belongs to a repo that left
+    // Spec Studio or moved: it takes no more messages, and a name does not find it.
+    const listed = new Set(reports.map((report) => report.repoKey));
+    this.lastDesksListed = listed;
+    const gone = (desks.list ? desks.list() : Promise.resolve([]))
+      .then((all) => all.filter((d) => !listed.has(d.repoKey) && d.reason !== DESK_GONE_TEXT))
+      .catch(() => [])
+      .then((stale) =>
+        Promise.all(
+          stale.map(
+            (d) =>
+              new Promise<boolean>((resolve) =>
+                this.chain(deskChainKey({ repoKey: d.repoKey }), async () => {
+                  // A newer desks frame listed the repo again: the desk is not gone.
+                  if (this.lastDesksListed.has(d.repoKey)) {
+                    resolve(true);
+                    return;
+                  }
+                  try {
+                    await desks.report([
+                      { repoKey: d.repoKey, repo: d.repo ?? "", open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
+                    ]);
+                    resolve(true);
+                  } catch {
+                    resolve(false);
+                  }
+                }),
+              ),
+          ),
+        ),
+      );
+    void Promise.all([Promise.all(saved), gone]).then(async ([results]) => {
+      if (results.some((ok) => !ok)) {
+        this.options.log({ event: "desks_failed" });
+        this.send(ws, { type: "error", frame: "desks", text: "The relay cannot save the desks now." });
+      }
+      if (ws.readyState === WebSocket.OPEN) await this.pushPendingDesks(ws, 0);
+    });
+  }
+
+  private deskDelivered(ws: WebSocket, m: Record<string, unknown>): void {
+    const desks = this.options.backend?.desks;
+    const desk = parseDesk(m.desk);
+    if (!desks || this.versions.get(ws) !== WIRE_VERSION || !desk || typeof m.seq !== "number") {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const error = typeof m.error === "string" && m.error ? m.error.slice(0, 500) : undefined;
+    this.options.log({ event: "desk_message_delivered", ok: error === undefined });
+    const seq = m.seq;
+    this.chain(deskChainKey(desk), async () => {
+      try {
+        await desks.ack(desk, seq, error);
+      } catch {
+        this.options.log({ event: "desk_ack_failed" });
+      }
+    });
+  }
+
+  private deskSync(ws: WebSocket, m: Record<string, unknown>): void {
+    const desks = this.options.backend?.desks;
+    if (!desks || this.versions.get(ws) !== WIRE_VERSION) {
+      this.options.log({ event: "agent_bad_message" });
+      return;
+    }
+    const desk = parseDesk(m.desk);
+    const lines = parseLines(m.lines);
+    if (!desk || !lines) {
+      this.options.log({ event: "agent_bad_desk_sync" });
+      const last = lastLineNumber(m.lines);
+      if (desk && last !== null) {
+        this.send(ws, { type: "desk-synced", desk: wireDesk(desk), line: last, error: "The desk-sync frame is not valid." });
+      }
+      return;
+    }
+    const line = lines[lines.length - 1].line;
+    this.chain(deskChainKey(desk), async () => {
+      try {
+        await desks.sync(desk, lines);
+        this.send(ws, { type: "desk-synced", desk: wireDesk(desk), line });
+      } catch {
+        this.options.log({ event: "desk_sync_failed" });
+        this.send(ws, { type: "desk-synced", desk: wireDesk(desk), line, error: "The relay cannot apply the lines now." });
+      }
+    });
   }
 
   private pushTo(ws: WebSocket, spec: SpecAddress, message: Message, resendAfterMs?: number): void {
@@ -591,14 +806,18 @@ export class AgentHub {
     const id = m.id;
     try {
       if (m.type === "upload-url") {
-        const spec = parseSpec(m.spec);
-        if (!spec || typeof m.filename !== "string" || typeof m.size !== "number") {
+        // A desk's file has "desk" in place of "spec".
+        const desk = m.spec === undefined && backend.desks ? parseDesk(m.desk) : null;
+        const spec = desk ? null : parseSpec(m.spec);
+        if ((!spec && !desk) || typeof m.filename !== "string" || typeof m.size !== "number") {
           this.options.log({ event: "agent_frame_refused", frame: "upload-url", reason: "The upload-url frame is not valid." });
           this.send(ws, { type: "upload-url", id, ok: false, text: "The upload-url frame is not valid." });
           return;
         }
         const contentType = typeof m.contentType === "string" && m.contentType ? m.contentType : "application/octet-stream";
-        const answer = await backend.uploadUrl(spec, m.filename, contentType, m.size);
+        const answer = desk
+          ? await backend.desks!.uploadUrl(desk, m.filename, contentType, m.size)
+          : await backend.uploadUrl(spec!, m.filename, contentType, m.size);
         if (!answer.ok) this.options.log({ event: "agent_frame_refused", frame: "upload-url", reason: answer.text });
         this.send(ws, { type: "upload-url", id, ...answer });
         return;
@@ -667,9 +886,9 @@ export class AgentHub {
     });
   }
 
-  /** The spec's frames (sync and gone) apply in order: one promise chain per spec. */
-  private chain(spec: SpecAddress, work: () => Promise<void>): void {
-    const key = specKey(spec);
+  /** The spec's frames (sync and gone) apply in order: one promise chain per spec (or desk). */
+  private chain(spec: SpecAddress | string, work: () => Promise<void>): void {
+    const key = typeof spec === "string" ? spec : specKey(spec);
     const previous = this.syncChains.get(key) ?? Promise.resolve();
     const next = previous.then(work);
     this.syncChains.set(key, next);
@@ -827,6 +1046,41 @@ export function parseSpec(value: unknown): SpecAddress | null {
   if (typeof repoKey !== "string" || !/^[0-9a-f]{12}$/.test(repoKey)) return null;
   if (typeof slug !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(slug)) return null;
   return { repoKey, slug, ...(typeof repo === "string" && repo ? { repo } : {}) };
+}
+
+/** A desk address from a frame: a 12-hex repoKey, and the repo path when it is given. */
+export function parseDesk(value: unknown): DeskAddress | null {
+  if (!isObject(value)) return null;
+  const { repoKey, repo } = value;
+  if (typeof repoKey !== "string" || !/^[0-9a-f]{12}$/.test(repoKey)) return null;
+  return { repoKey, ...(typeof repo === "string" && repo ? { repo } : {}) };
+}
+
+/** The most desks that one desks frame may carry. */
+export const MAX_DESKS = 500;
+
+/** The entries of a desks frame. Null when an entry breaks a rule. */
+export function parseDeskReports(value: unknown): DeskReport[] | null {
+  if (!Array.isArray(value) || value.length > MAX_DESKS) return null;
+  const out: DeskReport[] = [];
+  for (const item of value) {
+    if (!isObject(item)) return null;
+    const desk = parseDesk(item);
+    if (!desk || !desk.repo || typeof item.open !== "boolean" || typeof item.canMessage !== "boolean") return null;
+    if (item.turn !== null && item.turn !== undefined && !isObject(item.turn)) return null;
+    const reason = typeof item.reason === "string" && item.reason ? item.reason.slice(0, 500) : null;
+    out.push({ repoKey: desk.repoKey, repo: desk.repo, open: item.open, turn: parseTurn(item.turn), canMessage: item.canMessage, reason });
+  }
+  return out;
+}
+
+/** The chain key of a desk: no spec key can be this (a spec key has a slash). */
+function deskChainKey(desk: { repoKey: string }): string {
+  return `desk:${desk.repoKey}`;
+}
+
+function wireDesk(desk: DeskAddress): DeskAddress {
+  return { repoKey: desk.repoKey, ...(desk.repo ? { repo: desk.repo } : {}) };
 }
 
 function wireSpec(spec: SpecAddress, withRepo = false): SpecAddress {

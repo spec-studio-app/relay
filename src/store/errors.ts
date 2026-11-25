@@ -1,5 +1,5 @@
 // The errors of a store. Both stores throw the same ones.
-import { CLOSING_TEXT, DROPPED_TEXT } from "../workflows/types.js";
+import { CLOSING_TEXT, DESK_OFF_TEXT, DROPPED_TEXT } from "../workflows/types.js";
 
 export class TimeoutError extends Error {
   constructor() {
@@ -24,5 +24,19 @@ export class SpecClosingError extends Error {
 export class SpecDroppedError extends Error {
   constructor() {
     super(DROPPED_TEXT);
+  }
+}
+
+/** The relay has no record of the repo's desk: the agent never sent it. */
+export class DeskNotFoundError extends Error {
+  constructor() {
+    super("The relay has no desk for this repo.");
+  }
+}
+
+/** Claude AI cannot message the desk. The message is the desk's reason. */
+export class DeskRefusedError extends Error {
+  constructor(reason: string | null) {
+    super(reason || DESK_OFF_TEXT);
   }
 }
