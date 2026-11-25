@@ -214,6 +214,8 @@ export class JsonSpecStore implements SpecStore {
    * state, and wake the reads when a message for Claude AI came.
    */
   private async change<T>(entry: Entry, fn: (s: SpecWorkflowState) => { result: T; changed: boolean }): Promise<T> {
+    // While the spec closes, a call is refused at once (as the workflow's validators do).
+    if (entry.closing) throw new SpecClosingError();
     return this.queued(entry, async () => {
       if (entry.closing) throw new SpecClosingError();
       // A failed write leaves the state as it was: change a copy, then keep it.
@@ -405,6 +407,7 @@ export class JsonSpecStore implements SpecStore {
   async read(spec: SpecRef, after: number | undefined, waitMs: number, unreadOnly = false): Promise<ReadResult> {
     const entry = this.entryOf(spec);
     const key = keyOf(spec);
+    if (entry.closing) throw new SpecClosingError();
     entry.reading++;
     try {
       // The cursor and the first look, in the spec's queue.
