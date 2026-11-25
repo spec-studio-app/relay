@@ -270,3 +270,87 @@ export function initialRelayConfigState(deployId: string, pairCode: { hash: stri
     updateLimit: DEFAULT_CONFIG_UPDATE_LIMIT,
   };
 }
+
+// ---- desk workflow ----
+
+/** A desk: the repo's own session, with no spec. Its address is the repo key. */
+export interface DeskAddress {
+  repoKey: string;
+  repo?: string;
+}
+
+/** A message of a desk: `desk` in place of `spec`, and no stage. */
+export interface DeskMessage extends InboxMessage {
+  desk: DeskAddress;
+}
+
+/** One entry of the agent's desks frame. */
+export interface DeskReport {
+  repoKey: string;
+  repo: string;
+  open: boolean;
+  turn: Turn | null;
+  canMessage: boolean;
+  /** Why Claude AI cannot message the desk (set when canMessage is false). */
+  reason: string | null;
+}
+
+/**
+ * The relay's record of a desk: the last state that the agent sent, and the
+ * two inboxes. No spec state and no activity events. A desk record lives as
+ * long as the relay.
+ */
+export interface DeskState extends Inboxes<DeskMessage> {
+  deployId: string;
+  desk: DeskAddress;
+  open: boolean;
+  turn: Turn | null;
+  canMessage: boolean;
+  reason: string | null;
+  /** The relay's time of the last desks frame for this desk (null: none yet). */
+  stateAt: string | null;
+  /** The last reply line of the desk's outbox that the relay applied (0: none). */
+  line: number;
+  /** Continue as new after this many updates in one run. */
+  updateLimit: number;
+}
+
+/** Memo of a desk workflow: what lists show without a query. */
+export interface DeskMemo {
+  repo: string | null;
+  open: boolean;
+  turn: Turn | null;
+  canMessage: boolean;
+  reason: string | null;
+  stateAt: string | null;
+  waitingForMac: number;
+  unreadForCoordinator: number;
+}
+
+/** The refusal when Claude AI cannot message a desk and the agent gave no reason. */
+export const DESK_OFF_TEXT =
+  "Claude AI cannot message this desk. The user can turn it on in Spec Studio, Settings, Remote Relay.";
+
+export function initialDeskState(deployId: string, desk: DeskAddress, updateLimit = DEFAULT_UPDATE_LIMIT): DeskState {
+  return {
+    deployId,
+    desk: { repoKey: desk.repoKey, ...(desk.repo ? { repo: desk.repo } : {}) },
+    open: false,
+    turn: null,
+    canMessage: false,
+    reason: null,
+    stateAt: null,
+    line: 0,
+    mac: { nextSeq: 1, messages: [] },
+    coordinator: { nextSeq: 1, messages: [], readUpTo: 0 },
+    updateLimit,
+  };
+}
+
+/**
+ * The ID of a desk workflow. The deploy ID is in it, so two relays on one
+ * namespace never share a desk workflow.
+ */
+export function deskWorkflowId(deployId: string, repoKey: string): string {
+  return `desk-${deployId}-${repoKey}`;
+}

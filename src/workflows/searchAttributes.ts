@@ -1,7 +1,8 @@
-// The search attributes of the spec workflows (Temporal store only).
+// The search attributes of the spec and desk workflows (Temporal store only).
 import { defineSearchAttributeKey, SearchAttributeType } from "@temporalio/common";
 
 export const SPEC_WORKFLOW_TYPE = "specWorkflow";
+export const DESK_WORKFLOW_TYPE = "deskWorkflow";
 export const RELAY_CONFIG_WORKFLOW_TYPE = "relayConfigWorkflow";
 
 export const SA = {

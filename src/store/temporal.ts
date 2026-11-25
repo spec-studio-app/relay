@@ -1,4 +1,4 @@
-// The Temporal store: one workflow per spec and the relay-config workflow,
+// The Temporal store: one workflow per spec, one per desk, and the relay-config workflow,
 // with the relay's own worker in its process. Its behavior is the relay's
 // behavior before 0.4.0.
 import type { Connection } from "@temporalio/client";
@@ -11,6 +11,7 @@ import { runStartupChecks, StartupError, temporalAdmin } from "../startup.js";
 import { createWorkers, type RelayWorkers } from "../worker.js";
 import { createActivities } from "../activities.js";
 import { Mirror } from "../mirror.js";
+import { DeskMirror } from "../deskMirror.js";
 import { ConfigStore } from "../configStore.js";
 import type { RelayStore } from "./types.js";
 
@@ -36,6 +37,7 @@ export async function openTemporalStore(
   }
   const clients = makeClients(connection, t.namespace, keys);
   const specs = new Mirror({ client: clients.data, deployId: config.deployId, taskQueue: t.taskQueue });
+  const desks = new DeskMirror({ client: clients.data, deployId: config.deployId, taskQueue: t.taskQueue });
   const configStore = new ConfigStore(clients.config, config.deployId);
   let native: NativeConnection | null = null;
   let workers: RelayWorkers | null = null;
@@ -44,6 +46,7 @@ export async function openTemporalStore(
   return {
     kind: "temporal",
     specs,
+    desks,
     config: configStore,
     codecDataKeys: keys.data,
     async start({ log, print }) {
