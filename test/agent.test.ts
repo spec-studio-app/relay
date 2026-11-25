@@ -235,6 +235,10 @@ test("R6.S2: a state frame with no spec gets an error frame; a frame of an unkno
     assert.match((await agent.next("error", (f) => f.frame === "teleport")).text, /does not know the frame type/);
     agent.ws.send("not json");
     assert.match((await agent.next("error", (f) => f.frame === "unknown")).text, /not JSON/);
+    agent.send({ type: "download-url", id: "d1" });
+    const download = await agent.next("download-url", (f) => f.id === "d1");
+    assert.equal(download.ok, false);
+    assert.ok(t.logs.some((e) => e.event === "agent_frame_refused" && e.frame === "download-url"));
     await agent.close();
   } finally {
     await t.close();

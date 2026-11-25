@@ -599,15 +599,19 @@ export class AgentHub {
         }
         const contentType = typeof m.contentType === "string" && m.contentType ? m.contentType : "application/octet-stream";
         const answer = await backend.uploadUrl(spec, m.filename, contentType, m.size);
+        if (!answer.ok) this.options.log({ event: "agent_frame_refused", frame: "upload-url", reason: answer.text });
         this.send(ws, { type: "upload-url", id, ...answer });
         return;
       }
       const objectKey = typeof m.objectKey === "string" ? m.objectKey : "";
       const url = objectKey ? await backend.downloadUrl(objectKey) : null;
-      this.send(
-        ws,
-        url ? { type: "download-url", id, ok: true, url } : { type: "download-url", id, ok: false, text: "The relay has no such attachment." },
-      );
+      if (!url) {
+        const text = objectKey ? "The relay has no such attachment." : "The download-url frame has no objectKey.";
+        this.options.log({ event: "agent_frame_refused", frame: "download-url", reason: text });
+        this.send(ws, { type: "download-url", id, ok: false, text });
+        return;
+      }
+      this.send(ws, { type: "download-url", id, ok: true, url });
     } catch {
       this.options.log({ event: "signed_url_failed" });
       this.send(ws, { type: m.type, id, ok: false, text: "The relay cannot reach the bucket now." });
