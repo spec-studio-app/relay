@@ -20,6 +20,8 @@ export interface MessageToolsOptions {
   desks?: DeskStore;
   /** Push a new desk message to the Mac. False when no agent that takes desk messages is connected. */
   pushDesk?: (desk: DeskAddress, message: DeskMessage) => boolean;
+  /** True when the connected Mac takes desk messages, false when it does not, null when no Mac is connected. */
+  macTakesDesks?: () => boolean | null;
   attachments: Attachments;
   /** How long read_messages waits for a new message (tests set less). */
   waitMs?: number;
@@ -37,6 +39,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function noDeskText(repo: string): string {
   return `The relay has no desk for the repo "${repo}". Call list_repos for the repo paths.`;
 }
+
+/** The tool's text when the connected Mac runs a Spec Studio that does not take desk messages. */
+export const OLD_APP_DESK_TEXT =
+  "The Spec Studio on the Mac does not take desk messages. Update Spec Studio on the Mac to message a desk.";
 
 /** The last part of a repo path: its name. */
 function repoName(path: string): string {
@@ -98,7 +104,7 @@ export class MessageTools {
         return { ok: false, text: `The relay has no synced spec with this repo and slug. ${await this.lastSyncText()} Check them with list_specs.` };
       }
       if (error instanceof DeskRefusedError) return { ok: false, text: error.message };
-      if (error instanceof DeskNotFoundError) return { ok: false, text: noDeskText(str(args.repo) ?? "") };
+      if (error instanceof DeskNotFoundError) return { ok: false, text: this.noDesk(str(args.repo) ?? "") };
       return { ok: false, text: "The relay cannot reach its store now. Try again later." };
     }
   }
@@ -112,6 +118,11 @@ export class MessageTools {
     } catch {
       return "";
     }
+  }
+
+  /** No desk for the repo: an old app on the Mac, or a repo that the relay does not know. */
+  private noDesk(repo: string): string {
+    return this.o.macTakesDesks?.() === false ? OLD_APP_DESK_TEXT : noDeskText(repo);
   }
 
   /**
@@ -174,7 +185,7 @@ export class MessageTools {
   /** send_message with no slug: the message goes to the repo's desk. */
   private async sendToDesk(repo: string, text: string, args: Record<string, unknown>): Promise<ToolText> {
     const state = await this.findDesk(repo);
-    if (!state) return { ok: false, text: noDeskText(repo) };
+    if (!state) return { ok: false, text: this.noDesk(repo) };
     if (!state.canMessage) throw new DeskRefusedError(state.reason);
     const desk: DeskAddress = state.desk;
     const attachments = await this.attachmentsOf(args, { ...desk, desk: true }, "desk");
@@ -217,7 +228,7 @@ export class MessageTools {
   /** read_messages with a repo and no slug: the messages of the repo's desk after the cursor. */
   private async readDesk(repo: string, args: Record<string, unknown>): Promise<ToolText> {
     const state = await this.findDesk(repo);
-    if (!state) return { ok: false, text: noDeskText(repo) };
+    if (!state) return { ok: false, text: this.noDesk(repo) };
     const after = typeof args.after === "number" ? args.after : undefined;
     const result = await this.o.desks!.read(state.desk, after, this.waitMs);
     const path = state.desk.repo ?? repo;
@@ -279,7 +290,7 @@ export class MessageTools {
       owner = spec;
     } else {
       const state = await this.findDesk(repo);
-      if (!state) return { ok: false, text: noDeskText(repo) };
+      if (!state) return { ok: false, text: this.noDesk(repo) };
       owner = { ...state.desk, desk: true };
     }
     const attachment = await this.o.attachments.upload(owner, filename, contentType, body);

@@ -363,6 +363,32 @@ test("review: a repo name finds only a desk of the Mac's last desks frame, and t
   }
 });
 
+test("review: with a connected Mac whose app does not take desk messages, a desk message says to update Spec Studio", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-desk-"));
+  try {
+    const store = jsonStore(dir);
+    await store.start({ log: () => {}, print: () => {} });
+    let takes: boolean | null = false;
+    const tools = new MessageTools({
+      specs: store.specs,
+      desks: store.desks,
+      push: () => {},
+      pushDesk: () => false,
+      macTakesDesks: () => takes,
+      attachments: new Attachments({ bucket: null, deployId: "default", maxBytes: 1000 }),
+    });
+    const old = await tools.answer("send_message", { repo: "/Users/me/code/none", text: "Hi" });
+    assert.equal(old.ok, false);
+    assert.match(old.text, /does not take desk messages/);
+    takes = null;
+    const offline = await tools.answer("send_message", { repo: "/Users/me/code/none", text: "Hi" });
+    assert.match(offline.text, /has no desk for the repo/);
+    await store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- the Temporal store ----
 
 let env: TestWorkflowEnvironment;
