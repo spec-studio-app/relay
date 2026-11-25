@@ -274,7 +274,7 @@ test("R2.S1, R5.S1: a version 2 agent gets incompatible (app too old) and close 
     assert.match(frame.text, /The relay needs app v0\.1\.1 or later\. Update the app\./);
     const closed = await agent.closed;
     assert.equal(closed.code, 4002);
-    assert.match(closed.reason, /update the app/);
+    assert.equal(closed.reason, "incompatible: update the app to v0.1.1 or later");
     const log = t.logs.find((e) => e.event === "agent_incompatible");
     assert.equal(log?.appVersion, "0.1.0");
     assert.equal(log?.wires, "2");
@@ -315,8 +315,12 @@ test("R2.S2: a hello with only a newer wire version gets incompatible (relay too
     const frame = await agent.next("incompatible");
     assert.equal(frame.tooOld, "relay");
     assert.match(frame.text, /Update the relay/);
-    assert.equal((await agent.closed).code, 4002);
+    const closed = await agent.closed;
+    assert.equal(closed.code, 4002);
+    assert.equal(closed.reason, "incompatible: update the relay to wire version 4");
     assert.match(t.relay.hub.mismatchNotice(null) ?? "", /since the relay started at .+ Ask the user to update the relay\./);
+    // A failed read of the last sync time leaves the time out.
+    assert.doesNotMatch(t.relay.hub.mismatchNotice(undefined) ?? "", /Nothing has synced/);
   } finally {
     await t.close();
     await h.close();
@@ -337,6 +341,43 @@ test("R1.S1: one frame with seven lines answers synced with the last line", asyn
     assert.equal(mirrored?.line, 47);
     assert.equal(mirrored?.events.length, 7);
     await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("an old app keeps the socket until the close delay, and its tool calls still work with the notice", async () => {
+  const h = await harness(env);
+  const t = await h.relay({ incompatibleCloseMs: 1500 });
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 2, agentVersion: "0.1.0" });
+    agent.answer = () => ({ ok: true, text: '{"specs":[]}' });
+    await agent.next("incompatible");
+    const { accessToken } = await signIn(t.base);
+    const result = await callTool(t.base, accessToken, "list_specs", {});
+    assert.match(result.content[0].text, /^The Mac app \(v0\.1\.0, wire 2\) is not compatible/);
+    assert.match(result.content[0].text, /\{"specs":\[\]\}$/);
+    const closed = await agent.closed;
+    assert.equal(closed.code, 4002);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("a hello with a huge wires list does not crash the relay", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const wires = Array.from({ length: 300_000 }, (_, i) => i + 10);
+    const agent = await connectAgent(t.base, AGENT_SECRET, { ...HELLO, version: 4, wires });
+    const frame = await agent.next("incompatible");
+    assert.equal(frame.tooOld, "relay");
+    assert.ok((t.relay.hub.lastAgent?.wires.length ?? 0) <= 16);
+    assert.equal((await agent.closed).code, 4002);
   } finally {
     await t.close();
     await h.close();

@@ -44,6 +44,8 @@ export interface RelayConfig {
   resendAfterMs?: number;
   /** Try a failed state frame again after this time. */
   stateRetryMs?: number;
+  /** After an incompatible hello, keep the socket open this long before the close. */
+  incompatibleCloseMs?: number;
   /** Redirect URIs that clients may register, in addition to the defaults (see oauth.ts). */
   extraRedirectUris?: string[];
   /** The clock for the agent's last-seen and start times. */
@@ -91,6 +93,7 @@ export function createRelay(config: RelayConfig): Relay {
     pendingScanMs: config.pendingScanMs,
     resendAfterMs: config.resendAfterMs,
     stateRetryMs: config.stateRetryMs,
+    incompatibleCloseMs: config.incompatibleCloseMs,
   });
   // The provider keeps the real clock: the SDK's bearer check compares token
   // expiry with Date.now().
@@ -285,11 +288,12 @@ export function createRelay(config: RelayConfig): Relay {
 async function mismatchNotice(hub: AgentHub, offline?: OfflineReader): Promise<string | null> {
   const agent = hub.lastAgent;
   if (!agent || agent.compatible) return null;
-  let lastSync: string | null = null;
+  // undefined: the relay cannot tell the time of the last sync, so the notice leaves it out.
+  let lastSync: string | null | undefined;
   try {
-    lastSync = (await offline?.lastSyncAt?.()) ?? null;
+    lastSync = offline?.lastSyncAt ? await offline.lastSyncAt() : undefined;
   } catch {
-    lastSync = null;
+    lastSync = undefined;
   }
   return hub.mismatchNotice(lastSync);
 }

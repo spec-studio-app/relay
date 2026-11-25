@@ -79,7 +79,18 @@ export interface AgentHubOptions {
   resendAfterMs?: number;
   /** Try a state frame that failed on a Temporal error again after this time (30 seconds when not given). */
   stateRetryMs?: number;
+  /**
+   * After an incompatible hello, the relay keeps the socket open this long
+   * before the close (60 seconds when not given). An app older than v0.1.1
+   * connects again 1 second after a close, so the wait limits its tries.
+   */
+  incompatibleCloseMs?: number;
 }
+
+export const DEFAULT_INCOMPATIBLE_CLOSE_MS = 60_000;
+
+/** The most wire versions that the relay reads from a hello. */
+export const MAX_HELLO_WIRES = 16;
 
 export const DEFAULT_STATE_RETRY_MS = 30_000;
 
@@ -122,7 +133,9 @@ export interface AgentRecord {
 /** The wire versions of a hello: its "wires" list, or [version] when it has no list. */
 export function agentWires(m: Record<string, unknown>): number[] {
   if (Array.isArray(m.wires)) {
-    const wires = m.wires.filter((w): w is number => typeof w === "number" && Number.isInteger(w) && w > 0);
+    const wires = m.wires
+      .slice(0, MAX_HELLO_WIRES)
+      .filter((w): w is number => typeof w === "number" && Number.isInteger(w) && w > 0 && w < 1000);
     if (wires.length > 0) return [...new Set(wires)].sort((a, b) => a - b);
   }
   return typeof m.version === "number" && Number.isInteger(m.version) ? [m.version] : [];
@@ -373,7 +386,11 @@ export class AgentHub {
       return;
     }
     const call = this.pending.get(m.id);
-    if (!call || call.socket !== ws) return;
+    if (!call || call.socket !== ws) {
+      // A result after its call timed out or its connection dropped: the caller already has an answer.
+      this.options.log({ event: "agent_late_result" });
+      return;
+    }
     this.pending.delete(m.id);
     clearTimeout(call.timer);
     call.resolve({ ok: m.ok === true, text: typeof m.text === "string" ? m.text : "" });
@@ -392,17 +409,21 @@ export class AgentHub {
 
   /**
    * The notice for the MCP tools while the last agent hello failed the
-   * handshake, or null. lastSync is the time of the newest sync of any spec.
+   * handshake, or null. lastSync is the time of the newest sync of any spec:
+   * null when no spec synced, undefined when the relay cannot read it now.
    */
-  mismatchNotice(lastSync: string | null): string | null {
+  mismatchNotice(lastSync: string | null | undefined): string | null {
     const agent = this.lastHello;
     if (!agent || agent.compatible) return null;
     const relayVersion = this.options.relayVersion ?? RELAY_VERSION;
-    const since = lastSync ?? `the relay started at ${this.startedAt.toISOString()}`;
+    const synced =
+      lastSync === undefined
+        ? ""
+        : ` Nothing has synced since ${lastSync ?? `the relay started at ${this.startedAt.toISOString()}`}.`;
     const ask = agent.tooOld === "relay" ? "Ask the user to update the relay." : "Ask the user to update the app.";
     return (
       `The Mac app (${shownVersion(agent.appVersion)}, wire ${agent.wires.join(", ")}) is not compatible with this relay ` +
-      `(${relayVersion}, wire ${SUPPORTED_WIRES.join(", ")}). Nothing has synced since ${since}. ${ask} ` +
+      `(${relayVersion}, wire ${SUPPORTED_WIRES.join(", ")}).${synced} ${ask} ` +
       `The Mac last tried to connect at ${agent.at.toISOString()}.`
     );
   }
@@ -472,7 +493,9 @@ export class AgentHub {
    */
   private incompatible(ws: WebSocket, appVersion: string | null, wires: number[]): void {
     const relayVersion = this.options.relayVersion ?? RELAY_VERSION;
-    const tooOld: "app" | "relay" = wires.length === 0 || Math.max(...wires) < SUPPORTED_WIRES[0] ? "app" : "relay";
+    // agentWires sorts the list and keeps at most MAX_HELLO_WIRES entries.
+    const highest = wires.length > 0 ? wires[wires.length - 1] : 0;
+    const tooOld: "app" | "relay" = highest < SUPPORTED_WIRES[0] ? "app" : "relay";
     const minAppVersion = MIN_APP_VERSION_FOR_WIRE[SUPPORTED_WIRES[0]];
     const head =
       `The relay ${relayVersion} speaks wire version ${SUPPORTED_WIRES.join(", ")}. ` +
@@ -480,7 +503,7 @@ export class AgentHub {
     const text =
       tooOld === "app"
         ? `${head} The relay needs app v${minAppVersion} or later. Update the app.`
-        : `${head} Update the relay to a version that speaks wire version ${Math.max(...wires)}.`;
+        : `${head} Update the relay to a version that speaks wire version ${highest}.`;
     this.lastHello = { appVersion, wires, at: this.options.now(), compatible: false, tooOld };
     this.options.log({ event: "agent_incompatible", appVersion: appVersion ?? undefined, wires: wires.join(","), tooOld });
     this.send(ws, {
@@ -492,7 +515,18 @@ export class AgentHub {
       text,
     });
     // A close reason has at most 123 bytes: the frame carries the full text.
-    ws.close(INCOMPATIBLE_CLOSE_CODE, tooOld === "app" ? "incompatible: update the app" : "incompatible: update the relay");
+    const reason =
+      tooOld === "app"
+        ? `incompatible: update the app to v${minAppVersion} or later`
+        : `incompatible: update the relay to wire version ${highest}`;
+    // An old app ignores the frame and connects again 1 second after a close.
+    // Until the close, its tool calls still work, and the tools carry the notice.
+    const delay = this.options.incompatibleCloseMs ?? DEFAULT_INCOMPATIBLE_CLOSE_MS;
+    const timer = setTimeout(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.close(INCOMPATIBLE_CLOSE_CODE, reason);
+    }, delay);
+    timer.unref();
+    ws.once("close", () => clearTimeout(timer));
   }
 
   /**
@@ -559,6 +593,7 @@ export class AgentHub {
       if (m.type === "upload-url") {
         const spec = parseSpec(m.spec);
         if (!spec || typeof m.filename !== "string" || typeof m.size !== "number") {
+          this.options.log({ event: "agent_frame_refused", frame: "upload-url", reason: "The upload-url frame is not valid." });
           this.send(ws, { type: "upload-url", id, ok: false, text: "The upload-url frame is not valid." });
           return;
         }
