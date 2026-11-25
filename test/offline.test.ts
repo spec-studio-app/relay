@@ -130,7 +130,7 @@ test("list_repos offline gives the repos of the last hello with its time", async
   const t = await h.relay();
   try {
     await h.startConfig();
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [REPO, OTHER] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, OTHER] });
     await agent.next("welcome");
     await eventually(() => h.configStore.repos());
     await agent.close();

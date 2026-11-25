@@ -9,7 +9,7 @@ import type { Message, SpecAddress, Turn } from "./workflows/types.js";
 export interface AgentBackend {
   /** True when the SHA-256 (hex) of an agent secret belongs to a paired Mac. */
   verifyAgent(hash: string): Promise<boolean>;
-  /** A version 2 hello: keep the repos and the time. */
+  /** A hello of the current wire version: keep the repos and the time. */
   hello(repos: string[], at: Date): Promise<void>;
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
   /** The agent's state frame: a new state and turn with no new line. True when applied. */

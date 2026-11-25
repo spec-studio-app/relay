@@ -16,6 +16,8 @@ import {
   stateQuery,
   stateUpdate,
   syncUpdate,
+  lastSyncLine,
+  startsSpec,
   type ReadResult,
   type StateInput,
   type SyncInput,
@@ -139,24 +141,24 @@ export class Mirror {
     return this.o.client.workflow.getHandle(specWorkflowId(this.o.deployId, spec.repoKey, spec.slug));
   }
 
-  /** Apply one activity line. The first line starts the workflow. */
+  /** Apply a batch of activity lines as one update. The first sync starts the workflow. */
   async sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult> {
     try {
       return await this.syncWith(spec, input, "ALLOW_DUPLICATE_FAILED_ONLY");
     } catch (error) {
       if (isClosingRefusal(error)) {
-        // Line 1 of a new spec with the same slug: the old run ends now, so the
-        // agent must send the line again (then it starts a new run).
-        if (input.line === 1) throw new SpecClosingError();
-        // The finished spec's workflow is ending: the line changes nothing more.
-        return { line: input.line, applied: false };
+        // The first sync of a new spec with the same slug: the old run ends now,
+        // so the agent must send the batch again (then it starts a new run).
+        if (startsSpec(input)) throw new SpecClosingError();
+        // The finished spec's workflow is ending: the lines change nothing more.
+        return { line: lastSyncLine(input), applied: false };
       }
       if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error;
     }
-    // The spec's workflow completed. Line 1 is the first line of a new spec
-    // with the same slug: start a new run for it. A later line belongs to the
-    // completed spec and changes nothing more, so the agent may drop it.
-    if (input.line !== 1) return { line: input.line, applied: false };
+    // The spec's workflow completed. A first sync is a new spec with the same
+    // slug: start a new run for it. Later lines belong to the completed spec
+    // and change nothing more, so the agent may drop them.
+    if (!startsSpec(input)) return { line: lastSyncLine(input), applied: false };
     try {
       return await this.syncWith(spec, input, "ALLOW_DUPLICATE");
     } catch (error) {
@@ -242,8 +244,9 @@ export class Mirror {
 
   /**
    * The agent's state frame: replace the state and the turn of a running spec
-   * that is not finished. An unknown spec gets no new run; a finished or closing
-   * run ignores it. True when the workflow applied it.
+   * that is not dropped (a merged spec in its grace period takes it too). An
+   * unknown spec gets no new run; a dropped or closing run ignores it. True
+   * when the workflow applied it.
    */
   async refresh(spec: { repoKey: string; slug: string }, input: Omit<StateInput, "at">): Promise<boolean> {
     try {

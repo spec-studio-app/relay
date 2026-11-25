@@ -38,7 +38,7 @@ test("R9.S1, R9.S2: a pairing code mints a secret once; the agent connects with 
     assert.equal(body.relayVersion, RELAY_VERSION);
     assert.equal(body.mcpURL, `${t.base}/mcp`);
 
-    const agent = await connectAgent(t.base, body.secret, { type: "hello", version: 2, repos: [] });
+    const agent = await connectAgent(t.base, body.secret, { type: "hello", version: 3, repos: [] });
     await agent.next("welcome");
 
     const again = await pair(t.base, CODE);
@@ -178,7 +178,7 @@ test("GET /agent/info gives the relay version, the wire version and the MCP URL"
   const t = await h.relay();
   try {
     const info = await (await fetch(`${t.base}/agent/info`)).json();
-    assert.deepEqual(info, { relayVersion: RELAY_VERSION, wireVersion: 2, mcpURL: `${t.base}/mcp` });
+    assert.deepEqual(info, { relayVersion: RELAY_VERSION, wireVersion: 3, mcpURL: `${t.base}/mcp` });
   } finally {
     await t.close();
     await h.close();

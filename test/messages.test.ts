@@ -19,7 +19,7 @@ beforeEach(() => {
   REPO = `/Users/me/code/app-${randomBytes(4).toString("hex")}`;
 });
 
-const HELLO2 = () => ({ type: "hello", version: 2, repos: [REPO] });
+const HELLO = () => ({ type: "hello", version: 3, repos: [REPO] });
 
 async function synced(h: Awaited<ReturnType<typeof harness>>, slug: string, stage = "build") {
   await h.mirror.sync(specAddress(REPO, slug), {
@@ -65,7 +65,7 @@ test("R6.S2: after welcome the relay pushes the waiting messages; delivered drop
     await h.mirror.send(specAddress(REPO, "push"), { text: "Second." });
     await eventually(async () => (await h.mirror.list({ pendingForMac: true })).length === 1);
 
-    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO2());
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO());
     await agent.next("welcome");
     const first = await agent.next("message", (f) => f.seq === 1);
     const second = await agent.next("message", (f) => f.seq === 2);
@@ -97,7 +97,7 @@ test("R6.S2: after welcome the relay pushes the waiting messages; delivered drop
 
     // A new connection gets the undelivered message again.
     await agent.close();
-    const again = await connectAgent(t.base, AGENT_SECRET, HELLO2());
+    const again = await connectAgent(t.base, AGENT_SECRET, HELLO());
     await again.next("welcome");
     assert.equal((await again.next("message")).seq, 2);
     await again.close();

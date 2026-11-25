@@ -50,7 +50,7 @@ test("R8.S1: Claude AI uploads a 200 KB PNG and sends it; the message carries th
     assert.equal(ref.sha256, createHash("sha256").update(png).digest("hex"));
     assert.deepEqual(h.bucket.objects.get(ref.objectKey)?.body, png);
 
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [REPO] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
     await agent.next("welcome");
     const sent = await callTool(t.base, accessToken, "send_message", {
       repo: REPO,
@@ -90,7 +90,7 @@ test("R8.S2: the session attaches a file; read_messages shows name, type, size, 
   const t = await h.relay();
   try {
     await synced(h, "proof");
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [REPO] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
     await agent.next("welcome");
     const spec = { repoKey: repoKeyOf(REPO), slug: "proof" };
     agent.send({ type: "upload-url", id: "u1", spec, filename: "proof.png", contentType: "image/png", size: 1234, sha256: "ab" });
@@ -105,8 +105,9 @@ test("R8.S2: the session attaches a file; read_messages shows name, type, size, 
     agent.send({
       type: "sync",
       spec,
-      line: 2,
-      event: { t: "2026-11-23T12:00:00Z", kind: "message", stage: "check", id: "s1", text: "Proof", attachments: [attachment] },
+      lines: [
+        { line: 2, event: { t: "2026-11-23T12:00:00Z", kind: "message", stage: "check", id: "s1", text: "Proof", attachments: [attachment] } },
+      ],
       state: null,
       turn: null,
     });
@@ -140,7 +141,7 @@ test("R8.S3: 6 MB over a 5 MB limit fails with the limit in the text", async () 
     assert.match(result.content[0].text, /The limit for an attachment is 5 MB \(5242880 bytes\)\./);
     assert.equal(h.bucket.objects.size, 0);
 
-    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 2, repos: [REPO] });
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
     await agent.next("welcome");
     agent.send({
       type: "upload-url",

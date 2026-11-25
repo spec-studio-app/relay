@@ -4,6 +4,7 @@ import {
   condition,
   continueAsNew,
   defineQuery,
+  patched,
   defineUpdate,
   proxyActivities,
   setHandler,
@@ -33,14 +34,55 @@ import {
   type Turn,
 } from "./types.js";
 
-export interface SyncInput {
+/** One activity line of a sync batch. */
+export interface SyncLine {
   line: number;
   event: Record<string, unknown>;
-  state: Record<string, unknown> | null;
-  turn: Turn | null;
+}
+
+/**
+ * One sync frame of wire version 3: the new lines of a spec, in line order,
+ * with the state and the turn when they changed. A missing state or turn
+ * keeps the mirror's; `turn: null` means that the app does not run.
+ *
+ * The workflows that ran before version 3 have single-line updates (`line` and
+ * `event`) in their history: the handler reads them as a batch of one line, so
+ * their replay stays the same.
+ */
+export interface SyncInput {
+  lines?: SyncLine[];
+  /** The agent had no cursor for the spec: a finished run starts again as a new spec. */
+  first?: boolean;
+  /** Wire version 2: one line. */
+  line?: number;
+  event?: Record<string, unknown>;
+  state?: Record<string, unknown> | null;
+  turn?: Turn | null;
   /** The relay's time. */
   at: string;
   repo?: string;
+}
+
+/** The lines of a sync input, in the order they came. */
+export function syncLines(input: Pick<SyncInput, "lines" | "line" | "event">): SyncLine[] {
+  if (Array.isArray(input.lines)) return input.lines;
+  if (typeof input.line === "number" && input.event) return [{ line: input.line, event: input.event }];
+  return [];
+}
+
+/** The last line of a sync input, or 0 when it has none. */
+export function lastSyncLine(input: Pick<SyncInput, "lines" | "line" | "event">): number {
+  const lines = syncLines(input);
+  return lines.length > 0 ? lines[lines.length - 1].line : 0;
+}
+
+/**
+ * True when the input may start a spec again: the agent's first sync of the
+ * spec, or a batch that starts at line 1. Before the short first sync, line 1
+ * was the only sign of a new spec with the same slug.
+ */
+export function startsSpec(input: Pick<SyncInput, "lines" | "line" | "event" | "first">): boolean {
+  return input.first === true || syncLines(input)[0]?.line === 1;
 }
 
 export interface SyncResult {
@@ -91,7 +133,7 @@ export interface StateInput {
 /**
  * The agent's state frame: the state and the turn changed with no new activity
  * line (for example, the turn moved). It replaces them; the line cursor and the
- * events stay. A finished run ignores it.
+ * events stay. A dropped run ignores it; a merged run in its grace period takes it.
  */
 export const stateUpdate = defineUpdate<{ applied: boolean }, [StateInput, Bound]>("state");
 
@@ -124,6 +166,23 @@ function attachmentsOf(value: unknown): Attachment[] | undefined {
       sha256: String(a.sha256 ?? ""),
       ...(typeof a.error === "string" && a.error ? { error: a.error } : {}),
     }));
+}
+
+/**
+ * True when a first sync on a finished run belongs to another spec with the
+ * same slug: the run was dropped (the folder came back), or the frame's state
+ * has another `createdAt`. A first sync of the same merged spec sent again
+ * (a lost answer, or a first sync in more frames), or one with no state,
+ * does not reset a merged run.
+ */
+function isOtherSpec(s: SpecWorkflowState, sync: SyncInput): boolean {
+  if (s.dropped) return true;
+  const was = s.state?.createdAt;
+  const now = sync.state?.createdAt;
+  // With no createdAt in the frame (studio show failed, so the state is null)
+  // there is no proof of a new spec: keep the run.
+  if (typeof now !== "string") return false;
+  return typeof was !== "string" || was !== now;
 }
 
 export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
@@ -208,46 +267,68 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   };
 
   setHandler(syncUpdate, (sync) => {
-    if (sync.line === 1 && s.finished && s.line >= 1) {
-      // Line 1 on a finished run (merged or dropped, in its grace period): the
-      // spec was made again on the Mac with the same slug (a new spec, or the
-      // folder came back). Start it as a new spec. The main loop sees that the
-      // run is no longer finished, so the grace period ends.
+    const lines = syncLines(sync);
+    // A single-line input of wire version 2, from a history written before
+    // version 3: it keeps the old rules, so its replay stays the same.
+    const legacy = !Array.isArray(sync.lines);
+    if (lines.length > 0 && startsSpec(sync) && s.finished && s.line >= 1 && (legacy || isOtherSpec(s, sync))) {
+      // The first sync on a finished run (merged or dropped, in its grace
+      // period): the spec was made again on the Mac with the same slug (a new
+      // spec, or the folder came back). Start it as a new spec. The main loop
+      // sees that the run is no longer finished, so the grace period ends.
       bounceMacMessages(RECREATED_TEXT, sync.at);
       s.finished = false;
       s.dropped = false;
-      s.state = null;
-      s.turn = null;
+      // A frame with no state keeps the run's last one (the folder of a
+      // dropped spec came back), unless that state is merged: a merged state
+      // would finish the new spec at its first line.
+      const kept = mirrorFields(s.state).stage === "merged" ? null : s.state;
+      s.state = legacy ? null : (sync.state ?? kept);
+      s.turn = legacy ? null : sync.turn !== undefined ? sync.turn : s.turn;
       s.events = [];
       s.line = 0;
       s.syncedAt = null;
     }
-    if (sync.line <= s.line) return { line: s.line, applied: false };
-    s.line = sync.line;
+    const fresh = lines.filter((l) => l.line > s.line);
+    if (fresh.length === 0) {
+      // No new line, but a state: the agent counts it as delivered once the
+      // relay answers synced, so apply it (a dropped spec keeps its last state).
+      if (!legacy && sync.state && !s.dropped) {
+        s.state = sync.state;
+        if (sync.turn !== undefined) s.turn = sync.turn;
+        s.syncedAt = sync.at;
+        changed();
+      }
+      return { line: s.line, applied: false };
+    }
     s.syncedAt = sync.at;
     if (sync.repo) s.spec.repo = sync.repo;
     if (sync.state) s.state = sync.state;
-    s.turn = sync.turn;
-    s.events.push({ line: sync.line, event: sync.event });
-    if (s.events.length > EVENT_LIMIT) s.events.splice(0, s.events.length - EVENT_LIMIT);
-    const event = sync.event;
-    // A message that the inbox already has (a restored spec sends its old lines
-    // again after the reset of line 1) is not added a second time.
-    const knownMessage =
-      typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
-    if (event.kind === "message" && !knownMessage) {
-      addForCoordinator({
-        id: typeof event.id === "string" && event.id ? event.id : uuid4(),
-        from: "session",
-        spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
-        stage: typeof event.stage === "string" ? event.stage : mirrorFields(s.state).stage,
-        text: typeof event.text === "string" ? event.text : "",
-        ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),
-        ...(attachmentsOf(event.attachments) ? { attachments: attachmentsOf(event.attachments) } : {}),
-        createdAt: typeof event.t === "string" ? event.t : sync.at,
-      });
+    if (sync.turn !== undefined) s.turn = sync.turn;
+    for (const { line, event } of fresh) {
+      if (line <= s.line) continue;
+      s.line = line;
+      s.events.push({ line, event });
+      // A message that the inbox already has (a restored spec sends its old lines
+      // again after the reset of a first sync) is not added a second time.
+      const knownMessage =
+        typeof event.id === "string" && event.id !== "" && s.coordinator.messages.some((m) => m.id === event.id);
+      if (event.kind === "message" && !knownMessage) {
+        addForCoordinator({
+          id: typeof event.id === "string" && event.id ? event.id : uuid4(),
+          from: "session",
+          spec: { repoKey: s.spec.repoKey, slug: s.spec.slug },
+          stage: typeof event.stage === "string" ? event.stage : mirrorFields(s.state).stage,
+          text: typeof event.text === "string" ? event.text : "",
+          ...(typeof event.replyTo === "string" ? { replyTo: event.replyTo } : {}),
+          ...(attachmentsOf(event.attachments) ? { attachments: attachmentsOf(event.attachments) } : {}),
+          createdAt: typeof event.t === "string" ? event.t : sync.at,
+        });
+      }
+      if (isFinished(s, event)) s.finished = true;
     }
-    if (isFinished(s, event)) s.finished = true;
+    if (s.events.length > EVENT_LIMIT) s.events.splice(0, s.events.length - EVENT_LIMIT);
+    // One batch is one change: one memo and one search attribute upsert.
     changed();
     return { line: s.line, applied: true };
   }, { validator: (_: SyncInput, b: Bound) => open(b) });
@@ -295,7 +376,10 @@ export async function specWorkflow(input: SpecWorkflowState): Promise<void> {
   }, { validator: (_: AckInput, b: Bound) => open(b) });
 
   setHandler(stateUpdate, (input) => {
-    if (s.finished) return { applied: false };
+    // A merged spec in its grace period takes a new state too: the agent counts
+    // a state frame as delivered, so its later sync frames leave the state out.
+    // Histories from before this rule keep it (the patch marker).
+    if (s.dropped || (s.finished && !patched("state-on-finished-run"))) return { applied: false };
     s.state = input.state;
     s.turn = input.turn;
     // The age that offline reads show is the age of this state.
