@@ -378,3 +378,31 @@ test("review: relay pair-code on a data folder with no config.json fails and mak
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("review: a spec file that the relay cannot read stays in place, and the next start reads it again", async (t) => {
+  if (process.getuid?.() === 0) return t.skip("root can read any file");
+  const dir = tempDir();
+  try {
+    const first = open(dir);
+    await first.start(quiet);
+    const spec = specAddress(REPO, "locked");
+    await first.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("locked"), turn: null });
+    await first.close();
+    const file = join(dir, "specs", specFileName("default", spec.repoKey, "locked"));
+    chmodSync(file, 0o000);
+    const logs: LogEntry[] = [];
+    const second = open(dir, { log: (e) => logs.push(e) });
+    await second.start(quiet);
+    assert.ok(logs.some((e) => e.event === "spec_file_read_failed"));
+    assert.ok(existsSync(file), "the file is not moved aside");
+    assert.deepEqual(await second.specs.sync(spec, { lines: [{ line: 2, event: { kind: "status" } }] }), { line: 2, applied: false });
+    await second.close();
+    chmodSync(file, 0o600);
+    const third = open(dir);
+    await third.start(quiet);
+    assert.equal((await third.specs.state(spec))?.line, 1);
+    await third.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

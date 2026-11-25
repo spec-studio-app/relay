@@ -161,7 +161,13 @@ export class JsonSpecStore implements SpecStore {
       }
       if (!name.endsWith(".json")) continue;
       const file = await this.parse(path, name);
-      if (!file) {
+      if (file === "unread") {
+        // The file stays: the next start reads it again. Until then, later
+        // lines alone would make a part of the spec, so wait for a first sync.
+        this.unreadable.add(name);
+        continue;
+      }
+      if (file === "broken") {
         // Keep the file for the owner, and wait for a first sync of the spec:
         // its later lines alone would make a part of the spec.
         await rename(path, path + UNREADABLE_SUFFIX).catch(() => undefined);
@@ -192,14 +198,25 @@ export class JsonSpecStore implements SpecStore {
     }
   }
 
-  private async parse(path: string, name: string): Promise<SpecFile | null> {
+  /**
+   * The spec file, "broken" when it does not parse, or "unread" when the relay
+   * cannot read it (for example a file that another user owns).
+   */
+  private async parse(path: string, name: string): Promise<SpecFile | "broken" | "unread"> {
+    let text: string | null;
     try {
-      const file = JSON.parse((await readText(path)) ?? "") as SpecFile;
+      text = await readText(path);
+    } catch {
+      this.o.log({ event: "spec_file_read_failed", file: name });
+      return "unread";
+    }
+    try {
+      const file = JSON.parse(text ?? "") as SpecFile;
       if (file?.version !== 1 || !file.state?.spec?.repoKey || !file.state.spec.slug) throw new Error("not a spec file");
       return file;
     } catch {
       this.o.log({ event: "spec_file_unreadable", file: name });
-      return null;
+      return "broken";
     }
   }
 
