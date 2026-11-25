@@ -303,8 +303,12 @@ export class JsonSpecStore implements SpecStore {
       try {
         await this.removeAttachments(repoKey, slug);
         await removeFile(this.pathOf(entry.state.spec));
-        await this.remember({ repoKey, slug, closedAt: this.nowDate().getTime(), memo: specMemo(entry.state) });
+        // Forget the spec at once, so memory and the folder agree; then keep its closed record.
         this.entries.delete(keyOf(entry.state.spec));
+        // The closed record is for lists with all and late lines: a failed write is only logged.
+        await this.remember({ repoKey, slug, closedAt: this.nowDate().getTime(), memo: specMemo(entry.state) }).catch(() =>
+          this.o.log({ event: "closed_record_failed" }),
+        );
         this.o.log({ event: "spec_closed" });
       } catch {
         // Try again later; the spec takes calls again meanwhile.
