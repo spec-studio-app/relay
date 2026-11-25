@@ -40,3 +40,11 @@ export class DeskRefusedError extends Error {
     super(reason || DESK_OFF_TEXT);
   }
 }
+
+/** The relay could not read the desk's file at start: it keeps the file and makes no new desk over it. */
+export class DeskUnreadableError extends Error {
+  constructor() {
+    super("The relay cannot read the file of this desk. The owner of the relay must check the file in RELAY_DATA_DIR/desks and start the relay again.");
+    this.name = "DeskUnreadableError";
+  }
+}

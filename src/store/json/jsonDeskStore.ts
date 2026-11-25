@@ -30,7 +30,7 @@ import {
   type DeskSyncLine,
   type DeskSyncResult,
 } from "../../workflows/deskRules.js";
-import { DeskNotFoundError, DeskRefusedError } from "../errors.js";
+import { DeskNotFoundError, DeskRefusedError, DeskUnreadableError } from "../errors.js";
 import type { DeskStore, ListedDesk } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
 import { UNREADABLE_SUFFIX } from "./jsonSpecStore.js";
@@ -63,6 +63,8 @@ export function deskFileName(deployId: string, repoKey: string): string {
 
 export class JsonDeskStore implements DeskStore {
   private readonly entries = new Map<string, Entry>();
+  /** The names of desk files that the relay could not read at start. They stay as they are until the next start. */
+  private readonly unreadable = new Set<string>();
   /** Emits the repo key of a desk when it gets a new message for Claude AI. */
   private readonly wake = new EventEmitter();
   private readonly env: RuleEnv;
@@ -103,8 +105,9 @@ export class JsonDeskStore implements DeskStore {
       try {
         text = await readText(path);
       } catch {
-        // The file stays: the next start reads it again.
+        // The file stays: no write replaces it, and the next start reads it again.
         this.o.log({ event: "desk_file_read_failed", file: name });
+        this.unreadable.add(name);
         continue;
       }
       try {
@@ -136,6 +139,8 @@ export class JsonDeskStore implements DeskStore {
   private entryFor(desk: DeskAddress): { entry: Entry; created: boolean } {
     const found = this.entries.get(desk.repoKey);
     if (found) return { entry: found, created: false };
+    // A new state would replace a file that holds the desk's messages.
+    if (this.unreadable.has(deskFileName(this.o.deployId, desk.repoKey))) throw new DeskUnreadableError();
     const entry: Entry = { state: initialDeskState(this.o.deployId, desk), queue: Promise.resolve() };
     this.entries.set(desk.repoKey, entry);
     return { entry, created: true };
