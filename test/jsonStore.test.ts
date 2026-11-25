@@ -3,7 +3,7 @@
 // spec, the data folder check, and the pairing code.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -393,6 +393,26 @@ test("a spec file that the relay cannot read stops the start; the same file star
     const again = open(dir);
     await again.start(quiet);
     assert.equal((await again.specs.state(spec))?.line, 1);
+    await again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a bad spec file on a new data folder stops the start before a pairing code is made", async () => {
+  const dir = tempDir();
+  try {
+    mkdirSync(join(dir, "specs"), { recursive: true });
+    writeFileSync(join(dir, "specs", "0123456789abcdef0123456789abcdef.json"), "{ not json");
+    const printed: string[] = [];
+    await assert.rejects(open(dir).start({ log: () => {}, print: (t) => printed.push(t) }), (error) => error instanceof StartupError);
+    assert.equal(existsSync(join(dir, "config.json")), false, "no config, so the next start makes and prints a code");
+    assert.equal(printed.length, 0);
+    rmSync(join(dir, "specs", "0123456789abcdef0123456789abcdef.json"));
+    const again = open(dir);
+    const { pairCode } = await again.start({ log: () => {}, print: (t) => printed.push(t) });
+    assert.ok(pairCode);
+    assert.match(printed.join("\n"), /Pairing code: /);
     await again.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

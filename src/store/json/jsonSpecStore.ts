@@ -43,14 +43,13 @@ import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors
 import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
 import { TEMP_SUFFIX, readText, removeFile, writeAtomic, type WriteHooks } from "./files.js";
 
-/** A sync of a spec whose file the relay cannot read: the agent sends the lines again later. */
 /** A spec file that the relay cannot read or parse: the start stops, and the owner fixes it. */
 export class SpecFileError extends Error {
   constructor(file: string, what: "read" | "parse") {
     super(
       `The relay cannot ${what} the spec file ${file} in RELAY_DATA_DIR/specs. ` +
         (what === "read" ? "Give the relay's user (uid 1000) access to it, " : "Correct the file, ") +
-        "or remove it: the relay then makes the spec again from the Mac's next lines, or from a first sync after studio agent unpair --force and a new pairing.",
+        "or remove it. To get a removed spec back in full, run studio agent unpair --force on the Mac before the relay starts again, then pair the Mac again (see the README).",
     );
   }
 }
@@ -147,7 +146,7 @@ export class JsonSpecStore implements SpecStore {
     return this.o.graceMs ?? FINISHED_GRACE_MS;
   }
 
-  /** Read the spec files. A file that does not parse is logged and left out. */
+  /** Read the spec files. A file that the relay cannot read or parse throws SpecFileError. */
   async load(): Promise<void> {
     let names: string[] = [];
     try {

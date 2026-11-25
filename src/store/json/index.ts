@@ -64,18 +64,20 @@ export function openJsonStore(config: Pick<Config, "dataDir" | "deployId" | "pub
         throw new StartupError(dataDirText(dir));
       }
       await checkBucket({ bucket: o.bucket, log });
+      // The specs load first: a bad spec file stops the start before a new
+      // config makes a pairing code that would never be printed.
+      try {
+        await specs.load();
+      } catch (error) {
+        if (error instanceof SpecFileError) throw new StartupError(error.message);
+        throw error;
+      }
       const code = newPairCode();
       let made: boolean;
       try {
         made = await configStore.create({ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS });
       } catch (error) {
         if (error instanceof ConfigFileError) throw new StartupError(error.message);
-        throw error;
-      }
-      try {
-        await specs.load();
-      } catch (error) {
-        if (error instanceof SpecFileError) throw new StartupError(error.message);
         throw error;
       }
       if (!made) return { pairCode: null };
