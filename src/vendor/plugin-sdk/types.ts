@@ -57,6 +57,11 @@ export interface HandshakeResult {
   limits: Limits;
   /** Over HTTP only. */
   session?: string;
+  /**
+   * Protocol 1.1, optional. Two plugin processes that read and write the
+   * same data give the same storeId.
+   */
+  storeId?: string;
 }
 
 export interface PingResult {
