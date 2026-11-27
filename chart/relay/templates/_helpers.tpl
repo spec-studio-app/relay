@@ -86,7 +86,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/* A value as text. Helm reads a number in values as a float, so a whole number prints with no exponent: 10485760, not 1.048576e+07. */}}
 {{- define "relay.text" -}}
-{{- if and (kindIs "float64" .) (eq . (float64 (int64 .))) -}}
+{{- if kindIs "invalid" . -}}
+{{- else if and (kindIs "float64" .) (eq . (float64 (int64 .))) -}}
 {{- int64 . -}}
 {{- else -}}
 {{- toString . -}}

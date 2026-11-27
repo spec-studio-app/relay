@@ -161,6 +161,12 @@ test("review: the chart refuses store: plugin alone, takes plugin.url, mounts th
   const fromFile = helm(["-f", `${valuesDir}/v.yaml`])!;
   assert.match(fromFile, /- name: RELAY_PLUGIN_MAX_BYTES\n\s+value: "10485760"/);
   assert.match(fromFile, /- name: RELAY_PLUGIN_RATIO\n\s+value: "0\.5"/);
+  // An empty setting is empty, not "<nil>"; a --set number keeps all its digits, in a setting and in the sidecar args.
+  writeFileSync(`${valuesDir}/e.yaml`, "plugin:\n  command: x\n  settings:\n    empty:\n");
+  assert.match(helm(["-f", `${valuesDir}/e.yaml`])!, /- name: RELAY_PLUGIN_EMPTY\n\s+value: ""/);
+  assert.match(helm(["--set", "plugin.command=x", "--set", "plugin.settings.big=9007199254740993"])!, /value: "9007199254740993"/);
+  const args = helm(["--set", "plugin.sidecar.enabled=true", "--set", "plugin.sidecar.image=i", "--set", "secrets.pluginToken=t", "--set", "plugin.sidecar.args={--n,9007199254740993}"])!;
+  assert.match(args, /- "--n"\n\s+- "9007199254740993"/);
   rmSync(valuesDir, { recursive: true, force: true });
   // A values file from 0.5.0 (helm upgrade --reuse-values) has no plugin key.
   const dir = mkdtempSync(join(tmpdir(), "relay-chart-"));

@@ -71,7 +71,8 @@ spec:
               value: {{ ($plugin.url | default (printf "http://127.0.0.1:%s/rpc" (include "relay.text" $plugin.sidecar.port))) | quote }}
             {{- include "relay.secretEnv" (dict "name" "RELAY_PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" $plugin.sidecar.enabled) | nindent 12 }}
             {{- end }}
-            {{- range $name, $value := $plugin.settings }}
+            {{- /* From .Values, not $plugin: the YAML round trip of relay.plugin would lose the digits of a large --set number. */}}
+            {{- range $name, $value := (.Values.plugin | default dict).settings }}
             - name: {{ printf "RELAY_PLUGIN_%s" (upper $name) }}
               value: {{ include "relay.text" $value | quote }}
             {{- end }}
@@ -170,7 +171,7 @@ spec:
           args:
             - --listen
             - {{ printf "127.0.0.1:%s" (include "relay.text" .port) | quote }}
-            {{- range .args }}
+            {{- range ((($.Values.plugin | default dict).sidecar | default dict).args | default list) }}
             - {{ include "relay.text" . | quote }}
             {{- end }}
           env:

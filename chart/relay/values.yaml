@@ -24,7 +24,9 @@ plugin:
   # plugin has one, is secrets.pluginToken.
   url: ""
   # The plugin's settings. Each name becomes RELAY_PLUGIN_<NAME>, for example
-  # address: temporal:7233 becomes RELAY_PLUGIN_ADDRESS. Put no secret here:
+  # address: temporal:7233 becomes RELAY_PLUGIN_ADDRESS. Quote a number with
+  # more than 15 digits: Helm reads a number in a values file as a float.
+  # Put no secret here:
   # use extraEnv with a secretKeyRef for a secret setting.
   settings: {}
   # A plugin in its own container in the pod. The relay calls it over HTTP on
