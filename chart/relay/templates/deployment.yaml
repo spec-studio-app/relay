@@ -68,13 +68,12 @@ spec:
               value: {{ $plugin.command | quote }}
             {{- else }}
             - name: RELAY_PLUGIN_URL
-              value: {{ ($plugin.url | default (printf "http://127.0.0.1:%v/rpc" $plugin.sidecar.port)) | quote }}
+              value: {{ ($plugin.url | default (printf "http://127.0.0.1:%s/rpc" (include "relay.text" $plugin.sidecar.port))) | quote }}
             {{- include "relay.secretEnv" (dict "name" "RELAY_PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" $plugin.sidecar.enabled) | nindent 12 }}
             {{- end }}
-            {{- /* From .Values, not $plugin: a YAML round trip would turn a large number into a float. */}}
-            {{- range $name, $value := (.Values.plugin | default dict).settings }}
+            {{- range $name, $value := $plugin.settings }}
             - name: {{ printf "RELAY_PLUGIN_%s" (upper $name) }}
-              value: {{ $value | quote }}
+              value: {{ include "relay.text" $value | quote }}
             {{- end }}
             {{- else }}
             - name: RELAY_STORE
@@ -170,9 +169,9 @@ spec:
           imagePullPolicy: {{ .pullPolicy | default "IfNotPresent" }}
           args:
             - --listen
-            - {{ printf "127.0.0.1:%v" .port | quote }}
+            - {{ printf "127.0.0.1:%s" (include "relay.text" .port) | quote }}
             {{- range .args }}
-            - {{ . | quote }}
+            - {{ include "relay.text" . | quote }}
             {{- end }}
           env:
             {{- include "relay.secretEnv" (dict "name" "PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" true) | nindent 12 }}

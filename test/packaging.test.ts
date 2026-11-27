@@ -155,6 +155,13 @@ test("review: the chart refuses store: plugin alone, takes plugin.url, mounts th
   assert.match(plugin, /- name: data\n\s+mountPath: "\/data"/);
   // A large number stays a whole number (no YAML round trip).
   assert.match(helm(["--set", "plugin.command=x", "--set", "plugin.settings.max_bytes=10485760"])!, /- name: RELAY_PLUGIN_MAX_BYTES\n\s+value: "10485760"/);
+  // The same from a values file, where Helm reads every number as a float.
+  const valuesDir = mkdtempSync(join(tmpdir(), "relay-values-"));
+  writeFileSync(`${valuesDir}/v.yaml`, "plugin:\n  command: x\n  settings:\n    max_bytes: 10485760\n    ratio: 0.5\n");
+  const fromFile = helm(["-f", `${valuesDir}/v.yaml`])!;
+  assert.match(fromFile, /- name: RELAY_PLUGIN_MAX_BYTES\n\s+value: "10485760"/);
+  assert.match(fromFile, /- name: RELAY_PLUGIN_RATIO\n\s+value: "0\.5"/);
+  rmSync(valuesDir, { recursive: true, force: true });
   // A values file from 0.5.0 (helm upgrade --reuse-values) has no plugin key.
   const dir = mkdtempSync(join(tmpdir(), "relay-chart-"));
   cpSync(`${root}chart/relay`, `${dir}/relay`, { recursive: true });
