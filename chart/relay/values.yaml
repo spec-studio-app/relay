@@ -1,7 +1,7 @@
 # The relay keeps one agent connection from the Mac in its process.
 # Run one replica only.
 
-# Where the relay keeps its state: json or temporal.
+# Where the relay keeps its state: json or temporal (or a plugin, below).
 #   json: files on a persistent volume (see persistence). No other service.
 #         The state is in the files of one pod, so the chart runs one replica
 #         with the Recreate strategy.
@@ -11,7 +11,45 @@
 # waits (see the README).
 store: ""
 
-# The volume of the JSON store (store: json only).
+# A backend plugin as the relay's store (optional). Leave it empty for the
+# store above. Set one of plugin.command, plugin.url and plugin.sidecar, and
+# leave store empty.
+# See "A store plugin" in the README.
+plugin:
+  # A plugin command in the image, with its arguments (RELAY_PLUGIN). The pod
+  # gets the data volume at /data for the plugin's files.
+  command: ""
+  # The URL of a plugin that runs as its own service, for example
+  # http://plugin.relay.svc:7070/rpc (RELAY_PLUGIN_URL). The token, when the
+  # plugin has one, is secrets.pluginToken.
+  url: ""
+  # The plugin's settings. Each name becomes RELAY_PLUGIN_<NAME>, for example
+  # address: temporal:7233 becomes RELAY_PLUGIN_ADDRESS. Quote a number with
+  # more than 15 digits: Helm reads a number in a values file as a float.
+  # Put no secret here:
+  # use extraEnv with a secretKeyRef for a secret setting.
+  settings: {}
+  # A plugin in its own container in the pod. The relay calls it over HTTP on
+  # the pod's loopback, with the token secrets.pluginToken (RELAY_PLUGIN_URL,
+  # RELAY_PLUGIN_TOKEN).
+  sidecar:
+    enabled: false
+    # The plugin's image, for example ghcr.io/me/plugin-mine:1.0.0.
+    image: ""
+    pullPolicy: IfNotPresent
+    port: 7070
+    # More arguments after --listen 127.0.0.1:<port>.
+    args: []
+    # More environment variables, as a list of {name, value}.
+    env: []
+    resources: {}
+    # A folder in the sidecar for the chart's data volume (see persistence),
+    # for a plugin that keeps files, for example /data. Empty: no volume, and
+    # a plugin that keeps files loses them at each pod restart.
+    dataPath: ""
+
+# The volume at /data: for the JSON store, for a plugin command in the image,
+# or for a sidecar with plugin.sidecar.dataPath.
 persistence:
   size: 1Gi
   # Empty: the cluster's default storage class.
@@ -76,6 +114,10 @@ secrets:
   temporalTlsKey: ""
   bucketAccessKey: ""
   bucketSecretKey: ""
+  # The token between the relay and a plugin over HTTP. Required with
+  # plugin.sidecar.enabled, optional with plugin.url: a long random string,
+  # for example from openssl rand -hex 32.
+  pluginToken: ""
 
 # Other environment variables, as a list of {name, value}.
 extraEnv: []

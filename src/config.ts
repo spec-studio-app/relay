@@ -11,10 +11,22 @@ export const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_BUCKET_REGION = "auto";
 export const DEFAULT_DATA_DIR = "/data";
 
-/** Where the relay keeps its state. */
-export type StoreKind = "json" | "temporal";
-/** Why the relay uses its store: RELAY_STORE, TEMPORAL_ADDRESS without RELAY_STORE, or the default. */
-export type StoreReason = "set" | "temporal-address" | "default";
+/** Where the relay keeps its state: a built-in store, or a backend plugin. */
+export type StoreKind = "json" | "temporal" | "plugin";
+/** Why the relay uses its store: RELAY_STORE, TEMPORAL_ADDRESS without RELAY_STORE, a plugin setting, or the default. */
+export type StoreReason = "set" | "temporal-address" | "plugin" | "default";
+
+/** A backend plugin: a command that the relay starts (stdio), or a sidecar (HTTP). */
+export type PluginTransport =
+  | { transport: "stdio"; command: string; args: string[] }
+  | { transport: "http"; url: string; token?: string };
+
+export type PluginSettings = PluginTransport & {
+  /** The handshake settings, from the RELAY_PLUGIN_<NAME> variables. Some values are secrets. */
+  settings: Record<string, string>;
+  /** The variable that chose the plugin, for messages. */
+  from: "RELAY_PLUGIN" | "RELAY_PLUGIN_URL";
+};
 
 /** How the relay connects to Temporal. */
 export type TemporalAuth = "plain" | "tls" | "mtls" | "api-key";
@@ -72,6 +84,8 @@ export interface Config {
   payloadKeys: PayloadKeys | null;
   /** The origin of the Temporal Web UI that may call the codec endpoints. */
   uiOrigin?: string;
+  /** The backend plugin: only with the plugin store. */
+  plugin: PluginSettings | null;
 }
 
 export class ConfigError extends Error {}
@@ -185,6 +199,97 @@ function bucketSettings(env: Env): BucketSettings | null {
   };
 }
 
+/**
+ * Split a command into words as a shell does: spaces separate words, and
+ * single quotes, double quotes and a backslash keep spaces in a word. There
+ * is no other shell feature: no variables, no globs, no pipes.
+ */
+export function splitCommand(text: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      else word += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "\\" && (text[i + 1] === '"' || text[i + 1] === "\\")) word += text[++i];
+      else word += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      inWord = true;
+    } else if (c === "\\" && i + 1 < text.length) {
+      word += text[++i];
+      inWord = true;
+    } else if (/\s/.test(c)) {
+      if (inWord) words.push(word);
+      word = "";
+      inWord = false;
+    } else {
+      word += c;
+      inWord = true;
+    }
+  }
+  if (quote) throw new ConfigError("RELAY_PLUGIN has a quote with no end.");
+  if (inWord) words.push(word);
+  return words;
+}
+
+/** The RELAY_PLUGIN_ variables that are relay settings, not plugin settings. */
+const PLUGIN_RESERVED = new Set(["RELAY_PLUGIN_URL", "RELAY_PLUGIN_TOKEN"]);
+const PLUGIN_PREFIX = "RELAY_PLUGIN_";
+
+/** The handshake settings: each RELAY_PLUGIN_<NAME> as <name>, in lowercase. */
+function pluginSettingsOf(env: Env): Record<string, string> {
+  const settings: Record<string, string> = {};
+  for (const name of Object.keys(env).sort()) {
+    if (!name.startsWith(PLUGIN_PREFIX) || PLUGIN_RESERVED.has(name)) continue;
+    const v = env[name];
+    if (v === undefined) continue;
+    const setting = name.slice(PLUGIN_PREFIX.length).toLowerCase();
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(setting)) {
+      throw new ConfigError(`${name} is not a valid plugin setting name. After RELAY_PLUGIN_, use a letter, then letters, digits or _ (at most 64).`);
+    }
+    settings[setting] = v;
+  }
+  return settings;
+}
+
+/** The plugin from RELAY_PLUGIN or RELAY_PLUGIN_URL, or null. */
+function pluginOf(env: Env): PluginSettings | null {
+  const command = value(env, "RELAY_PLUGIN");
+  const url = value(env, "RELAY_PLUGIN_URL");
+  if (command !== undefined && url !== undefined) {
+    throw new ConfigError("Set RELAY_PLUGIN or RELAY_PLUGIN_URL, not both.");
+  }
+  if (command === undefined && url === undefined) {
+    if (value(env, "RELAY_PLUGIN_TOKEN") !== undefined) throw new ConfigError("RELAY_PLUGIN_TOKEN is set, but RELAY_PLUGIN_URL is not.");
+    return null;
+  }
+  if (value(env, "RELAY_STORE") !== undefined) {
+    throw new ConfigError(`Set RELAY_STORE or ${command !== undefined ? "RELAY_PLUGIN" : "RELAY_PLUGIN_URL"}, not both. A plugin is the relay's store.`);
+  }
+  const settings = pluginSettingsOf(env);
+  if (command !== undefined) {
+    if (value(env, "RELAY_PLUGIN_TOKEN") !== undefined) throw new ConfigError("RELAY_PLUGIN_TOKEN is for RELAY_PLUGIN_URL only.");
+    const words = splitCommand(command);
+    if (words.length === 0) throw new ConfigError("RELAY_PLUGIN has no command.");
+    return { transport: "stdio", command: words[0], args: words.slice(1), settings, from: "RELAY_PLUGIN" };
+  }
+  validUrl(url!, "RELAY_PLUGIN_URL");
+  const protocol = new URL(url!).protocol;
+  if (protocol !== "http:" && protocol !== "https:") throw new ConfigError("RELAY_PLUGIN_URL must be an http or https URL.");
+  const token = value(env, "RELAY_PLUGIN_TOKEN");
+  return { transport: "http", url: url!, ...(token ? { token } : {}), settings, from: "RELAY_PLUGIN_URL" };
+}
+
 /** The store from RELAY_STORE, else Temporal when TEMPORAL_ADDRESS is set, else JSON. */
 function storeOf(env: Env): { store: StoreKind; storeReason: StoreReason } {
   const given = value(env, "RELAY_STORE");
@@ -199,7 +304,8 @@ function storeOf(env: Env): { store: StoreKind; storeReason: StoreReason } {
 /** Read the configuration from the environment. Throws a ConfigError that names the setting. */
 export function loadConfig(env: Env): Config {
   const ownerPasswordHash = value(env, "OWNER_PASSWORD_HASH");
-  const { store, storeReason } = storeOf(env);
+  const plugin = pluginOf(env);
+  const { store, storeReason } = plugin ? { store: "plugin" as const, storeReason: "plugin" as const } : storeOf(env);
   const missing: string[] = [];
   if (!value(env, "PUBLIC_URL")) missing.push("PUBLIC_URL");
   if (!ownerPasswordHash) missing.push("OWNER_PASSWORD_HASH");
@@ -252,5 +358,6 @@ export function loadConfig(env: Env): Config {
     attachmentMaxBytes: positiveInt(env, "ATTACHMENT_MAX_BYTES", DEFAULT_ATTACHMENT_MAX_BYTES),
     payloadKeys: store === "temporal" ? parsePayloadKeys(value(env, "PAYLOAD_KEYS")!) : null,
     uiOrigin,
+    plugin,
   };
 }

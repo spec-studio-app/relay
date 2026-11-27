@@ -29,8 +29,19 @@ function fail(error: unknown): never {
 async function pairCode(): Promise<void> {
   const config = loadConfig(process.env);
   // The JSON store writes the config file under its lock; the Temporal store
-  // sends an update that the running relay's worker applies.
-  const store = await openStore(config, { bucket: null, log: consoleLogger, worker: false });
+  // sends an update that the running relay's worker applies; the plugin store
+  // does a read, apply, write with the read version.
+  const stdioHint =
+    "A plugin whose storage the running relay holds cannot take a second process: stop the relay, run the command, and start the relay again, or run the plugin as a sidecar (RELAY_PLUGIN_URL).";
+  const stdioPlugin = config.store === "plugin" && config.plugin?.transport === "stdio";
+  let store: Awaited<ReturnType<typeof openStore>>;
+  try {
+    store = await openStore(config, { bucket: null, log: consoleLogger, worker: false });
+  } catch (error) {
+    // A stdio plugin that the relay holds fails at its start, here.
+    if (stdioPlugin && error instanceof StartupError) throw new StartupError(`${error.message} ${stdioHint}`);
+    throw error;
+  }
   let code: string;
   try {
     code = await newPairCodeIn(store.config);
@@ -40,7 +51,9 @@ async function pairCode(): Promise<void> {
     throw new StartupError(
       config.store === "json"
         ? "The relay cannot make a pairing code. Run the command with the same RELAY_DATA_DIR as the relay, then try again."
-        : "The relay cannot make a pairing code. Check that the relay runs with the same settings, then try again.",
+        : stdioPlugin
+          ? `The relay cannot make a pairing code. Run the command with the same RELAY_PLUGIN settings as the relay. ${stdioHint}`
+          : "The relay cannot make a pairing code. Check that the relay runs with the same settings, then try again.",
     );
   }
   process.stdout.write(pairingText(config, code) + "\n");

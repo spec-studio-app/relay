@@ -1,5 +1,7 @@
 {{- $secret := include "relay.secretName" . }}
 {{- $store := include "relay.store" . }}
+{{- $data := include "relay.dataVolume" . }}
+{{- $plugin := fromYaml (include "relay.plugin" .) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,7 +41,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
-        {{- if eq $store "json" }}
+        {{- if $data }}
         # The volume of the JSON store belongs to the relay's group.
         fsGroup: 1000
         {{- end }}
@@ -60,12 +62,28 @@ spec:
               value: {{ required "publicUrl is required (the public origin of the relay)" .Values.publicUrl | quote }}
             - name: DEPLOY_ID
               value: {{ .Values.deployId | quote }}
+            {{- if eq $store "plugin" }}
+            {{- if $plugin.command }}
+            - name: RELAY_PLUGIN
+              value: {{ $plugin.command | quote }}
+            {{- else }}
+            - name: RELAY_PLUGIN_URL
+              value: {{ ($plugin.url | default (printf "http://127.0.0.1:%s/rpc" (include "relay.text" $plugin.sidecar.port))) | quote }}
+            {{- include "relay.secretEnv" (dict "name" "RELAY_PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" $plugin.sidecar.enabled) | nindent 12 }}
+            {{- end }}
+            {{- /* From .Values, not $plugin: the YAML round trip of relay.plugin would lose the digits of a large --set number. */}}
+            {{- range $name, $value := (.Values.plugin | default dict).settings }}
+            - name: {{ printf "RELAY_PLUGIN_%s" (upper $name) }}
+              value: {{ include "relay.text" $value | quote }}
+            {{- end }}
+            {{- else }}
             - name: RELAY_STORE
               value: {{ $store | quote }}
+            {{- end }}
             {{- if eq $store "json" }}
             - name: RELAY_DATA_DIR
               value: /data
-            {{- else }}
+            {{- else if eq $store "temporal" }}
             - name: TEMPORAL_ADDRESS
               value: {{ required "temporal.address is required with store: temporal" .Values.temporal.address | quote }}
             - name: TEMPORAL_NAMESPACE
@@ -135,7 +153,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if eq $store "json" }}
+            {{- if and $data (not $plugin.sidecar.enabled) }}
             - name: data
               mountPath: /data
             {{- end }}
@@ -143,10 +161,43 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if and (eq $store "plugin") $plugin.sidecar.enabled }}
+        {{- with $plugin.sidecar }}
+        # The backend plugin, as a sidecar. It listens on the pod's loopback
+        # only, and the relay calls it with the token.
+        - name: plugin
+          image: {{ required "plugin.sidecar.image is required with plugin.sidecar.enabled" .image | quote }}
+          imagePullPolicy: {{ .pullPolicy | default "IfNotPresent" }}
+          args:
+            - --listen
+            - {{ printf "127.0.0.1:%s" (include "relay.text" .port) | quote }}
+            {{- range ((($.Values.plugin | default dict).sidecar | default dict).args | default list) }}
+            - {{ include "relay.text" . | quote }}
+            {{- end }}
+          env:
+            {{- include "relay.secretEnv" (dict "name" "PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" true) | nindent 12 }}
+            {{- with .env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- if .dataPath }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .dataPath | quote }}
+          {{- end }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if eq $store "json" }}
+        {{- if $data }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "relay.claimName" . }}

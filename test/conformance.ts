@@ -51,9 +51,9 @@ function repo(): string {
 const sharedMessage: (m: Message) => Pick<Message, "from" | "text" | "replyTo" | "attachments"> = (m) => m;
 void sharedMessage;
 
-export function runConformance(label: string, open: () => Promise<StoreUnderTest>): void {
+export function runConformance(label: string, open: () => Promise<StoreUnderTest>, skip: string | false = false): void {
   const scenario = (name: string, fn: (s: StoreUnderTest) => Promise<void>) =>
-    test(`${label}: ${name}`, async () => {
+    test(`${label}: ${name}`, { skip }, async () => {
       const store = await open();
       try {
         await fn(store);

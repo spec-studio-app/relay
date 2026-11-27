@@ -40,3 +40,16 @@ export class DeskRefusedError extends Error {
     super(reason || DESK_OFF_TEXT);
   }
 }
+
+/** The text of StoreUnavailableError: the tools answer it while the store is down. */
+export const STORE_UNAVAILABLE_TEXT = "The relay's store is not available. Try again in a minute.";
+
+/** The store does not answer now: a plugin that restarts, or a write that lost too many races. */
+export class StoreUnavailableError extends Error {
+  constructor() {
+    super(STORE_UNAVAILABLE_TEXT);
+  }
+}
+
+/** The store refused the call, for example a value over the plugin's size limit. The message is the store's reason. */
+export class StoreRefusedError extends Error {}

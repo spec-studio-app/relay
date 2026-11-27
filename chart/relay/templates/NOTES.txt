@@ -1,5 +1,5 @@
 The relay starts at {{ .Values.publicUrl }}.
-It keeps its state in {{ if eq (include "relay.store" .) "json" }}files on the volume {{ include "relay.claimName" . }}{{ else }}Temporal at {{ .Values.temporal.address }}{{ end }}.
+It keeps its state in {{ $store := include "relay.store" . }}{{ if eq $store "json" }}files on the volume {{ include "relay.claimName" . }}{{ else if eq $store "plugin" }}a backend plugin{{ $p := fromYaml (include "relay.plugin" .) }} ({{ $p.command | default $p.url | default $p.sidecar.image }}){{ else }}Temporal at {{ .Values.temporal.address }}{{ end }}.
 
 On its first start it prints a pairing code. Read it with:
 
@@ -8,6 +8,12 @@ On its first start it prints a pairing code. Read it with:
 For a new code:
 
   kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "relay.fullname" . }} -- relay pair-code
+{{- if (fromYaml (include "relay.plugin" .)).command }}
+
+With plugin.command, a plugin that locks its storage refuses that command
+while the relay runs: scale the relay to 0, run relay pair-code in a one-off
+pod with the same settings and volume, then scale it back to 1 (see the README).
+{{- end }}
 
 Then pair the Mac: Spec Studio > Settings > Remote Relay, or
   studio agent pair {{ .Values.publicUrl | replace "https://" "wss://" | replace "http://" "ws://" }}/agent <code>

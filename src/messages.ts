@@ -2,7 +2,7 @@
 // spec store and the desk store, with the Mac online or offline. A repo with a
 // slug means the spec; a repo with no slug means the repo's desk.
 import { repoKeyOf } from "./store/address.js";
-import { DeskNotFoundError, DeskRefusedError, SpecClosingError, SpecDroppedError, SpecNotFoundError } from "./store/errors.js";
+import { DeskNotFoundError, DeskRefusedError, SpecClosingError, SpecDroppedError, SpecNotFoundError, StoreRefusedError, StoreUnavailableError } from "./store/errors.js";
 import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
@@ -130,6 +130,8 @@ export class MessageTools {
       }
       if (error instanceof DeskRefusedError) return { ok: false, text: deskRefusal(error.message) };
       if (error instanceof DeskNotFoundError) return { ok: false, text: await this.noDesk(str(args.repo) ?? "") };
+      if (error instanceof StoreUnavailableError) return { ok: false, text: error.message };
+      if (error instanceof StoreRefusedError) return { ok: false, text: `The relay's store refused the call: ${error.message}` };
       return { ok: false, text: "The relay cannot reach its store now. Try again later." };
     }
   }

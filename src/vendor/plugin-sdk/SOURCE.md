@@ -1,0 +1,5 @@
+# The plugin-sdk TypeScript host client (a copy)
+
+These files are a copy of `ts/src/` in [spec-studio-app/plugin-sdk](https://github.com/spec-studio-app/plugin-sdk), at commit `394b06fac3b99e4255f69453ffe51eadf7b94d19` (the merged protocol 1.0).
+
+The npm package `@spec-studio-app/plugin-sdk` is not published yet. When it is, the relay depends on it and this folder goes. Do not change these files here: change them in plugin-sdk, then copy them again.

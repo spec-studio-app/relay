@@ -19,6 +19,7 @@ import { repoKeyOf, specAddress } from "../src/store/address.js";
 import { openJsonStore } from "../src/store/json/index.js";
 import { MemoryBucket } from "../src/bucket.js";
 import { harness, startTestServer } from "./temporal.js";
+import { memoryStore, skipWithoutPlugin } from "./plugin.js";
 
 interface DesksUnderTest {
   desks: DeskStore;
@@ -56,9 +57,9 @@ function reply(line: number, id: string, text: string, over: Record<string, unkn
   return { line, event: { t: "2026-11-24T10:00:00Z", kind: "message", id, text, ...over } };
 }
 
-function runDeskConformance(label: string, open: () => Promise<DesksUnderTest>): void {
+function runDeskConformance(label: string, open: () => Promise<DesksUnderTest>, skip: string | false = false): void {
   const scenario = (name: string, fn: (s: DesksUnderTest) => Promise<void>) =>
-    test(`${label}: ${name}`, async () => {
+    test(`${label}: ${name}`, { skip }, async () => {
       const store = await open();
       try {
         await fn(store);
@@ -395,6 +396,19 @@ before(async () => {
 after(async () => {
   await env?.teardown();
 });
+
+// ---- the plugin store (relay-plugin-host R3.S1) ----
+
+for (const transport of ["stdio", "http"] as const) {
+  runDeskConformance(
+    `Plugin desk store (memory, ${transport})`,
+    async () => {
+      const s = await memoryStore(transport);
+      return { desks: s.store.desks, specs: s.store.specs, close: () => s.close() };
+    },
+    skipWithoutPlugin(),
+  );
+}
 
 runDeskConformance("Temporal desk store", async () => {
   const h = await harness(env, { graceMs: 60_000 });

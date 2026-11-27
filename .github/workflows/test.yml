@@ -19,6 +19,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The plugin store tests run against the plugin-sdk memory plugin, at the
+      # commit of the copied client (src/vendor/plugin-sdk/SOURCE.md).
+      - uses: actions/checkout@v4
+        with:
+          repository: spec-studio-app/plugin-sdk
+          ref: 394b06fac3b99e4255f69453ffe51eadf7b94d19
+          path: .plugin-sdk
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+      - name: Build the memory plugin
+        run: |
+          (cd .plugin-sdk/examples/memory && go build -o "$RUNNER_TEMP/memory" .)
+          echo "RELAY_TEST_PLUGIN=$RUNNER_TEMP/memory" >> "$GITHUB_ENV"
+          echo "RELAY_REQUIRE_PLUGIN=1" >> "$GITHUB_ENV"
       # The tests run a Temporal dev server from the Temporal CLI.
       - name: Install the Temporal CLI
         run: |
