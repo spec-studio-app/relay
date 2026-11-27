@@ -8,7 +8,8 @@ import type { RelayStore } from "./types.js";
 export type { RelayStore, SpecStore, DeskStore, RelayConfigStore, ListedSpec, ListedDesk, SpecRef, StoreKind } from "./types.js";
 
 /** Why the relay uses its store, for the log. */
-export function storeReasonText(config: Pick<Config, "store" | "storeReason">): string {
+export function storeReasonText(config: Pick<Config, "store" | "storeReason"> & { plugin?: Config["plugin"] }): string {
+  if (config.storeReason === "plugin") return `${config.plugin?.from ?? "RELAY_PLUGIN"} is set`;
   if (config.storeReason === "set") return `RELAY_STORE is ${config.store}`;
   if (config.storeReason === "temporal-address") return "RELAY_STORE is not set and TEMPORAL_ADDRESS is set";
   return "RELAY_STORE is not set";

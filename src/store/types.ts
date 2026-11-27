@@ -25,7 +25,7 @@ import type {
 
 export type { DeskListFilter, ListFilter, TokenPair };
 
-export type StoreKind = "json" | "temporal";
+export type StoreKind = "json" | "temporal" | "plugin";
 
 /** A spec by its repo key and slug. */
 export interface SpecRef {

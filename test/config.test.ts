@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { ConfigError, loadConfig, parsePayloadKeys } from "../src/config.js";
+import { ConfigError, loadConfig, parsePayloadKeys, splitCommand } from "../src/config.js";
 
 const BCRYPT = "$2b$12$" + "a".repeat(53);
 const DATA_KEY = randomBytes(32).toString("base64");
@@ -163,4 +163,67 @@ test("other settings: bad values name the setting", () => {
   assert.match(errorOf({ ...validEnv(), PORT: "x" }), /PORT/);
   assert.match(errorOf({ ...validEnv(), CALL_TIMEOUT_MS: "0" }), /CALL_TIMEOUT_MS/);
   assert.equal(loadConfig({ ...validEnv(), UI_ORIGIN: "https://ui.example.com/path" }).uiOrigin, "https://ui.example.com");
+});
+
+// relay-plugin-host R1: the plugin settings.
+function jsonEnv(more: Record<string, string> = {}): Record<string, string> {
+  return { PUBLIC_URL: "https://relay.example.com", OWNER_PASSWORD_HASH: BCRYPT, ...more };
+}
+
+test("relay-plugin-host R1.S1: with no plugin setting, the store is chosen as before", () => {
+  assert.equal(loadConfig(jsonEnv()).plugin, null);
+  assert.equal(loadConfig(jsonEnv()).store, "json");
+  assert.equal(loadConfig(validEnv()).store, "temporal");
+  assert.equal(loadConfig(validEnv()).plugin, null);
+  assert.equal(loadConfig(jsonEnv({ RELAY_STORE: "json" })).storeReason, "set");
+});
+
+test("relay-plugin-host R1.S2: RELAY_PLUGIN is a command with arguments, split as a shell does", () => {
+  const config = loadConfig(jsonEnv({ RELAY_PLUGIN: `/usr/local/bin/memory --data "/data/my file.json" --name 'a b' c\\ d` }));
+  assert.equal(config.store, "plugin");
+  assert.equal(config.storeReason, "plugin");
+  assert.deepEqual(config.plugin, {
+    transport: "stdio",
+    command: "/usr/local/bin/memory",
+    args: ["--data", "/data/my file.json", "--name", "a b", "c d"],
+    settings: {},
+    from: "RELAY_PLUGIN",
+  });
+  assert.deepEqual(splitCommand("  a   b  "), ["a", "b"]);
+  assert.deepEqual(splitCommand(`a "" b`), ["a", "", "b"]);
+  assert.deepEqual(splitCommand("echo $HOME | x"), ["echo", "$HOME", "|", "x"], "no shell features");
+  assert.match(errorOf(jsonEnv({ RELAY_PLUGIN: `memory "--data` })), /quote/);
+});
+
+test("relay-plugin-host R1.S3: RELAY_PLUGIN_URL with RELAY_PLUGIN_TOKEN is an HTTP plugin", () => {
+  const config = loadConfig(jsonEnv({ RELAY_PLUGIN_URL: "http://plugin:7070/rpc", RELAY_PLUGIN_TOKEN: "tok-123" }));
+  assert.equal(config.store, "plugin");
+  assert.deepEqual(config.plugin, { transport: "http", url: "http://plugin:7070/rpc", token: "tok-123", settings: {}, from: "RELAY_PLUGIN_URL" });
+  assert.match(errorOf(jsonEnv({ RELAY_PLUGIN_URL: "not a url" })), /RELAY_PLUGIN_URL/);
+  assert.match(errorOf(jsonEnv({ RELAY_PLUGIN_URL: "ftp://x/rpc" })), /http or https/);
+});
+
+test("relay-plugin-host R1.S4: RELAY_PLUGIN_<NAME> passes as the setting <name>; the URL and the token do not", () => {
+  const config = loadConfig(
+    jsonEnv({ RELAY_PLUGIN_URL: "http://plugin:7070/rpc", RELAY_PLUGIN_TOKEN: "t", RELAY_PLUGIN_ADDRESS: "temporal:7233", RELAY_PLUGIN_API_KEY: "secret" }),
+  );
+  assert.deepEqual(config.plugin?.settings, { address: "temporal:7233", api_key: "secret" });
+  const message = errorOf(jsonEnv({ RELAY_PLUGIN: "memory", RELAY_PLUGIN_9X: "hidden-value" }));
+  assert.match(message, /RELAY_PLUGIN_9X/);
+  assert.ok(!message.includes("hidden-value"));
+});
+
+test("relay-plugin-host R1.S5: settings that conflict stop the start, and the message holds no value", () => {
+  const cases: Array<[Record<string, string>, RegExp]> = [
+    [{ RELAY_PLUGIN: "memory --secret-arg", RELAY_PLUGIN_URL: "http://p:7070/rpc" }, /RELAY_PLUGIN or RELAY_PLUGIN_URL/],
+    [{ RELAY_PLUGIN: "memory --secret-arg", RELAY_STORE: "json" }, /RELAY_STORE or RELAY_PLUGIN\b/],
+    [{ RELAY_PLUGIN_URL: "http://p:7070/rpc", RELAY_STORE: "temporal" }, /RELAY_STORE or RELAY_PLUGIN_URL/],
+    [{ RELAY_PLUGIN: "memory --secret-arg", RELAY_PLUGIN_TOKEN: "tok-secret" }, /RELAY_PLUGIN_TOKEN/],
+    [{ RELAY_PLUGIN_TOKEN: "tok-secret" }, /RELAY_PLUGIN_TOKEN/],
+  ];
+  for (const [env, pattern] of cases) {
+    const message = errorOf(jsonEnv(env));
+    assert.match(message, pattern);
+    for (const v of Object.values(env)) assert.ok(!message.includes(v), `the message holds ${v}`);
+  }
 });
