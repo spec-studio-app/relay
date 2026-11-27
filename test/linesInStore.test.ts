@@ -314,3 +314,21 @@ test("T41: on a separate store, the close of a spec deletes the stream with only
     await store.close();
   }
 });
+
+test("T43: an activity line that is not a JSON object counts for the line number, but does not go into the mirror", async () => {
+  const store = await openShared();
+  try {
+    const spec = address("text-line");
+    await macCommit(store, "text-line", appState("text-line"), [
+      { kind: "created", t: "2026-11-01T00:00:01Z" },
+      "an old line that is not JSON",
+      { kind: "note", t: "2026-11-01T00:00:03Z", text: "After." },
+    ]);
+    assert.deepEqual(await store.specs.syncFromStore(spec, { first: true }), { line: 3, applied: true });
+    const state = await store.specs.state(spec);
+    assert.deepEqual(state?.events.map((e) => e.line), [1, 3]);
+    assert.ok(state?.events.every((e) => typeof e.event.kind === "string"));
+  } finally {
+    await store.close();
+  }
+});

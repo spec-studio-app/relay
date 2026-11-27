@@ -437,8 +437,10 @@ export class PluginSpecStore implements SpecStore {
       if (event.type !== ACTIVITY_EVENT) continue;
       line += 1;
       const data = event.data;
-      const isLine = typeof data === "object" && data !== null && !Array.isArray(data);
-      lines.push({ line, event: isLine ? (data as Record<string, unknown>) : { value: data } });
+      // A line that is not a JSON object (the import keeps it as text) counts for the
+      // line number, but has nothing to mirror (contract 3), as on the normal sync.
+      if (typeof data !== "object" || data === null || Array.isArray(data)) continue;
+      lines.push({ line, event: data as Record<string, unknown> });
     }
     const last = events.length > 0 ? events[events.length - 1].cursor : from.cursor;
     return { lines, to: { cursor: last, line } };
