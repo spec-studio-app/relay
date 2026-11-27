@@ -170,6 +170,34 @@ test("R5.S3: start_spec and make_spec with no agent fail at once with the Mac is
   }
 });
 
+test("R17.S4: offline list_specs with an area or a project shows all specs and says the filter needs the Mac", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    const { accessToken } = await signIn(t.base);
+    const plain = await callTool(t.base, accessToken, "list_specs", {});
+    assert.ok(!/filter needs the Mac online/.test(plain.content[0].text));
+    for (const [args, word] of [
+      [{ area: "Vendgogh" }, "area"],
+      [{ project: "Backend plugins" }, "project"],
+    ] as const) {
+      const r = await callTool(t.base, accessToken, "list_specs", args);
+      assert.equal(r.isError, undefined);
+      const text = r.content[0].text as string;
+      assert.match(text, new RegExp(`The ${word} filter needs the Mac online\\.`));
+      assert.match(text, /"slug": "alpha"/);
+      assert.match(text, /"slug": "beta"/);
+    }
+    const projects = await callTool(t.base, accessToken, "list_projects", {});
+    assert.equal(projects.isError, true);
+    assert.match(projects.content[0].text, /^The Mac is offline\. The relay did not see the Mac since it started at /);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
 test("online, the read tools still go to the agent", async () => {
   const h = await harness(env);
   const t = await h.relay();

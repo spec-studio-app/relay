@@ -36,8 +36,11 @@ export const TOOLS: ToolDefinition[] = [
       "List the repos in Spec Studio, in sidebar order. Each repo shows its path on the Mac. Use the path as the repo argument of the other tools. " +
       "Each repo also shows its desk: open or closed, its turn, and whether Claude AI can message the desk. " +
       "When the Mac is offline, the list comes from the last connection of the Mac, and the result gives its time. " +
-      "Each desk then shows the time of its last state.",
-    inputSchema: {},
+      "Each desk then shows the time of its last state. " +
+      "Each repo also shows its area.",
+    inputSchema: {
+      area: z.string().min(1).optional().describe("Show only the repos of this area. Give the name of the area."),
+    },
   },
   {
     name: "list_specs",
@@ -46,11 +49,25 @@ export const TOOLS: ToolDefinition[] = [
       "List the open specs of Spec Studio. Each spec shows its title, slug, mode, stage, status, note and turn. " +
       "The list also shows whether the spec needs the user. " +
       "When Spec Studio does not run, the turn comes from state.json, and the result says so. " +
-      "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync.",
+      "Each spec also shows the area of its repo and its project. " +
+      "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync. " +
+      "The relay has no areas and no projects, so an offline list shows all specs and says that the filter needs the Mac online.",
     inputSchema: {
       repo: repo.optional().describe("Show only the specs of this repo. Give the path of the repo on the Mac."),
       all: z.boolean().optional().describe("Also show the specs that are merged or closed."),
+      area: z.string().min(1).optional().describe("Show only the specs of the repos of this area. Give the name of the area."),
+      project: z.string().min(1).optional().describe("Show only the specs of this project. Give the name of the project."),
     },
+  },
+  {
+    name: "list_projects",
+    title: "List the projects",
+    description:
+      "List the projects of Spec Studio. A project is a goal with specs in one or more repos. " +
+      "Each project shows its status, its progress (the specs that shipped of all its specs) and its target date. " +
+      "Each project also shows its newest update, with its health and its note. " +
+      "This tool fails at once when the Mac is offline.",
+    inputSchema: {},
   },
   {
     name: "read_spec",
@@ -68,6 +85,7 @@ export const TOOLS: ToolDefinition[] = [
     title: "Make a spec",
     description:
       "Make a new spec in a repo with a title and a brief. The brief goes into spec.md. " +
+      "Give a project to put the new spec into that project. " +
       "The mode is autopilot or guided. Remote Control is on when you do not give a value. " +
       "Set start to true to start the session of the spec at once. " +
       "The result gives the repo, the slug and the folder of the new spec. " +
@@ -85,6 +103,11 @@ export const TOOLS: ToolDefinition[] = [
         .optional()
         .describe("Turn Remote Control on or off for the session of the spec. On is the default."),
       start: z.boolean().optional().describe("Start the session of the spec at once. Off is the default."),
+      project: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("The name of a project. The new spec goes into this project. Use a name that list_projects gives."),
     },
   },
   {
@@ -97,6 +120,10 @@ export const TOOLS: ToolDefinition[] = [
     inputSchema: { repo, slug },
   },
 ];
+
+/** The start of the answer of an older agent that does not know list_projects. */
+export const UNKNOWN_LIST_PROJECTS_PREFIX = 'The tool "list_projects" does not exist';
+export const UPDATE_FOR_PROJECTS_TEXT = "Update Spec Studio on the Mac to list projects.";
 
 export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
 

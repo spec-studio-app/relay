@@ -100,9 +100,16 @@ export class OfflineTools implements OfflineReader {
       }));
     const times = specs.map((s) => s.syncedAt).filter((t): t is string => !!t).sort();
     const asOf = times.length > 0 ? times[times.length - 1] : null;
+    // The mirror has no areas and no projects, so it cannot filter by them.
+    const filters = [str(args.area) && "area", str(args.project) && "project"].filter(Boolean);
+    const notice =
+      filters.length > 0
+        ? ` The relay does not know the ${filters.join(" and the ")} of a spec, so this list shows all specs. ` +
+          `The ${filters.join(" and ")} filter needs the Mac online.`
+        : "";
     const head =
       `${offlineText} The list comes from the relay's copy of each spec. ` +
-      `Each spec shows the time of its last sync (syncedAt).`;
+      `Each spec shows the time of its last sync (syncedAt).${notice}`;
     return { ok: true, text: `${head}\n${JSON.stringify({ asOf, specs }, null, 2)}` };
   }
 
