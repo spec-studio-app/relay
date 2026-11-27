@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../../log.js";
 import type { Attributes, NewEvent } from "../../vendor/plugin-sdk/index.js";
-import { FINISHED_GRACE_MS, initialSpecState, type Attachment, type Message, type SpecAddress, type SpecMemo, type SpecWorkflowState } from "../../workflows/types.js";
+import { FINISHED_GRACE_MS, STATUS_KINDS, initialSpecState, type Attachment, type Message, type SpecAddress, type SpecMemo, type SpecWorkflowState } from "../../workflows/types.js";
 import {
   MAX_WAIT_MS,
   applyAck,
@@ -37,7 +37,6 @@ import {
   type RuleEnv,
   type StateInput,
   type SyncInput,
-  type SyncLine,
   type SyncResult,
 } from "../../workflows/specRules.js";
 import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors.js";
@@ -79,6 +78,76 @@ interface SpecDoc {
 interface AppCursor {
   cursor: string | null;
   line: number;
+}
+
+const START: AppCursor = { cursor: null, line: 0 };
+
+/** A Mac activity line from the stream. The event is null for a line that is not a JSON object. */
+interface AppLine {
+  line: number;
+  event: Record<string, unknown> | null;
+}
+
+interface AppRead {
+  lines: AppLine[];
+  /** The cursor after the last event read, and the number of the last activity line read. */
+  to: AppCursor;
+}
+
+/** Where a read of the Mac's lines stops. */
+interface ReadBounds {
+  /** The last line to read (the frame's toLine). */
+  toLine?: number;
+  /** No line whose `t` is after this time (the archived list's time, from an older app). */
+  cutAfter?: string;
+}
+
+/** How many lines a first sync takes: all that the mirror keeps (the app's RelaySync.firstSyncTail). */
+export const FIRST_SYNC_TAIL = 20;
+
+/** The error of a file that the Mac did not upload (an app that sends no "attachments" in a linesInStore frame). */
+export const NOT_UPLOADED_TEXT = "The Mac did not upload this file to the relay. Ask the session to send it again.";
+
+/**
+ * The lines of a first sync, by the rule of the Mac's first sync (the app's
+ * RelaySync.syncLines): the last FIRST_SYNC_TAIL lines, and before them each
+ * earlier message line and the newest earlier status change (when the tail
+ * has none), in line order.
+ */
+export function firstSyncLines(lines: AppLine[]): AppLine[] {
+  if (lines.length <= FIRST_SYNC_TAIL) return lines;
+  const kind = (l: AppLine) => (l.event ? String(l.event.kind ?? "") : "");
+  const tail = lines.slice(-FIRST_SYNC_TAIL);
+  const earlier = lines.slice(0, lines.length - FIRST_SYNC_TAIL);
+  const tailHasStatus = tail.some((l) => STATUS_KINDS.has(kind(l)));
+  const status = tailHasStatus ? undefined : [...earlier].reverse().find((l) => STATUS_KINDS.has(kind(l)))?.line;
+  return [...earlier.filter((l) => kind(l) === "message" || l.line === status), ...tail];
+}
+
+/** True when both states have a createdAt and they differ: the Mac's spec is another spec than the mirror's. */
+function otherCreatedAt(mirror: Record<string, unknown> | null, app: Record<string, unknown> | null): boolean {
+  const was = mirror?.createdAt;
+  const now = app?.createdAt;
+  return typeof was === "string" && typeof now === "string" && was !== now;
+}
+
+/**
+ * A message event as Claude AI may see it: its attachments are the ones that
+ * the Mac uploaded (the frame's attachments for this line). Without them, an
+ * attachment with no objectKey and no error gets NOT_UPLOADED_TEXT. The
+ * Mac-local path never goes into the mirror.
+ */
+function withUploads(line: number, event: Record<string, unknown>, uploads: StoreSyncInput["attachments"]): Record<string, unknown> {
+  if (event.kind !== "message" || !Array.isArray(event.attachments)) return event;
+  const given = uploads?.get(line);
+  const list = (given ?? event.attachments).filter((a): a is Record<string, unknown> => typeof a === "object" && a !== null && !Array.isArray(a));
+  const attachments = list.map((a) => {
+    const { path: _path, ...rest } = a;
+    const uploaded = typeof rest.objectKey === "string" && rest.objectKey !== "";
+    const failed = typeof rest.error === "string" && rest.error !== "";
+    return uploaded || failed ? rest : { ...rest, error: NOT_UPLOADED_TEXT };
+  });
+  return { ...event, attachments };
 }
 
 interface ClosedDoc {
@@ -356,9 +425,18 @@ export class PluginSpecStore implements SpecStore {
    * A sync frame with "linesInStore" (contract 4): read the Mac's state from
    * `app-specs` and the Mac's activity events after the spec's cursor, apply
    * them with applySync, and keep the new cursor in the same write. The
-   * events are in the stream already, so nothing is appended. A first sync
-   * reads the stream from its start; applySync skips the lines that the spec
-   * has.
+   * events are in the stream already, so nothing is appended.
+   *
+   * The rules of the normal sync hold: the read stops at the frame's
+   * `toLine` (or, from an older app, at the archived list's time for an
+   * archived repo); a first sync takes the short first-sync lines
+   * (firstSyncLines); a message's files are the ones that the Mac uploaded,
+   * or carry an error.
+   *
+   * The read starts again from the stream's start, as a first sync, when the
+   * kept cursor no longer fits the stream: the plugin refuses the cursor, or
+   * the Mac's state has another createdAt than the mirror (the Mac deleted
+   * the spec, its stream with it, and made a new spec with the same slug).
    */
   async syncFromStore(spec: SpecAddress, input: StoreSyncInput): Promise<SyncResult> {
     const key = specKey(spec);
@@ -377,41 +455,66 @@ export class PluginSpecStore implements SpecStore {
         if (closed && (closed.attributes.deployId !== this.o.deployId || this.nowDate().getTime() - closed.value.closedAt >= CLOSED_KEEP_MS)) closed = null;
         if (closed && !first) return { line: 0, applied: false };
       }
+      const bounds: ReadBounds = {
+        ...(input.toLine !== undefined ? { toLine: input.toLine } : input.archivedCut !== undefined ? { cutAfter: input.archivedCut } : {}),
+      };
       for (let tries = 0; tries < MAX_TRIES; tries++) {
         if (tries > 0) doc = await this.readDoc(spec);
-        const from: AppCursor = first || !doc?.value.app ? { cursor: null, line: 0 } : doc.value.app;
-        const read = await this.readAppLines(spec, from);
         const appDoc = await this.docs.get<Record<string, unknown>>(APP_SPECS, key);
         const appState = appDoc && typeof appDoc.value === "object" && appDoc.value !== null && !Array.isArray(appDoc.value) ? appDoc.value : null;
+        // A new spec with the same slug: its stream started again, so the kept cursor does not count.
+        const otherSpec = !first && doc !== null && otherCreatedAt(doc.value.state.state, appState);
+        let restart = first || otherSpec;
+        let from: AppCursor = restart || !doc?.value.app ? START : doc.value.app;
+        let read: AppRead;
+        try {
+          read = await this.readAppLines(spec, from, bounds);
+        } catch (error) {
+          // The plugin refuses the kept cursor (the stream was deleted): read from the start.
+          if (!(error instanceof StoreRefusedError) || from.cursor === null) throw error;
+          this.o.log({ event: "app_cursor_reset" });
+          restart = true;
+          from = START;
+          read = await this.readAppLines(spec, from, bounds);
+        }
+        // The new spec has no line yet: wait for its first line to start its mirror.
+        if (otherSpec && read.lines.length === 0) return { line: 0, applied: false };
+        // A first sync with no mirror yet takes the short first-sync lines, as the Mac's first sync does.
+        const picked = restart || !doc ? firstSyncLines(read.lines) : read.lines;
+        const lines = picked.flatMap((l) => (l.event ? [{ line: l.line, event: withUploads(l.line, l.event, input.attachments) }] : []));
         let after: SpecDoc | null = null;
         try {
           const result = await this.docs.update<SpecDoc, SyncResult>(SPECS, key, (cur) => {
             if (cur && cur.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
             // Another write moved the cursor after this read: read the stream again.
-            if (!first && !isDeepStrictEqual(cur?.value.app ?? null, doc?.value.app ?? null)) throw new CursorMoved();
+            if (!restart && !isDeepStrictEqual(cur?.value.app ?? null, doc?.value.app ?? null)) throw new CursorMoved();
             const state = cur
               ? structuredClone(cur.value.state)
               : initialSpecState(this.o.deployId, { repoKey: spec.repoKey, slug: spec.slug, ...(spec.repo ? { repo: spec.repo } : {}) }, undefined, this.graceMs);
+            // The old spec is gone from the Mac: its run ends, so the first sync of the new spec starts it again (applySync).
+            if (otherSpec && lines.length > 0) state.finished = true;
             // The state and the turn go in only when they changed, so a sync with nothing new changes nothing.
-            const stateChanged = appState !== null && (first || !isDeepStrictEqual(appState, state.state));
+            const stateChanged = appState !== null && (restart || !isDeepStrictEqual(appState, state.state));
             const turnChanged = input.turn !== undefined && !isDeepStrictEqual(input.turn, state.turn);
             const sync: SyncInput = {
-              lines: read.lines,
-              ...(first ? { first: true } : {}),
+              lines,
+              ...(restart ? { first: true } : {}),
               ...(stateChanged || turnChanged ? { state: appState ?? state.state } : {}),
               ...(input.turn !== undefined ? { turn: input.turn } : {}),
               ...(spec.repo ? { repo: spec.repo } : {}),
               at: this.env.now(),
             };
             const out = applySync(state, sync, this.env);
+            // The Mac's cursor goes to the last line that the relay read, also when that line had nothing to mirror.
+            const answer: SyncResult = { ...out.result, line: Math.max(out.result.line, read.to.line) };
             const moved = !isDeepStrictEqual(read.to, cur?.value.app ?? null);
             if (!out.changed && (!cur || !moved)) {
               after = cur?.value ?? null;
-              return { result: out.result };
+              return { result: answer };
             }
             const lastActivityAt = out.changed || !cur ? this.nowDate().getTime() : cur.value.lastActivityAt;
             after = { version: 1, state, lastActivityAt, app: read.to };
-            return { write: { value: after, attributes: attributesOf(state) }, result: out.result };
+            return { write: { value: after, attributes: attributesOf(state) }, result: answer };
           });
           if (closed) await this.docs.remove(CLOSED_SPECS, key).catch(() => this.o.log({ event: "closed_record_remove_failed" }));
           const kept = after as SpecDoc | null;
@@ -426,24 +529,40 @@ export class PluginSpecStore implements SpecStore {
     });
   }
 
-  /** The Mac's activity events after the cursor, as sync lines: the n-th activity event of the stream is line n. */
-  private async readAppLines(spec: SpecRef, from: AppCursor): Promise<{ lines: SyncLine[]; to: AppCursor }> {
+  /**
+   * The Mac's activity events after the cursor: the n-th activity event of
+   * the stream is line n. A line that is not a JSON object has a null event
+   * (it counts for the number, and has nothing to mirror). The read stops
+   * before the first line past the bounds, and the cursor stays before it,
+   * so a later sync reads it.
+   */
+  private async readAppLines(spec: SpecRef, from: AppCursor, bounds: ReadBounds): Promise<AppRead> {
     const limit = this.docs.client.info.limits.maxPageSize;
-    const events = await guard(() => this.docs.client.events.readAll({ stream: specStream(spec), after: from.cursor, limit }));
-    const lines: SyncLine[] = [];
-    let line = from.line;
-    for (const event of events) {
-      // The relay's own events in the stream (sync, message) are not lines of the Mac.
-      if (event.type !== ACTIVITY_EVENT) continue;
-      line += 1;
-      const data = event.data;
-      // A line that is not a JSON object (the import keeps it as text) counts for the
-      // line number, but has nothing to mirror (contract 3), as on the normal sync.
-      if (typeof data !== "object" || data === null || Array.isArray(data)) continue;
-      lines.push({ line, event: data as Record<string, unknown> });
+    const cutAfter = bounds.cutAfter !== undefined ? Date.parse(bounds.cutAfter) : NaN;
+    const lines: AppLine[] = [];
+    let to: AppCursor = from;
+    let after = from.cursor;
+    for (;;) {
+      const page = await guard(() => this.docs.client.events.read({ stream: specStream(spec), after, limit }));
+      for (const event of page.events) {
+        // The relay's own events in the stream (sync, message) are not lines of the Mac.
+        if (event.type === ACTIVITY_EVENT) {
+          const line = to.line + 1;
+          const data = event.data;
+          // A line that is not a JSON object (the import keeps it as text) counts for the
+          // line number, but has nothing to mirror (contract 3), as on the normal sync.
+          const object = typeof data === "object" && data !== null && !Array.isArray(data) ? (data as Record<string, unknown>) : null;
+          if (bounds.toLine !== undefined && line > bounds.toLine) return { lines, to };
+          if (!Number.isNaN(cutAfter) && object && typeof object.t === "string" && Date.parse(object.t) > cutAfter) return { lines, to };
+          lines.push({ line, event: object });
+          to = { cursor: event.cursor, line };
+        } else {
+          to = { cursor: event.cursor, line: to.line };
+        }
+      }
+      if (!page.more || page.events.length === 0) return { lines, to };
+      after = page.cursor;
     }
-    const last = events.length > 0 ? events[events.length - 1].cursor : from.cursor;
-    return { lines, to: { cursor: last, line } };
   }
 
   async state(spec: SpecRef): Promise<SpecWorkflowState | null> {

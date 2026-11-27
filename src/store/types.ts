@@ -40,6 +40,23 @@ export interface StoreSyncInput {
   first?: boolean;
   /** The turn of the frame. Missing: keep the spec's turn. */
   turn?: SpecWorkflowState["turn"];
+  /**
+   * The frame's "toLine": the last activity line that the Mac lets go up (the
+   * archive cut of an archived repo, or the line before a message whose files
+   * wait). The relay reads no line after it. Missing (an older app): no limit.
+   */
+  toLine?: number;
+  /**
+   * With no toLine, for a repo in the relay's archived list: the time of that
+   * list. The relay reads no line whose `t` is after it. The adapter sets it.
+   */
+  archivedCut?: string;
+  /**
+   * The frame's "attachments": for a message line, its attachments as the Mac
+   * uploaded them (objectKey, or an error), in place of the stream's local
+   * paths. By line number.
+   */
+  attachments?: ReadonlyMap<number, Array<Record<string, unknown>>>;
 }
 
 /** The store that the relay uses, for the welcome: the plugin's name and its storeId. */

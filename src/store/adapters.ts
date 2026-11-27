@@ -6,6 +6,7 @@ import type { AgentBackend } from "../backend.js";
 import type { Attachments } from "../attachments.js";
 import type { DeskAddress, DeskMessage, Message, SpecAddress, StoredClient } from "../workflows/types.js";
 import type { DeskStore, RelayConfigStore, SpecStore, StoreIdentity } from "./types.js";
+import { repoKeyOf } from "./address.js";
 
 /** The OAuth provider's store in the relay's config store (R9.S4 of studio-relay). */
 export function storeOAuthStore(store: RelayConfigStore): OAuthStore {
@@ -40,7 +41,14 @@ export function storeAgentBackend(deps: {
     ...(identity && specs.syncFromStore
       ? {
           store: identity,
-          syncFromStore: (spec, input) => specs.syncFromStore!(spec, input),
+          async syncFromStore(spec, input) {
+            // An older app sends no toLine: for a spec of an archived repo, the
+            // archived list's time is the latest cut that the relay knows.
+            if (input.toLine !== undefined) return specs.syncFromStore!(spec, input);
+            const archived = await deps.config.archivedRepos().catch(() => null);
+            const cut = archived?.repos.some((path) => repoKeyOf(path) === spec.repoKey) ? archived.at : undefined;
+            return specs.syncFromStore!(spec, { ...input, ...(cut ? { archivedCut: cut } : {}) });
+          },
         }
       : {}),
     ...(desks

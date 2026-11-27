@@ -55,10 +55,20 @@
 // handshake, the welcome has "store": {"plugin":"<name>","storeId":"<id>"}.
 // When the app's store has the same storeId, the agent sends sync frames with
 // no lines and no state:
-//   agent -> relay: {"type":"sync","spec":{...},"linesInStore":true,"first":true?,"turn":{...}|null?}
+//   agent -> relay: {"type":"sync","spec":{...},"linesInStore":true,"first":true?,"turn":{...}|null?,
+//                    "toLine":<n>?,"attachments":[{"line":<n>,"attachments":[...]}]?}
 //     The relay reads the Mac's state from document app-specs/<repoKey>:<slug>
 //     and the Mac's activity events from stream spec:<repoKey>:<slug> after
 //     its cursor, and applies them as a sync. It does not append them again.
+//     The rules of the normal sync hold: no line after "toLine" (the archive
+//     cut, or the line before a message whose files wait; an older app sends
+//     none: then, for a repo in the archived list, no line logged after that
+//     list's time), the short first sync, and no line that is not JSON.
+//     "attachments" gives, for a message line, its files as the Mac uploaded
+//     them (objectKey or error). A message file with neither gets an error.
+//     When the kept cursor no longer fits the stream (the plugin refuses it,
+//     or the Mac's state has another createdAt), the relay reads from the
+//     stream's start as a first sync.
 //   relay -> agent: {"type":"synced","spec":{...},"linesInStore":true,"line":<last line>}
 //     With an "error" field when the relay did not apply them. A relay with
 //     no "store" in its welcome refuses such a frame.
@@ -926,9 +936,11 @@ export class AgentHub {
   private syncFromStore(ws: WebSocket, m: Record<string, unknown>): void {
     const backend = this.options.backend;
     const spec = parseSpec(m.spec);
+    const toLine = m.toLine === undefined ? undefined : parseToLine(m.toLine);
+    const uploads = m.attachments === undefined ? undefined : parseUploads(m.attachments);
     const refused =
       this.notWelcomed(ws) ??
-      (!spec
+      (!spec || toLine === null || uploads === null
         ? "The sync frame is not valid."
         : "lines" in m || "state" in m
           ? "A sync frame with linesInStore has no lines and no state."
@@ -950,6 +962,8 @@ export class AgentHub {
         const result = await syncFromStore(spec, {
           ...(m.first === true ? { first: true } : {}),
           ...("turn" in m ? { turn: parseTurn(m.turn) } : {}),
+          ...(toLine !== undefined && toLine !== null ? { toLine } : {}),
+          ...(uploads ? { attachments: uploads } : {}),
         });
         this.send(ws, { type: "synced", spec: wireSpec(spec), linesInStore: true, line: result.line });
       } catch {
@@ -1237,6 +1251,33 @@ export function parseLines(value: unknown): Array<{ line: number; event: Record<
     lines.push({ line, event });
   }
   return lines;
+}
+
+/** The "toLine" of a linesInStore sync frame: an integer of 0 or more. Null when it breaks the rule. */
+export function parseToLine(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** The most attachments that one message line of a linesInStore frame may carry. */
+export const MAX_LINE_ATTACHMENTS = 100;
+
+/**
+ * The "attachments" of a linesInStore sync frame: for each message line with
+ * files, the attachments as the Mac uploaded them,
+ * [{"line":<n>,"attachments":[{objectKey|error, filename, contentType, size, sha256}]}].
+ * Null when the list breaks a rule.
+ */
+export function parseUploads(value: unknown): Map<number, Array<Record<string, unknown>>> | null {
+  if (!Array.isArray(value) || value.length > MAX_SYNC_LINES) return null;
+  const out = new Map<number, Array<Record<string, unknown>>>();
+  for (const item of value) {
+    if (!isObject(item)) return null;
+    const { line, attachments } = item;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 1 || out.has(line)) return null;
+    if (!Array.isArray(attachments) || attachments.length > MAX_LINE_ATTACHMENTS || !attachments.every(isObject)) return null;
+    out.set(line, attachments as Array<Record<string, unknown>>);
+  }
+  return out;
 }
 
 /** The line number of the last entry of a frame's lines, for an error answer. Null when there is none. */
