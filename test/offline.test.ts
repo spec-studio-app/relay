@@ -5,6 +5,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn } from "./helpers.js";
 import { repoKeyOf, specAddress } from "../src/mirror.js";
+import { effectiveTurn } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -417,6 +418,66 @@ test("R7.S2: offline read_spec of a paused spec says that the spec is paused, wi
     assert.match(paused.content[0].text, /The spec is paused: Waiting for the API\. Paused at 2026-11-01T10:00:00Z\./);
     const free = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "free" });
     assert.ok(!/The spec is paused/.test(free.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("the fallback turn of a paused spec is paused and needs no user; a merged stage wins over the pause", () => {
+  const paused = { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting" };
+  assert.deepEqual(effectiveTurn(null, show("a", { status: "awaiting-approval", paused })), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("b", { status: "blocked", paused })), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("c", { stage: "merged", status: "idle", paused })), { turn: "merged", needsYou: false });
+  // A turn from the Mac still wins.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("d", { paused })), { turn: "yours", needsYou: true });
+  // No paused object: the status rule as before.
+  assert.deepEqual(effectiveTurn(null, show("e", { status: "awaiting-approval", paused: null })), { turn: "yours", needsYou: true });
+});
+
+test("with no turn from the app, a paused spec needs no user in list_specs, read_spec and the NeedsYou attribute", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    const paused = { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" };
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "status", to: "awaiting-approval" },
+      state: show("held", { status: "awaiting-approval", paused }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "stuck"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("stuck", { status: "blocked", paused }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "waiting"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("waiting", { status: "awaiting-approval" }),
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+    const list = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 3 ? l : null;
+    });
+    const bySlug = Object.fromEntries(list.specs.map((s: any) => [s.slug, s]));
+    assert.deepEqual([bySlug.held.turn, bySlug.held.needsYou], ["paused", false]);
+    assert.deepEqual([bySlug.stuck.turn, bySlug.stuck.needsYou], ["paused", false]);
+    assert.deepEqual([bySlug.waiting.turn, bySlug.waiting.needsYou], ["yours", true]);
+    // Only the spec that is not paused needs the user in the search attribute.
+    const needing = await eventually(async () => {
+      const found: string[] = [];
+      for await (const wf of h.clients.data.workflow.list({ query: `RelayDeployId = '${h.deployId}' AND NeedsYou = true` })) found.push(wf.workflowId);
+      return found.length === 1 ? found : null;
+    });
+    assert.ok(needing[0].endsWith("-waiting"));
+
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(read.content[0].text, /## Turn\n\npaused\. Needs the user: no\./);
   } finally {
     await t.close();
     await h.close();

@@ -189,16 +189,25 @@ export function mirrorFields(state: Record<string, unknown> | null): MirrorField
   };
 }
 
+/** True when the state has a `paused` object (the user paused the spec in Spec Studio). */
+export function isPaused(state: Record<string, unknown> | null): boolean {
+  const paused = state?.paused;
+  return !!paused && typeof paused === "object";
+}
+
 /**
  * The turn of a spec. The sync's turn comes from the app's turns.json; when the
  * app does not run it is null, and the turn comes from the state the way
  * `studio specs` does it: blocked and awaiting-approval need the user.
+ * A merged spec is merged, also when it is paused. A paused spec never needs
+ * the user, whatever its status.
  */
 export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null): Turn | null {
   if (turn) return turn;
   if (!state) return null;
   const { stage, status } = mirrorFields(state);
   if (stage === "merged") return { turn: "merged", needsYou: false };
+  if (isPaused(state)) return { turn: "paused", needsYou: false };
   switch (status) {
     case "blocked":
       return { turn: "blocked", needsYou: true };

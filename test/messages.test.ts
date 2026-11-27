@@ -609,3 +609,22 @@ test("R7.S1: send_message to a paused spec stores the message and says that the 
     await h.close();
   }
 });
+
+test("read_messages of a paused spec with no turn from the app gives the turn paused, which needs no user", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "build", id: "s-1", text: "Paused for now." },
+      state: { slug: "held", title: "held", stage: "build", status: "awaiting-approval", paused: { at: "2026-11-24T14:00:00Z", by: "ross" } },
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+    const read = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "held" }));
+    assert.deepEqual(read.turn, { turn: "paused", needsYou: false });
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
