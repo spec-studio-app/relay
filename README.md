@@ -200,10 +200,11 @@ The tools:
 
 | Tool | Mac online | Mac offline |
 |---|---|---|
-| `list_repos` | The Mac answers. Each repo shows its desk. | The repos from the last connection of the Mac, with its time, and the last state of each desk, with its time. |
-| `list_specs` | The Mac answers. | The relay's copy of each spec, with the time of its last sync. |
+| `list_repos` | The Mac answers. Each repo shows its desk and its area. The optional `area` argument shows only the repos of that area. | The repos from the last connection of the Mac, with its time, and the last state of each desk, with its time. The `area` filter needs the Mac online: the list shows all repos and says so. |
+| `list_specs` | The Mac answers. Each spec shows the area of its repo and its project. The optional `area` and `project` arguments filter the list. | The relay's copy of each spec, with the time of its last sync. The relay has no areas and no projects, so it shows all specs and says that the `area` or `project` filter needs the Mac online. |
+| `list_projects` | The Mac answers with each project: its status, its progress (shipped specs of all specs), its target date and its newest update (health and note). With an older Spec Studio, the result says: "Update Spec Studio on the Mac to list projects." | Fails at once. |
 | `read_spec` | The Mac answers. | The state, the turn and the last 20 events. No `spec.md` or `plan.md` text. |
-| `make_spec`, `start_spec` | The Mac answers. | Fails at once. |
+| `make_spec`, `start_spec` | The Mac answers. `make_spec` takes an optional `project` (the name of a project): the new spec goes into it. | Fails at once. |
 | `send_message` | The relay keeps the message and sends it to the Mac. With a repo and no slug, the message goes to the desk of the repo. | The relay keeps the message until the Mac connects. |
 | `read_messages` | The messages that the sessions and the desks sent with `studio message`, and the user's answers in a spec's terminal that Spec Studio copied (`from: user`). Each spec also gets its latest status change (stage, status, note, time), its turn, and `stale` when the spec changed after the last message. | The same. |
 | `upload_attachment` | Stores a file for `send_message`, for a spec or a desk. | The same. |

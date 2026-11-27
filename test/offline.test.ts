@@ -141,7 +141,13 @@ test("list_repos offline gives the repos of the last hello with its time", async
     });
     const [head, json] = result.content[0].text.split("\n");
     assert.match(head, /^The Mac is offline\. .*This list of repos is from \d{4}-/);
+    assert.ok(!/filter needs the Mac online/.test(head));
     assert.deepEqual(JSON.parse(json), [REPO, OTHER]);
+    // R17.S4: the relay does not know areas, so an area filter shows all repos and says so.
+    const filtered = await callTool(t.base, accessToken, "list_repos", { area: "Vendgogh" });
+    const [fhead, fjson] = filtered.content[0].text.split("\n");
+    assert.match(fhead, /The area filter needs the Mac online\./);
+    assert.deepEqual(JSON.parse(fjson), [REPO, OTHER]);
   } finally {
     await t.close();
     await h.close();
@@ -164,6 +170,34 @@ test("R5.S3: start_spec and make_spec with no agent fail at once with the Mac is
       assert.equal(result.isError, true);
       assert.match(result.content[0].text, /^The Mac is offline\. The relay did not see the Mac since it started at /);
     }
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R17.S4: offline list_specs with an area or a project shows all specs and says the filter needs the Mac", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    const { accessToken } = await signIn(t.base);
+    const plain = await callTool(t.base, accessToken, "list_specs", {});
+    assert.ok(!/filter needs the Mac online/.test(plain.content[0].text));
+    for (const [args, word] of [
+      [{ area: "Vendgogh" }, "area"],
+      [{ project: "Backend plugins" }, "project"],
+    ] as const) {
+      const r = await callTool(t.base, accessToken, "list_specs", args);
+      assert.equal(r.isError, undefined);
+      const text = r.content[0].text as string;
+      assert.match(text, new RegExp(`The ${word} filter needs the Mac online\\.`));
+      assert.match(text, /"slug": "alpha"/);
+      assert.match(text, /"slug": "beta"/);
+    }
+    const projects = await callTool(t.base, accessToken, "list_projects", {});
+    assert.equal(projects.isError, true);
+    assert.match(projects.content[0].text, /^The Mac is offline\. The relay did not see the Mac since it started at /);
   } finally {
     await t.close();
     await h.close();
