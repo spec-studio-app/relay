@@ -14,7 +14,7 @@ store: ""
 # A backend plugin as the relay's store (optional). Leave it empty for the
 # store above. Set one of plugin.command, plugin.url and plugin.sidecar, and
 # leave store empty.
-# See "Store plugins" in the README.
+# See "A store plugin" in the README.
 plugin:
   # A plugin command in the image, with its arguments (RELAY_PLUGIN). The pod
   # gets the data volume at /data for the plugin's files.

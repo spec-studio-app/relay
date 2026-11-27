@@ -180,7 +180,7 @@ helm install relay oci://ghcr.io/spec-studio-app/charts/relay --version <version
   --set existingSecret=relay-secrets
 ```
 
-The Secret `existingSecret` has the key `OWNER_PASSWORD_HASH`, and as needed `PAYLOAD_KEYS` (Temporal), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY` and `BUCKET_SECRET_KEY`. Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/relay/values.yaml` for all values. When `store` is empty, the chart uses the relay's rule: `temporal` when `temporal.address` is set, else `json`.
+The Secret `existingSecret` has the key `OWNER_PASSWORD_HASH`, and as needed `PAYLOAD_KEYS` (Temporal), `TEMPORAL_API_KEY`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY` and `PLUGIN_TOKEN` (a plugin sidecar, or a plugin service with a token). Or leave `existingSecret` empty and set `secrets.*` in your values: the chart then makes the Secret. Set `ingress.enabled=true` and `ingress.host` for an Ingress. See `chart/relay/values.yaml` for all values. When `store` is empty, the chart uses the relay's rule: `temporal` when `temporal.address` is set, else `json`.
 
 ### Docker
 
@@ -204,6 +204,16 @@ Enter the relay URL and the code in Spec Studio > Settings (⌘,) > Remote Relay
 docker compose exec relay relay pair-code
 kubectl exec deploy/relay -- relay pair-code
 ```
+
+With a plugin from `RELAY_PLUGIN` that locks its storage, the command cannot run next to the relay (see [A store plugin](#a-store-plugin)). Stop the relay, run the command in a new container with the same settings, and start the relay again:
+
+```sh
+docker compose stop relay
+docker compose run --rm relay pair-code
+docker compose start relay
+```
+
+With Helm, scale the relay to 0 replicas, run `relay pair-code` in a one-off pod with the same settings and volume, then scale it back to 1.
 
 Pairing is the only way to get an agent secret. The relay keeps only its SHA-256. Unpair in the Settings pane, or with `studio agent unpair`.
 
