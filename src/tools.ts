@@ -85,7 +85,8 @@ export const TOOLS: ToolDefinition[] = [
       "It also shows spec.md, plan.md when it exists, and the last 20 events of the activity. " +
       "When the Mac is offline, the result comes from the relay and shows the time of the last sync. " +
       "Then spec.md and plan.md are not available. " +
-      "When the user paused the spec, the result says that the spec is paused, with the reason and the time.",
+      "When the user paused the spec, the result says that the spec is paused, with the reason and the time. " +
+      "When the user archived the repo of the spec, the result says that the repo is archived.",
     inputSchema: { repo, slug },
   },
   {
@@ -152,7 +153,8 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
       "The user must let Claude AI message a desk in Spec Studio, Settings, Remote Relay. " +
       "The result gives the sequence number of the message at once, also when the Mac is offline. " +
       "A message does not answer a question or a permission prompt of the session. " +
-      "A paused spec keeps the message in its inbox until the user resumes the spec. The result then says that the spec is paused.",
+      "A paused spec keeps the message in its inbox until the user resumes the spec. The result then says that the spec is paused. " +
+      "When the user archived the repo of the spec, the message still goes into the inbox, and the result says that the repo is archived.",
     inputSchema: {
       repo,
       slug: specOrDesk,

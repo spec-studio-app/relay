@@ -7,7 +7,7 @@ import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
 import type { ReadResult } from "./workflows/specRules.js";
-import { DESK_GONE_TEXT } from "./workflows/types.js";
+import { DESK_GONE_TEXT, pauseOf } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
 export const READ_WAIT_MS = 20_000;
@@ -25,6 +25,8 @@ export interface MessageToolsOptions {
   macTakesDesks?: () => boolean | null;
   /** The repo paths of the Mac's last hello, or null. */
   helloRepos?: () => Promise<string[] | null>;
+  /** The archived repo paths that the Mac sent last, or null when it sent no list. */
+  archivedRepos?: () => Promise<string[] | null>;
   attachments: Attachments;
   /** How long read_messages waits for a new message (tests set less). */
   waitMs?: number;
@@ -37,6 +39,9 @@ function str(value: unknown): string | undefined {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The line of a send_message answer and an offline read_spec for a spec of an archived repo. */
+export const ARCHIVED_REPO_TEXT = "The repo is archived.";
 
 /** The tool's text when the relay has no desk for the repo. */
 export function noDeskText(repo: string): string {
@@ -198,6 +203,8 @@ export class MessageTools {
     });
     this.o.push(spec, message);
     const paused = await this.pausedText(spec);
+    const archived = await this.isArchived(spec.repoKey);
+    const lines = [paused, archived ? ARCHIVED_REPO_TEXT : null].filter((line): line is string => line !== null);
     return {
       ok: true,
       text:
@@ -207,21 +214,32 @@ export class MessageTools {
           spec: { repo, slug },
           createdAt: message.createdAt,
           ...(paused ? { paused: true } : {}),
-        }) + (paused ? `\n${paused}` : ""),
+          ...(archived ? { archived: true } : {}),
+        }) + lines.map((line) => `\n${line}`).join(""),
     };
+  }
+
+  /** True when the repo is in the archived list that the Mac sent last. A store error gives false: the message is stored. */
+  private async isArchived(repoKey: string): Promise<boolean> {
+    try {
+      const archived = (await this.o.archivedRepos?.()) ?? [];
+      return archived.some((path) => repoKeyOf(path) === repoKey);
+    } catch {
+      return false;
+    }
   }
 
   /**
    * "The spec is paused: <note>" when the mirrored state of the spec has a
-   * `paused` field, else null. A store error gives null: the message is stored.
+   * `paused` field and the spec is not merged, else null. A store error gives
+   * null: the message is stored.
    */
   private async pausedText(spec: SpecAddress): Promise<string | null> {
     try {
       const state = await this.o.specs.state({ repoKey: spec.repoKey, slug: spec.slug });
-      const paused = (state?.state as { paused?: unknown } | null | undefined)?.paused;
-      if (!paused || typeof paused !== "object") return null;
-      const note = (paused as { note?: unknown }).note;
-      return typeof note === "string" && note.trim() ? `The spec is paused: ${note.trim()}` : "The spec is paused.";
+      const paused = pauseOf(state?.state ?? null);
+      if (!paused) return null;
+      return paused.note ? `The spec is paused: ${paused.note}` : "The spec is paused.";
     } catch {
       return null;
     }

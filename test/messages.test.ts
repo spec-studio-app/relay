@@ -628,3 +628,45 @@ test("read_messages of a paused spec with no turn from the app gives the turn pa
     await h.close();
   }
 });
+
+test("send_message to a spec of an archived repo says that the repo is archived, and the message waits in the inbox", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: { slug: "held", title: "held", stage: "build", status: "working", paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Later" } },
+      turn: null,
+    });
+    await synced(h, "plain");
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+
+    const plain = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "plain", text: "Hello." });
+    assert.equal(plain.isError, undefined, plain.content[0].text);
+    const [first, ...rest] = plain.content[0].text.split("\n");
+    assert.equal(JSON.parse(first).archived, true);
+    assert.equal(JSON.parse(first).paused, undefined);
+    assert.deepEqual(rest, ["The repo is archived."]);
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "plain" });
+    assert.match(read.content[0].text, /1 message waits for the Mac/);
+
+    // A paused spec of an archived repo: both lines.
+    const held = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "held", text: "Hello." });
+    const [hfirst, ...hrest] = held.content[0].text.split("\n");
+    assert.equal(JSON.parse(hfirst).paused, true);
+    assert.equal(JSON.parse(hfirst).archived, true);
+    assert.deepEqual(hrest, ["The spec is paused: Later", "The repo is archived."]);
+
+    // The repo is unarchived: no archived line.
+    await h.configStore.setArchivedRepos([], new Date());
+    const after = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "plain", text: "Again." });
+    assert.ok(!after.content[0].text.includes("\n"));
+    assert.equal(json(after).archived, undefined);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

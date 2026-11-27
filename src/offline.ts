@@ -4,6 +4,7 @@
 // old it is.
 import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
+import { ARCHIVED_REPO_TEXT } from "./messages.js";
 import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields, pauseOf } from "./workflows/types.js";
 
 export interface ToolText {
@@ -165,6 +166,7 @@ export class OfflineTools implements OfflineReader {
       `## Summary\n\nStage: ${fields.stage || "unknown"}. Status: ${fields.status || "unknown"}.` +
         (fields.note ? ` Note: ${fields.note}` : "") +
         pausedSummary(state.state) +
+        ((await this.archivedKeys()).has(repoKeyOf(repo)) ? ` ${ARCHIVED_REPO_TEXT}` : "") +
         (state.dropped ? " The spec no longer exists on the Mac." : ""),
       `## Messages\n\n${waiting === 1 ? "1 message waits" : `${waiting} messages wait`} for the Mac.`,
       `## The last ${EVENT_LIMIT} activity events\n\n` +

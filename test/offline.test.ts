@@ -614,3 +614,27 @@ test("offline list_specs shows the pause of a paused spec, and no pause for a me
     await h.close();
   }
 });
+
+test("offline read_spec of a spec of an archived repo says that the repo is archived", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Later" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(OTHER, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+    const held = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(held.content[0].text, /The spec is paused: Later\. Paused at 2026-11-01T10:00:00Z\. The repo is archived\./);
+    const free = await callTool(t.base, accessToken, "read_spec", { repo: OTHER, slug: "free" });
+    assert.ok(!/The repo is archived/.test(free.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

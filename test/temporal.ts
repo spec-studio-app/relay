@@ -175,6 +175,7 @@ export async function harness(
             pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
             waitMs: options.readWaitMs ?? 1500,
             lastSyncAt: () => lastSyncAt(mirror),
+            archivedRepos: async () => (await configStore.archivedRepos())?.repos ?? null,
           }),
         ...relayOptions,
         testAgentPaired: false,
