@@ -53,6 +53,9 @@ export const APP_SPECS = "app-specs";
 /** The event type of the Mac's activity lines in a spec's stream (contract 3). */
 export const ACTIVITY_EVENT = "activity";
 
+/** The types of the events that the relay appends to a spec's stream. Any other type is another writer's (the Mac's activity). */
+export const RELAY_EVENT_TYPES: ReadonlySet<string> = new Set(["sync", "message"]);
+
 /** The text when a linesInStore sync comes to a store that cannot read the Mac's lines. */
 export const NO_LINES_IN_STORE_TEXT =
   "The relay's plugin has no events, so the relay cannot read the Mac's lines from the store. Send the sync frame with its lines.";
@@ -255,8 +258,12 @@ export class PluginSpecStore implements SpecStore {
           result: undefined,
         }));
         await this.docs.remove(SPECS, key, doc.version);
-        // A stream with the Mac's lines is the Mac's history too: it stays.
-        if (this.docs.client.has("events") && !doc.value.app) await guard(() => this.docs.client.events.delete(specStream(spec)));
+        // On a store that the Mac shares, the stream is the Mac's history too
+        // (its activity events): it stays. A stream with only the relay's own
+        // events (a separate store) goes with the spec.
+        if (this.docs.client.has("events") && !doc.value.app && (await this.onlyRelayEvents(spec))) {
+          await guard(() => this.docs.client.events.delete(specStream(spec)));
+        }
         this.o.log({ event: "spec_closed" });
         await this.pruneClosed().catch(() => this.o.log({ event: "closed_prune_failed" }));
       } catch {
@@ -267,6 +274,27 @@ export class PluginSpecStore implements SpecStore {
         this.closing.delete(key);
       }
     });
+  }
+
+  /**
+   * True when the spec's stream holds only the relay's own events. An event
+   * of another type (the Mac's `activity`) or a failed read gives false: the
+   * close then keeps the stream.
+   */
+  private async onlyRelayEvents(spec: SpecRef): Promise<boolean> {
+    const limit = this.docs.client.info.limits.maxPageSize;
+    let after: string | null = null;
+    try {
+      for (;;) {
+        const page = await this.docs.client.events.read({ stream: specStream(spec), after, limit });
+        if (page.events.some((e) => !RELAY_EVENT_TYPES.has(e.type))) return false;
+        if (!page.more || page.events.length === 0) return true;
+        after = page.cursor;
+      }
+    } catch {
+      this.o.log({ event: "spec_stream_check_failed" });
+      return false;
+    }
   }
 
   private async removeAttachments(spec: SpecRef): Promise<void> {

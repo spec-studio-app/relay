@@ -30,10 +30,10 @@ function appState(slug: string, over: Record<string, unknown> = {}) {
   return { slug, title: `Title of ${slug}`, stage: "build", status: "working", mode: "autopilot", createdAt: "2026-11-01T00:00:00Z", ...over };
 }
 
-async function openShared(flags: string[] = ["--events", "--store-id", STORE_ID]): Promise<PluginRelayStore> {
+async function openShared(flags: string[] = ["--events", "--store-id", STORE_ID], o: { graceMs?: number } = {}): Promise<PluginRelayStore> {
   const store = await openPluginStore(
     { deployId: "default", publicUrl: "https://relay.example.com", plugin: { transport: "stdio", command: process.execPath, args: [FAKE_PLUGIN, ...flags], settings: {}, from: "RELAY_PLUGIN" } },
-    { bucket: null, log: () => {} },
+    { bucket: null, log: () => {}, ...(o.graceMs !== undefined ? { graceMs: o.graceMs } : {}) },
   );
   await store.start({ log: () => {}, print: () => {} });
   return store;
@@ -57,6 +57,14 @@ async function macCommit(store: PluginRelayStore, slug: string, state: Record<st
       ...(typeof data === "object" && data !== null && "t" in data ? { at: String((data as { t: unknown }).t) } : {}),
     })),
   });
+}
+
+async function eventually(check: () => Promise<boolean>, ms = 10_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error("The condition did not come true in time.");
+    await sleep(25);
+  }
 }
 
 async function streamOf(store: PluginRelayStore, slug: string) {
@@ -264,5 +272,45 @@ test("R10.S2: the JSON store: no store in the welcome, a linesInStore frame is r
     await t.close();
     await store.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("T41: on a shared store, the close of a spec synced with normal frames keeps the Mac's activity stream", async () => {
+  const store = await openShared(undefined, { graceMs: 300 });
+  try {
+    const spec = address("merged-shared");
+    const created = { kind: "created", t: "2026-11-01T00:00:01Z" };
+    const merged = { kind: "merged", t: "2026-11-01T00:00:02Z" };
+    // The Mac's history is in the stream; the relay got the lines in normal sync frames (no app cursor).
+    await macCommit(store, "merged-shared", appState("merged-shared", { stage: "merged" }), [created, merged]);
+    await store.specs.sync(spec, { lines: [{ line: 1, event: created }, { line: 2, event: merged }], first: true, state: appState("merged-shared", { stage: "merged" }), turn: null });
+    assert.ok((await store.specs.state(spec))?.finished);
+    await eventually(async () => (await store.specs.state(spec)) === null);
+    const left = await streamOf(store, "merged-shared");
+    assert.deepEqual(
+      left.filter((e) => e.type === ACTIVITY_EVENT).map((e) => (e.data as { kind: string }).kind),
+      ["created", "merged"],
+      "the Mac's activity events stay",
+    );
+  } finally {
+    await store.close();
+  }
+});
+
+test("T41: on a separate store, the close of a spec deletes the stream with only the relay's own events", async () => {
+  const store = await openShared(["--events"], { graceMs: 300 });
+  try {
+    const spec = address("merged-own");
+    await store.specs.sync(spec, {
+      lines: [{ line: 1, event: { kind: "created" } }, { line: 2, event: { kind: "merged" } }],
+      first: true,
+      state: appState("merged-own", { stage: "merged" }),
+      turn: null,
+    });
+    assert.deepEqual((await streamOf(store, "merged-own")).map((e) => e.type), ["sync"]);
+    await eventually(async () => (await store.specs.state(spec)) === null);
+    await eventually(async () => (await streamOf(store, "merged-own")).length === 0);
+  } finally {
+    await store.close();
   }
 });
