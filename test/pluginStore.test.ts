@@ -26,7 +26,7 @@ import { pairCodeHash } from "../src/pairing.js";
 import { specAddress } from "../src/store/address.js";
 import type { Logger } from "../src/log.js";
 import { MemoryOAuthStore } from "../src/oauth.js";
-import { mcpRequest, signIn, startRelay } from "./helpers.js";
+import { callTool, mcpRequest, signIn, startRelay } from "./helpers.js";
 import { FAKE_PLUGIN, httpMemoryPlugin, memoryPlugin, memoryStore, skipWithoutPlugin } from "./plugin.js";
 
 const skip = skipWithoutPlugin();
@@ -429,7 +429,7 @@ test("R4.S3: the relay stops a stdio plugin with plugin.shutdown; a sidecar gets
   await s.close();
 });
 
-test("R4.S2: while the store is down, a call to /mcp answers 503 with the store's text, not HTTP 500", async () => {
+test("R4.S2: while the store is down, a tool call through /mcp answers the store's text, not HTTP 500", async () => {
   let down = false;
   const memory = new MemoryOAuthStore();
   const oauthStore = new Proxy(memory, {
@@ -447,13 +447,12 @@ test("R4.S2: while the store is down, a call to /mcp answers 503 with the store'
     const { accessToken } = await signIn(relay.base);
     assert.equal((await mcpRequest(relay.base, accessToken, "tools/list")).status, 200);
     down = true;
-    const res = await fetch(`${relay.base}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-    });
-    assert.equal(res.status, 503);
-    assert.equal(((await res.json()) as { error: { message: string } }).error.message, STORE_UNAVAILABLE_TEXT);
+    const result = await callTool(relay.base, accessToken, "list_specs", {});
+    assert.deepEqual(result, { content: [{ type: "text", text: STORE_UNAVAILABLE_TEXT }], isError: true });
+    // The client can still connect: the tool list needs no store.
+    const list = await mcpRequest(relay.base, accessToken, "tools/list");
+    assert.equal(list.status, 200);
+    assert.ok((list.message?.result?.tools ?? []).length > 0);
     // A wrong token is still refused while the store is up, and the store is not asked for a tool.
     down = false;
     assert.equal((await mcpRequest(relay.base, "wrong-token", "tools/list")).status, 401);

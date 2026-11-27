@@ -249,13 +249,41 @@ export function createRelay(config: RelayConfig): Relay {
     },
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
   });
+  /**
+   * The answer while the store is down. No tool runs, because the token is not
+   * checked: a tool call gets the store's text as its result (so Claude AI
+   * shows it). The requests that need no store (initialize, tools/list) go on.
+   */
   const storeDown = (req: Request, res: Response, next: NextFunction) => {
     if (!(req as Request & { auth?: { extra?: Record<string, unknown> } }).auth?.extra?.[STORE_DOWN]) return next();
-    log({ event: "mcp_store_unavailable", path: req.path, status: 503 });
-    res.status(503).set("Retry-After", "60").json({ jsonrpc: "2.0", error: { code: -32000, message: STORE_UNAVAILABLE_TEXT }, id: null });
+    log({ event: "mcp_store_unavailable", path: req.path });
+    if (req.method !== "POST") {
+      res.status(503).set("Retry-After", "60").json({ jsonrpc: "2.0", error: { code: -32000, message: STORE_UNAVAILABLE_TEXT }, id: null });
+      return;
+    }
+    const answer = (message: unknown) => {
+      const m = (message && typeof message === "object" ? message : {}) as { id?: unknown; method?: unknown };
+      if (m.id === undefined) return null;
+      if (m.method === "tools/call") {
+        return { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: STORE_UNAVAILABLE_TEXT }], isError: true } };
+      }
+      return { jsonrpc: "2.0", id: m.id, error: { code: -32000, message: STORE_UNAVAILABLE_TEXT } };
+    };
+    const body = req.body as unknown;
+    const messages = Array.isArray(body) ? body : [body];
+    // initialize, tools/list and notifications read no store and run no tool:
+    // they go on, so the client connects and then sees the text at its tool call.
+    if (!messages.some((m) => (m as { method?: unknown } | null)?.method === "tools/call")) return next();
+    const answers = (Array.isArray(body) ? body.map(answer) : [answer(body)]).filter((a) => a !== null);
+    if (answers.length === 0) {
+      res.status(202).end();
+      return;
+    }
+    res.status(200).json(Array.isArray(body) ? answers : answers[0]);
   };
 
-  app.post("/mcp", bearer, storeDown, express.json({ limit: config.mcpBodyLimit ?? 1024 * 1024 }), async (req: Request, res: Response) => {
+  const mcpJson = express.json({ limit: config.mcpBodyLimit ?? 1024 * 1024 });
+  app.post("/mcp", bearer, mcpJson, storeDown, async (req: Request, res: Response) => {
     // Stateless: one server and one transport for each request.
     const server = buildMcpServer(hub, log, config.offline, localTools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

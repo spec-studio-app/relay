@@ -153,6 +153,8 @@ test("review: the chart refuses store: plugin alone, takes plugin.url, mounts th
   assert.match(sidecar, /kind: PersistentVolumeClaim/);
   const plugin = sidecar.slice(sidecar.indexOf("        - name: plugin\n"));
   assert.match(plugin, /- name: data\n\s+mountPath: "\/data"/);
+  // A large number stays a whole number (no YAML round trip).
+  assert.match(helm(["--set", "plugin.command=x", "--set", "plugin.settings.max_bytes=10485760"])!, /- name: RELAY_PLUGIN_MAX_BYTES\n\s+value: "10485760"/);
   // A values file from 0.5.0 (helm upgrade --reuse-values) has no plugin key.
   const dir = mkdtempSync(join(tmpdir(), "relay-chart-"));
   cpSync(`${root}chart/relay`, `${dir}/relay`, { recursive: true });
