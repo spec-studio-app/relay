@@ -1,6 +1,7 @@
 {{- $secret := include "relay.secretName" . }}
 {{- $store := include "relay.store" . }}
 {{- $data := include "relay.dataVolume" . }}
+{{- $plugin := fromYaml (include "relay.plugin" .) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,15 +63,15 @@ spec:
             - name: DEPLOY_ID
               value: {{ .Values.deployId | quote }}
             {{- if eq $store "plugin" }}
-            {{- if .Values.plugin.command }}
+            {{- if $plugin.command }}
             - name: RELAY_PLUGIN
-              value: {{ .Values.plugin.command | quote }}
+              value: {{ $plugin.command | quote }}
             {{- else }}
             - name: RELAY_PLUGIN_URL
-              value: {{ printf "http://127.0.0.1:%v/rpc" .Values.plugin.sidecar.port | quote }}
-            {{- include "relay.secretEnv" (dict "name" "RELAY_PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" true) | nindent 12 }}
+              value: {{ ($plugin.url | default (printf "http://127.0.0.1:%v/rpc" $plugin.sidecar.port)) | quote }}
+            {{- include "relay.secretEnv" (dict "name" "RELAY_PLUGIN_TOKEN" "key" "PLUGIN_TOKEN" "secret" $secret "required" $plugin.sidecar.enabled) | nindent 12 }}
             {{- end }}
-            {{- range $name, $value := .Values.plugin.settings }}
+            {{- range $name, $value := $plugin.settings }}
             - name: {{ printf "RELAY_PLUGIN_%s" (upper $name) }}
               value: {{ $value | quote }}
             {{- end }}
@@ -151,7 +152,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if $data }}
+            {{- if and $data (not $plugin.sidecar.enabled) }}
             - name: data
               mountPath: /data
             {{- end }}
@@ -159,8 +160,8 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- if and (eq $store "plugin") .Values.plugin.sidecar.enabled }}
-        {{- with .Values.plugin.sidecar }}
+        {{- if and (eq $store "plugin") $plugin.sidecar.enabled }}
+        {{- with $plugin.sidecar }}
         # The backend plugin, as a sidecar. It listens on the pod's loopback
         # only, and the relay calls it with the token.
         - name: plugin
@@ -181,6 +182,11 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          {{- if .dataPath }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .dataPath | quote }}
+          {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}

@@ -1,5 +1,5 @@
 The relay starts at {{ .Values.publicUrl }}.
-It keeps its state in {{ $store := include "relay.store" . }}{{ if eq $store "json" }}files on the volume {{ include "relay.claimName" . }}{{ else if eq $store "plugin" }}a backend plugin ({{ .Values.plugin.command | default .Values.plugin.sidecar.image }}){{ else }}Temporal at {{ .Values.temporal.address }}{{ end }}.
+It keeps its state in {{ $store := include "relay.store" . }}{{ if eq $store "json" }}files on the volume {{ include "relay.claimName" . }}{{ else if eq $store "plugin" }}a backend plugin{{ $p := fromYaml (include "relay.plugin" .) }} ({{ $p.command | default $p.url | default $p.sidecar.image }}){{ else }}Temporal at {{ .Values.temporal.address }}{{ end }}.
 
 On its first start it prints a pairing code. Read it with:
 

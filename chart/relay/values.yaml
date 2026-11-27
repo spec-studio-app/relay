@@ -12,12 +12,17 @@
 store: ""
 
 # A backend plugin as the relay's store (optional). Leave it empty for the
-# store above. Set plugin.command or plugin.sidecar, not both, and not store.
+# store above. Set one of plugin.command, plugin.url and plugin.sidecar, and
+# leave store empty.
 # See "Store plugins" in the README.
 plugin:
   # A plugin command in the image, with its arguments (RELAY_PLUGIN). The pod
   # gets the data volume at /data for the plugin's files.
   command: ""
+  # The URL of a plugin that runs as its own service, for example
+  # http://plugin.relay.svc:7070/rpc (RELAY_PLUGIN_URL). The token, when the
+  # plugin has one, is secrets.pluginToken.
+  url: ""
   # The plugin's settings. Each name becomes RELAY_PLUGIN_<NAME>, for example
   # address: temporal:7233 becomes RELAY_PLUGIN_ADDRESS. Put no secret here:
   # use extraEnv with a secretKeyRef for a secret setting.
@@ -36,8 +41,13 @@ plugin:
     # More environment variables, as a list of {name, value}.
     env: []
     resources: {}
+    # A folder in the sidecar for the chart's data volume (see persistence),
+    # for a plugin that keeps files, for example /data. Empty: no volume, and
+    # a plugin that keeps files loses them at each pod restart.
+    dataPath: ""
 
-# The volume at /data: for the JSON store, or for a plugin command in the image.
+# The volume at /data: for the JSON store, for a plugin command in the image,
+# or for a sidecar with plugin.sidecar.dataPath.
 persistence:
   size: 1Gi
   # Empty: the cluster's default storage class.
@@ -102,9 +112,9 @@ secrets:
   temporalTlsKey: ""
   bucketAccessKey: ""
   bucketSecretKey: ""
-  # The token between the relay and a sidecar plugin. Required with
-  # plugin.sidecar.enabled: a long random string, for example from
-  # openssl rand -hex 32.
+  # The token between the relay and a plugin over HTTP. Required with
+  # plugin.sidecar.enabled, optional with plugin.url: a long random string,
+  # for example from openssl rand -hex 32.
   pluginToken: ""
 
 # Other environment variables, as a list of {name, value}.

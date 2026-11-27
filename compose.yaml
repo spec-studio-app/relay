@@ -65,7 +65,8 @@ services:
   # image, and in .env set:
   #   RELAY_PLUGIN_URL=http://plugin:7070/rpc
   #   RELAY_PLUGIN_TOKEN=<a long random string, for example from openssl rand -hex 32>
-  # The plugin listens on the Compose network only, with the token.
+  # Remove the comment of plugin-data under volumes at the end too. The plugin
+  # listens on the Compose network only, with the token.
   #
   # plugin:
   #   image: ghcr.io/me/plugin-mine:1.0.0
@@ -98,3 +99,5 @@ services:
 volumes:
   relay-data:
   temporal-home:
+  # The plugin sidecar's files (with the plugin service above).
+  # plugin-data:

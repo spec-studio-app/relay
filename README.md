@@ -98,7 +98,7 @@ Each `RELAY_PLUGIN_<NAME>` setting goes to the plugin as the setting `<name>`, i
 
 At start, the relay logs the plugin's name, version, repo and capabilities (`plugin_handshake`). When the plugin does not start, or refuses the settings, the relay stops with a message that gives the plugin's reason and what to check. When a plugin from `RELAY_PLUGIN` exits, the relay logs the exit code and the last lines of its stderr, and starts it again after 250 ms, then twice as long each time, at most 30 s. Meanwhile, the tools answer "The relay's store is not available". A sidecar is never stopped by the relay: its own container stop shuts it down.
 
-The Compose file and the Helm chart have the settings and an example of a sidecar (`plugin.sidecar` in the chart).
+The Compose file and the Helm chart have the settings and an example of a sidecar. In the chart, use `plugin.command`, `plugin.url` (a plugin service) or `plugin.sidecar` (with `plugin.sidecar.dataPath` for a plugin that keeps files).
 
 ### Switch between stores
 

@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -138,4 +140,32 @@ test("relay-plugin-host R6.S1: the README explains a store plugin and keeps JSON
   assert.match(section, /plugin-temporal/);
   assert.match(section, /RELAY_PLUGIN_URL/);
   assert.match(readme, /The JSON store stays the default/);
+});
+
+test("review: the chart refuses store: plugin alone, takes plugin.url, mounts the data volume in a sidecar with dataPath, and renders a values file with no plugin key", (t) => {
+  if (helm([]) === null) return t.skip("helm is not installed");
+  assert.throws(() => helm(["--set", "store=plugin"]), /For a plugin, set plugin\.command, plugin\.url or plugin\.sidecar\.enabled/);
+  const url = helm(["--set", "plugin.url=http://plugin.relay.svc:7070/rpc", "--set", "secrets.pluginToken=tok"])!;
+  assert.match(url, /- name: RELAY_PLUGIN_URL\n\s+value: "http:\/\/plugin\.relay\.svc:7070\/rpc"/);
+  assert.match(url, /PLUGIN_TOKEN: "tok"/);
+  assert.doesNotMatch(url, /RELAY_STORE|PersistentVolumeClaim/);
+  const sidecar = helm(["--set", "plugin.sidecar.enabled=true", "--set", "plugin.sidecar.image=i", "--set", "secrets.pluginToken=t", "--set", "plugin.sidecar.dataPath=/data"])!;
+  assert.match(sidecar, /kind: PersistentVolumeClaim/);
+  const plugin = sidecar.slice(sidecar.indexOf("        - name: plugin\n"));
+  assert.match(plugin, /- name: data\n\s+mountPath: "\/data"/);
+  // A values file from 0.5.0 (helm upgrade --reuse-values) has no plugin key.
+  const dir = mkdtempSync(join(tmpdir(), "relay-chart-"));
+  cpSync(`${root}chart/relay`, `${dir}/relay`, { recursive: true });
+  const values = readFileSync(`${dir}/relay/values.yaml`, "utf8");
+  writeFileSync(`${dir}/relay/values.yaml`, values.replace(/\nplugin:\n[\s\S]*?\n(?=# The volume at)/, "\n"));
+  assert.doesNotMatch(readFileSync(`${dir}/relay/values.yaml`, "utf8"), /^plugin:/m);
+  const old = execFileSync("helm", ["template", "t", `${dir}/relay`, "--set", "publicUrl=https://r.example.com", "--set", "secrets.ownerPasswordHash=x"], { encoding: "utf8" });
+  assert.match(old, /- name: RELAY_STORE\n\s+value: "json"/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("review: the Compose sidecar example names its volume under volumes", () => {
+  const compose = readFileSync(`${root}compose.yaml`, "utf8");
+  assert.match(compose, /^\s*#\s+- plugin-data:\/data$/m);
+  assert.match(compose, /^volumes:\n[\s\S]*^\s*# plugin-data:$/m);
 });
