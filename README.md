@@ -38,7 +38,7 @@ printf '%s' 'your password' | docker run --rm -i ghcr.io/spec-studio-app/relay p
 
 ## Step 2: Choose the store
 
-`RELAY_STORE` selects the store: `json` or `temporal`. When it is not set, the relay uses the Temporal store if `TEMPORAL_ADDRESS` is set, else the JSON store. At start, the relay logs the store and the reason (`store_selected`).
+`RELAY_STORE` selects the store: `json` or `temporal`. When it is not set, the relay uses the Temporal store if `TEMPORAL_ADDRESS` is set, else the JSON store. At start, the relay logs the store and the reason (`store_selected`). The relay can also keep its state in a backend plugin (see [A store plugin](#a-store-plugin)). The JSON store stays the default: with none of these settings, nothing changes.
 
 ### The JSON store (the default)
 
@@ -84,6 +84,21 @@ tcld namespace search-attributes add -n <namespace>.<account> --sa "RepoKey=Keyw
 #### Self-hosted Temporal
 
 Set `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE`. At start, the relay registers the namespace (30 days of retention) when it does not exist, and it registers the search attributes. Use `TEMPORAL_AUTH=plain` (the default) for a frontend with no TLS, `tls` for server TLS, or `mtls` with `TEMPORAL_TLS_CERT` and `TEMPORAL_TLS_KEY`.
+
+### A store plugin
+
+A backend plugin is a separate program that keeps the relay's data. The relay keeps all the rules; the plugin only stores documents and events. The [plugin protocol](https://github.com/spec-studio-app/plugin-sdk/blob/main/PROTOCOL.md) defines the calls. The official plugins are [plugin-json](https://github.com/spec-studio-app/plugin-json) and [plugin-temporal](https://github.com/spec-studio-app/plugin-temporal). A later relay version uses them for `RELAY_STORE=json` and `RELAY_STORE=temporal`; this version keeps its built-in stores for those settings.
+
+Use one of these settings, and leave `RELAY_STORE` empty:
+
+- `RELAY_PLUGIN`: a plugin command, with its arguments, for example `/usr/local/bin/plugin-mine --data /data`. The relay starts it and talks to it on its stdin and stdout. The command is split into words as a shell does (quotes and `\` keep spaces), with no other shell feature. The plugin gets no relay setting in its environment.
+- `RELAY_PLUGIN_URL`: the URL of a plugin that runs as a sidecar, for example `http://plugin:7070/rpc`, with `RELAY_PLUGIN_TOKEN` (the plugin's `--token`). Use a token on any address that is not the loopback.
+
+Each `RELAY_PLUGIN_<NAME>` setting goes to the plugin as the setting `<name>`, in lowercase. For example `RELAY_PLUGIN_ADDRESS=temporal:7233` is the plugin setting `address`. The plugin's README names its settings.
+
+At start, the relay logs the plugin's name, version, repo and capabilities (`plugin_handshake`). When the plugin does not start, or refuses the settings, the relay stops with a message that gives the plugin's reason and what to check. When a plugin from `RELAY_PLUGIN` exits, the relay logs the exit code and the last lines of its stderr, and starts it again after 250 ms, then twice as long each time, at most 30 s. Meanwhile, the tools answer "The relay's store is not available". A sidecar is never stopped by the relay: its own container stop shuts it down.
+
+The Compose file and the Helm chart have the settings and an example of a sidecar (`plugin.sidecar` in the chart).
 
 ### Switch between stores
 
@@ -240,6 +255,10 @@ The codec endpoints load only the data key. The payloads of the relay-config wor
 | `OWNER_PASSWORD_HASH` | yes | The bcrypt hash of the owner password. |
 | `RELAY_STORE` | no | `json` or `temporal`. Default: `temporal` when `TEMPORAL_ADDRESS` is set, else `json`. |
 | `RELAY_DATA_DIR` | no | The folder of the JSON store. Default `/data`. |
+| `RELAY_PLUGIN` | no | A backend plugin command, with its arguments. See [A store plugin](#a-store-plugin). Not with `RELAY_STORE` or `RELAY_PLUGIN_URL`. |
+| `RELAY_PLUGIN_URL` | no | The URL of a backend plugin sidecar, for example `http://plugin:7070/rpc`. Not with `RELAY_STORE` or `RELAY_PLUGIN`. |
+| `RELAY_PLUGIN_TOKEN` | no | The token of the plugin sidecar. |
+| `RELAY_PLUGIN_<NAME>` | no | The plugin setting `<name>` (in lowercase). |
 | `PAYLOAD_KEYS` | Temporal | The codec keys, from `relay keys`. See below. |
 | `TEMPORAL_ADDRESS` | Temporal | `host:port` of Temporal. |
 | `TEMPORAL_NAMESPACE` | no | The namespace. Default `default`. |
@@ -286,6 +305,10 @@ A restart loses no message and no sign-in.
 
 Each write goes to a temporary file, and a rename replaces the old file, so a crash never leaves half a file. Only the relay process writes `config.json` and the spec files, and its writes of one file never interleave. `relay pair-code` writes only `pair-code.json`, each time with a new ID; the relay takes that code as its pairing code at its next call. The files are not encrypted: protect the volume as you protect the relay. A spec file that the relay cannot read or parse stops the start with a message that names the file (and the log event `spec_file_read_failed` or `spec_file_unreadable`), so nothing is lost or made again in silence. Correct the file (or its access), or remove it. To get a removed spec back in full, first run `studio agent unpair --force` on the Mac, then remove the file and start the relay, then pair the Mac again: with no cursors, the Mac sends a first sync of each spec. (If the relay starts before the unpair, the Mac's waiting lines make a part of the spec, and a later first sync does not fill it.) The relay does not run while the file is bad, so reach the volume with a one-off container: `docker compose run --rm --user 0 --entrypoint sh relay` with Compose (as root, so it can also correct the owner of a file), or a temporary pod that mounts the claim with Helm (scale the relay to 0 first).
 
+### In a store plugin
+
+The relay writes the documents and streams that the protocol names (section 14 of `PROTOCOL.md`): `specs/<repoKey>:<slug>`, `closed-specs/<repoKey>:<slug>`, `desks/<repoKey>`, `relay/config`, and the streams `spec:<repoKey>:<slug>` and `desk:<repoKey>` when the plugin gives events. Each change is a read, the rule, and a write with the read version; when another process wrote first, the relay reads again (at most 5 times). The grace period of a finished spec is a timer in the relay, and the time of the last call is in the spec's document, so a restart keeps it. `relay pair-code` works next to a running relay on a sidecar. A plugin that `RELAY_PLUGIN` starts can lock its storage: then stop the relay, run `relay pair-code` with the same settings, and start the relay again.
+
 ### In the Temporal store
 
 - One workflow per spec, with the ID `spec-<deployId>-<repoKey>-<slug>`. `deployId` is `DEPLOY_ID`, so two relays on one namespace never share a spec workflow. The retention period of the namespace removes the history of a completed spec workflow.
@@ -297,7 +320,8 @@ Each write goes to a temporary file, and a rename replaces the old file, so a cr
 ```
 relay [serve]     Run the relay.
 relay pair-code   Make a new pairing code. The old code stops working. With the Temporal
-                  store the relay must run; with the JSON store, use the same RELAY_DATA_DIR.
+                  store the relay must run; with the JSON store, use the same RELAY_DATA_DIR;
+                  with a store plugin, use the same RELAY_PLUGIN settings.
 relay keys        Print a new PAYLOAD_KEYS value (Temporal store).
 relay password-hash
                   Read the owner password on stdin and print its bcrypt hash.
@@ -310,7 +334,9 @@ npm ci
 npm test
 ```
 
-The tests run each store. The rules of a spec, of a desk and of the deploy's data are in `src/workflows/specRules.ts`, `src/workflows/deskRules.ts` and `src/workflows/configRules.ts`, and the rules of the two inboxes that a spec and a desk share are in `src/workflows/inboxRules.ts`. The Temporal workflows and the JSON store both call them. `test/conformance.ts` and `test/deskStore.test.ts` run the same scenarios on both stores. `test/replay.test.ts` replays workflow histories of relay 0.3, so a change of the workflow code that breaks a running workflow fails the tests.
+The tests run each store. The rules of a spec, of a desk and of the deploy's data are in `src/workflows/specRules.ts`, `src/workflows/deskRules.ts` and `src/workflows/configRules.ts`, and the rules of the two inboxes that a spec and a desk share are in `src/workflows/inboxRules.ts`. The Temporal workflows and the JSON store both call them. `test/conformance.ts` and `test/deskStore.test.ts` run the same scenarios on each store. `test/replay.test.ts` replays workflow histories of relay 0.3, so a change of the workflow code that breaks a running workflow fails the tests.
+
+The plugin store tests (`test/conformance.plugin.test.ts`, `test/pluginStore.test.ts` and the plugin part of `test/deskStore.test.ts`) run against the memory plugin of [plugin-sdk](https://github.com/spec-studio-app/plugin-sdk). Set `RELAY_TEST_PLUGIN` to a built memory plugin, or `PLUGIN_SDK_DIR` to a plugin-sdk checkout (the tests then build it with Go). Without them, these tests skip. CI builds the memory plugin at the commit in `src/vendor/plugin-sdk/SOURCE.md`, the commit of the copied host client.
 
 The Temporal tests run a Temporal dev server. They use the `temporal` CLI when `TEMPORAL_CLI` names it or when it is at `/opt/homebrew/bin/temporal`. Else the Temporal SDK downloads the dev server once.
 

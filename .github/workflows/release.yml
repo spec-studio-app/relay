@@ -84,8 +84,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ steps.version.outputs.version }}"
+          {
+            # The notes of this version, when release-notes/<version>.md exists.
+            if [ -f "release-notes/$version.md" ]; then cat "release-notes/$version.md"; echo; fi
+            echo "Image: \`${IMAGE}:${version}\` (linux/amd64, linux/arm64, signed with cosign)."
+            echo "Chart: \`helm install relay ${CHART_REPO}/relay --version ${version}\`."
+            echo "See README.md for the deploy guide."
+          } > release-notes.txt
           gh release create "$GITHUB_REF_NAME" "dist-chart/relay-$version.tgz" compose.yaml \
             --title "$GITHUB_REF_NAME" \
-            --notes "Image: \`${IMAGE}:${version}\` (linux/amd64, linux/arm64, signed with cosign).
-          Chart: \`helm install relay ${CHART_REPO}/relay --version ${version}\`.
-          See README.md for the deploy guide."
+            --notes-file release-notes.txt

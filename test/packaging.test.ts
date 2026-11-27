@@ -12,14 +12,14 @@ test("the dev compose profile publishes the Temporal Web UI on loopback only", (
   assert.deepEqual(ports, ["127.0.0.1:8233:8233"]);
 });
 
-test("pluggable-relay-store R7.S1: the package and the Helm chart say relay version 0.5.0", () => {
+test("relay-plugin-host R6.S2: the package and the Helm chart say relay version 0.7.0", () => {
   const pkg = JSON.parse(readFileSync(`${root}package.json`, "utf8")) as { version: string };
   const lock = JSON.parse(readFileSync(`${root}package-lock.json`, "utf8")) as { version: string };
   const chart = readFileSync(`${root}chart/relay/Chart.yaml`, "utf8");
-  assert.equal(pkg.version, "0.5.0");
-  assert.equal(lock.version, "0.5.0");
-  assert.match(chart, /^version: 0\.5\.0$/m);
-  assert.match(chart, /^appVersion: "0\.5\.0"$/m);
+  assert.equal(pkg.version, "0.7.0");
+  assert.equal(lock.version, "0.7.0");
+  assert.match(chart, /^version: 0\.7\.0$/m);
+  assert.match(chart, /^appVersion: "0\.7\.0"$/m);
 });
 
 test("pluggable-relay-store R5.S3: Compose runs the JSON store with a volume, and Temporal only in the dev profile", () => {
@@ -121,4 +121,21 @@ test("relay-plugin-host R5.S2: the chart's defaults have no plugin; plugin.sidec
   assert.doesNotMatch(command, /RELAY_STORE/);
   // A plugin and a store at once is an error.
   assert.throws(() => helm(["--set", "plugin.command=x", "--set", "store=json"]), /not both/);
+});
+
+test("relay-plugin-host R6.S2: the release notes of 0.7.0 say that nothing changes for owners, and the release uses them", () => {
+  const notes = readFileSync(`${root}release-notes/0.7.0.md`, "utf8");
+  assert.match(notes, /\*\*Nothing changes for owners\.\*\*/);
+  assert.match(notes, /RELAY_PLUGIN/);
+  const release = readFileSync(`${root}.github/workflows/release.yml`, "utf8");
+  assert.match(release, /release-notes\/\$version\.md/);
+});
+
+test("relay-plugin-host R6.S1: the README explains a store plugin and keeps JSON the default", () => {
+  const readme = readFileSync(`${root}README.md`, "utf8");
+  const section = readme.slice(readme.indexOf("### A store plugin"), readme.indexOf("### Switch between stores"));
+  assert.match(section, /plugin-json/);
+  assert.match(section, /plugin-temporal/);
+  assert.match(section, /RELAY_PLUGIN_URL/);
+  assert.match(readme, /The JSON store stays the default/);
 });
