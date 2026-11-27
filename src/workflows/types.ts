@@ -302,6 +302,23 @@ export interface SpecMemo {
   unreadForCoordinator: number;
   /** True when the spec no longer exists on the Mac (missing in older memos). */
   dropped?: boolean;
+  /** The pause of a spec that is not merged: its time and note (missing when the spec is not paused). */
+  paused?: PauseInfo;
+}
+
+/** The pause of a spec, from the `paused` field of its state. */
+export interface PauseInfo {
+  at: string | null;
+  note: string | null;
+}
+
+/** The pause of a spec that is not merged, or null. A merged stage wins over the pause. */
+export function pauseOf(state: Record<string, unknown> | null): PauseInfo | null {
+  if (!state || !isPaused(state) || mirrorFields(state).stage === "merged") return null;
+  const paused = state.paused as { at?: unknown; note?: unknown };
+  const at = typeof paused.at === "string" && paused.at ? paused.at : null;
+  const note = typeof paused.note === "string" && paused.note.trim() ? paused.note.trim() : null;
+  return { at, note };
 }
 
 // ---- relay-config workflow ----

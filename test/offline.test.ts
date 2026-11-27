@@ -570,3 +570,47 @@ test("with no turn from the app, a paused spec needs no user in list_specs, read
     await h.close();
   }
 });
+
+test("offline list_specs shows the pause of a paused spec, and no pause for a merged one", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: " Waiting for the API " } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "bare"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("bare", { paused: { at: "2026-11-02T10:00:00Z", by: "ross" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "shipped"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("shipped", { stage: "merged", status: "idle", paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Old" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const list = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO, all: true });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 4 ? l : null;
+    });
+    const bySlug = Object.fromEntries(list.specs.map((s: any) => [s.slug, s]));
+    assert.deepEqual(bySlug.held.paused, { at: "2026-11-01T10:00:00Z", note: "Waiting for the API" });
+    assert.deepEqual(bySlug.bare.paused, { at: "2026-11-02T10:00:00Z", note: null });
+    assert.equal(bySlug.shipped.paused, undefined);
+    assert.equal(bySlug.free.paused, undefined);
+
+    // read_spec of the merged spec does not say that it is paused.
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "shipped" });
+    assert.ok(!/The spec is paused/.test(read.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

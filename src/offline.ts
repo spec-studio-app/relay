@@ -4,7 +4,7 @@
 // old it is.
 import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
-import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
+import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields, pauseOf } from "./workflows/types.js";
 
 export interface ToolText {
   ok: boolean;
@@ -33,13 +33,11 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** " The spec is paused" with the note and the time, or "" when the state has no `paused`. */
-function pausedSummary(state: unknown): string {
-  const paused = (state as { paused?: { at?: unknown; note?: unknown } } | null | undefined)?.paused;
-  if (!paused || typeof paused !== "object") return "";
-  const note = typeof paused.note === "string" && paused.note.trim() ? `: ${paused.note.trim()}` : "";
-  const at = typeof paused.at === "string" && paused.at ? ` Paused at ${paused.at}.` : "";
-  return ` The spec is paused${note}.${at}`;
+/** " The spec is paused" with the note and the time, or "" when the spec is not paused or is merged. */
+function pausedSummary(state: Record<string, unknown> | null): string {
+  const paused = pauseOf(state);
+  if (!paused) return "";
+  return ` The spec is paused${paused.note ? `: ${paused.note}` : ""}.${paused.at ? ` Paused at ${paused.at}.` : ""}`;
 }
 
 export class OfflineTools implements OfflineReader {
@@ -130,6 +128,7 @@ export class OfflineTools implements OfflineReader {
         messagesForMac: s.memo!.waitingForMac,
         unreadMessages: s.memo!.unreadForCoordinator,
         ...(s.memo!.dropped ? { dropped: true } : {}),
+        ...(s.memo!.paused ? { paused: s.memo!.paused } : {}),
         ...(isArchived(s.repoKey) ? { archived: true } : {}),
       }));
     const times = specs.map((s) => s.syncedAt).filter((t): t is string => !!t).sort();

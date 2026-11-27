@@ -13,6 +13,7 @@ import {
   RECREATED_TEXT,
   STATUS_KINDS,
   effectiveTurn,
+  pauseOf,
   isStale,
   lastMessageAt,
   mirrorFields,
@@ -298,6 +299,7 @@ export function isDone(s: SpecWorkflowState): boolean {
 /** The summary of a spec that lists show (the workflow's memo). */
 export function specMemo(s: SpecWorkflowState): SpecMemo {
   const fields = mirrorFields(s.state);
+  const paused = pauseOf(s.state);
   return {
     repo: s.spec.repo ?? null,
     title: fields.title,
@@ -311,6 +313,7 @@ export function specMemo(s: SpecWorkflowState): SpecMemo {
     waitingForMac: s.mac.messages.length,
     unreadForCoordinator: unreadForCoordinator(s),
     ...(s.dropped ? { dropped: true } : {}),
+    ...(paused ? { paused } : {}),
   };
 }
 
