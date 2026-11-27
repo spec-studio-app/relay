@@ -5,7 +5,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, mcpRequest, signIn } from "./helpers.js";
 import { repoKeyOf, specAddress } from "../src/mirror.js";
-import { DESK_OFF_TEXT } from "../src/workflows/types.js";
+import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, DESK_OFF_TEXT } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -322,6 +322,106 @@ test("R2.S2, R2.S5: send_message to a desk that Claude AI cannot message fails w
   }
 });
 
+test("a desks frame that leaves out an archived repo marks its desk archived, and send_message says how to message it again", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  const gone = `${REPO}-gone`;
+  try {
+    await h.startConfig();
+    const { accessToken } = await signIn(t.base);
+    let agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, gone], archivedRepos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskOf(REPO), deskOf(gone)], archivedRepos: [] });
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(gone) }))?.canMessage === true);
+
+    // The user archives the repo: the Mac leaves it out of the desks and sends it in archivedRepos.
+    // The other repo left Spec Studio: it is gone.
+    agent.send({ type: "desks", desks: [], archivedRepos: [REPO] });
+    const archived = await eventually(async () => {
+      const state = await h.desks.get({ repoKey: repoKeyOf(REPO) });
+      return state?.reason === DESK_ARCHIVED_TEXT ? state : null;
+    });
+    assert.equal(archived.canMessage, false);
+    assert.equal(archived.open, false);
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(gone) }))?.reason === DESK_GONE_TEXT);
+
+    // Online, by the path and by the name: the archived refusal, not the gone text.
+    const byPath = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Hello" });
+    assert.equal(byPath.isError, true);
+    assert.equal(byPath.content[0].text, DESK_ARCHIVED_REFUSAL);
+    const name = REPO.split("/").pop()!;
+    const byName = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Hello" });
+    assert.equal(byName.isError, true);
+    assert.equal(byName.content[0].text, DESK_ARCHIVED_REFUSAL);
+    // A gone desk keeps its own text.
+    const toGone = await callTool(t.base, accessToken, "send_message", { repo: gone, text: "Hello" });
+    assert.equal(toGone.content[0].text, DESK_GONE_TEXT);
+
+    // Offline: the same refusal.
+    await agent.close();
+    await eventually(async () => !t.relay.hub.connected);
+    const offline = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Hello" });
+    assert.equal(offline.isError, true);
+    assert.equal(offline.content[0].text, DESK_ARCHIVED_REFUSAL);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(REPO) }))?.mac.messages.length, 0);
+
+    // The user unarchives the repo: its desk takes messages again.
+    agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO], archivedRepos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskOf(REPO)], archivedRepos: [] });
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(REPO) }))?.canMessage === true);
+    const again = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Back again." });
+    assert.equal(again.isError, undefined, again.content[0].text);
+    assert.equal(json(again).seq, 1);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("review: by name, an active desk wins over an archived desk with the same name", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  const suffix = randomBytes(4).toString("hex");
+  const name = `twin-${suffix}`;
+  const archivedPath = `/Users/me/old/${name}`;
+  const activePath = `/Users/me/new/${name}`;
+  const otherPath = `/Users/me/other/${name}`;
+  try {
+    const { accessToken } = await signIn(t.base);
+    const archived = { open: false, turn: null, canMessage: false, reason: DESK_ARCHIVED_TEXT };
+
+    // Only an archived desk has the name: the archived answer.
+    await h.desks.report(deskOf(archivedPath, archived));
+    await eventually(async () =>
+      (await h.desks.list()).some((d) => d.memo.repo === archivedPath && d.memo.reason === DESK_ARCHIVED_TEXT),
+    );
+    const onlyArchived = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Hello" });
+    assert.equal(onlyArchived.isError, true);
+    assert.equal(onlyArchived.content[0].text, DESK_ARCHIVED_REFUSAL);
+
+    // An active desk with the same name: the message goes to the active desk.
+    await h.desks.report(deskOf(activePath));
+    await eventually(async () => (await h.desks.list()).some((d) => d.memo.repo === activePath && d.memo.canMessage));
+    const sent = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Is CI green?" });
+    assert.equal(sent.isError, undefined, sent.content[0].text);
+    assert.equal(json(sent).desk.repo, activePath);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(activePath) }))?.mac.messages.length, 1);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(archivedPath) }))?.mac.messages.length, 0);
+
+    // Two active desks with the name: the name still needs the path.
+    await h.desks.report(deskOf(otherPath));
+    await eventually(async () => (await h.desks.list()).some((d) => d.memo.repo === otherPath && d.memo.canMessage));
+    const both = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Again?" });
+    assert.equal(both.isError, true);
+    assert.match(both.content[0].text, /More than one repo has the name/);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
 test("R4.S1, R4.S3: read_messages gives the desk's replies by repo, and with the replies of specs when no repo is given", async () => {
   const h = await harness(env);
   const t = await h.relay();
@@ -554,6 +654,117 @@ test("R4.S3: without a slug, each spec has its status change, and only the spec 
     assert.equal(bySlug.still.changed.at, "2026-11-24T10:00:00Z");
     assert.equal(bySlug.still.stale, undefined);
     assert.deepEqual(bySlug.still.turn, { turn: "working", needsYou: false });
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R7.S1: send_message to a paused spec stores the message and says that the spec is paused", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: {
+        slug: "held",
+        title: "held",
+        stage: "build",
+        status: "working",
+        paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" },
+      },
+      turn: null,
+    });
+    await synced(h, "free");
+    await h.mirror.sync(specAddress(REPO, "nonote"), {
+      line: 1,
+      event: { kind: "note" },
+      state: { slug: "nonote", title: "nonote", stage: "build", status: "working", paused: { at: "2026-11-01T10:00:00Z", by: "ross" } },
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+
+    const sent = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "held", text: "Hello." });
+    assert.equal(sent.isError, undefined, sent.content[0].text);
+    const [first, ...rest] = sent.content[0].text.split("\n");
+    const body = JSON.parse(first);
+    assert.equal(body.seq, 1);
+    assert.equal(body.paused, true);
+    assert.equal(rest.join("\n"), "The spec is paused: Waiting for the API");
+    // The message is in the inbox.
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(read.content[0].text, /1 message waits for the Mac/);
+
+    const noNote = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "nonote", text: "Hello." });
+    assert.match(noNote.content[0].text, /\nThe spec is paused\.$/);
+
+    // A spec with no paused field: the answer is the JSON alone, as before.
+    const free = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "free", text: "Hello." });
+    assert.ok(!free.content[0].text.includes("\n"));
+    assert.equal(json(free).paused, undefined);
+    assert.equal(json(free).seq, 1);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("read_messages of a paused spec with no turn from the app gives the turn paused, which needs no user", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "build", id: "s-1", text: "Paused for now." },
+      state: { slug: "held", title: "held", stage: "build", status: "awaiting-approval", paused: { at: "2026-11-24T14:00:00Z", by: "ross" } },
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+    const read = json(await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "held" }));
+    assert.deepEqual(read.turn, { turn: "paused", needsYou: false });
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("send_message to a spec of an archived repo says that the repo is archived, and the message waits in the inbox", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: { slug: "held", title: "held", stage: "build", status: "working", paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Later" } },
+      turn: null,
+    });
+    await synced(h, "plain");
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+
+    const plain = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "plain", text: "Hello." });
+    assert.equal(plain.isError, undefined, plain.content[0].text);
+    const [first, ...rest] = plain.content[0].text.split("\n");
+    assert.equal(JSON.parse(first).archived, true);
+    assert.equal(JSON.parse(first).paused, undefined);
+    assert.deepEqual(rest, ["The repo is archived."]);
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "plain" });
+    assert.match(read.content[0].text, /1 message waits for the Mac/);
+
+    // A paused spec of an archived repo: both lines.
+    const held = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "held", text: "Hello." });
+    const [hfirst, ...hrest] = held.content[0].text.split("\n");
+    assert.equal(JSON.parse(hfirst).paused, true);
+    assert.equal(JSON.parse(hfirst).archived, true);
+    assert.deepEqual(hrest, ["The spec is paused: Later", "The repo is archived."]);
+
+    // The repo is unarchived: no archived line.
+    await h.configStore.setArchivedRepos([], new Date());
+    const after = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "plain", text: "Again." });
+    assert.ok(!after.content[0].text.includes("\n"));
+    assert.equal(json(after).archived, undefined);
   } finally {
     await t.close();
     await h.close();

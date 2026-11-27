@@ -65,6 +65,7 @@ export function storeAgentBackend(deps: {
     downloadUrl: (objectKey) => deps.attachments.downloadUrl(objectKey),
     verifyAgent: (hash) => deps.config.verifyAgent(hash),
     hello: (repos, at) => deps.config.setRepos(repos, at),
+    archivedRepos: (repos, at) => deps.config.setArchivedRepos(repos, at),
     pair: (codeHash, secretHash, at) => deps.config.pair(codeHash, secretHash, at),
     unpair: (secretHash) => deps.config.unpair(secretHash),
     pairCodeValid: (codeHash) => deps.config.pairCodeValid(codeHash),

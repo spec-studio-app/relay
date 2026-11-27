@@ -239,6 +239,12 @@ export function runConformance(label: string, open: () => Promise<StoreUnderTest
 
     await config.setRepos(["/a", "/b"], new Date("2026-11-01T00:00:00Z"));
     assert.deepEqual(await config.repos(), { repos: ["/a", "/b"], at: "2026-11-01T00:00:00.000Z" });
+    // No archived list until the agent sends one; then the newest list replaces the last.
+    assert.equal(await config.archivedRepos(), null);
+    await config.setArchivedRepos(["/c"], new Date("2026-11-01T00:00:00Z"));
+    await config.setArchivedRepos(["/d"], new Date("2026-11-02T00:00:00Z"));
+    assert.deepEqual(await config.archivedRepos(), { repos: ["/d"], at: "2026-11-02T00:00:00.000Z" });
+    assert.deepEqual(await config.repos(), { repos: ["/a", "/b"], at: "2026-11-01T00:00:00.000Z" }, "the hello list stays");
 
     assert.equal(await config.registerClient({ client_id: "c1", redirect_uris: ["https://claude.ai/cb"] }), true);
     assert.equal((await config.getClient("c1"))?.signedIn, false);

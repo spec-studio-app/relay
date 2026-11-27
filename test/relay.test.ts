@@ -260,7 +260,7 @@ test("R17: the tool schemas have the optional area and project arguments", () =>
       assert.ok(schema.isOptional(), `${name}.${key} is optional`);
     }
   }
-  assert.deepEqual(tool("list_projects").inputSchema, {});
+  assert.deepEqual(Object.keys(tool("list_projects").inputSchema), ["archived"]);
 });
 
 test("a wrong password does not sign in", async () => {
@@ -827,3 +827,16 @@ async function fetchLoginPage(base: string): Promise<Response> {
   // openLogin consumed the page; post a wrong password to get the page again with its headers.
   return postLogin(base, request, "wrong password");
 }
+
+test("R11.S2, R15.S3: list_repos, list_specs and list_projects take an optional archived boolean", () => {
+  for (const name of ["list_repos", "list_specs", "list_projects"]) {
+    const tool = TOOLS.find((t) => t.name === name)!;
+    const archived = tool.inputSchema.archived;
+    assert.ok(archived, `${name} has no archived argument`);
+    assert.ok(archived.isOptional(), `${name}: archived is not optional`);
+    assert.match(archived.description ?? "", /archived/);
+  }
+  const send = LOCAL_TOOLS.find((t) => t.name === "send_message")!;
+  assert.match(send.description, /paused/);
+  assert.match(TOOLS.find((t) => t.name === "read_spec")!.description, /paused/);
+});

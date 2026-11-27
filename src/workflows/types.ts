@@ -189,16 +189,32 @@ export function mirrorFields(state: Record<string, unknown> | null): MirrorField
   };
 }
 
+/** True when the state has a `paused` object (the user paused the spec in Spec Studio). */
+export function isPaused(state: Record<string, unknown> | null): boolean {
+  const paused = state?.paused;
+  return !!paused && typeof paused === "object";
+}
+
 /**
  * The turn of a spec. The sync's turn comes from the app's turns.json; when the
  * app does not run it is null, and the turn comes from the state the way
  * `studio specs` does it: blocked and awaiting-approval need the user.
+ * A merged spec is merged, also when it is paused. A paused spec never needs
+ * the user, whatever its status.
+ *
+ * `archived`: the repo of the spec is in the archived list that the Mac sent
+ * last. Such a spec never needs the user: a turn from the app keeps its kind
+ * with needsYou false, and with no turn the kind is archived (merged and
+ * paused still win). The spec workflows do not know the list, so only the
+ * relay's tools pass it.
  */
-export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null): Turn | null {
-  if (turn) return turn;
-  if (!state) return null;
+export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null, archived = false): Turn | null {
+  if (turn) return archived && turn.needsYou ? { turn: turn.turn, needsYou: false } : turn;
+  if (!state) return archived ? { turn: "archived", needsYou: false } : null;
   const { stage, status } = mirrorFields(state);
   if (stage === "merged") return { turn: "merged", needsYou: false };
+  if (isPaused(state)) return { turn: "paused", needsYou: false };
+  if (archived) return { turn: "archived", needsYou: false };
   switch (status) {
     case "blocked":
       return { turn: "blocked", needsYou: true };
@@ -293,6 +309,23 @@ export interface SpecMemo {
   unreadForCoordinator: number;
   /** True when the spec no longer exists on the Mac (missing in older memos). */
   dropped?: boolean;
+  /** The pause of a spec that is not merged: its time and note (missing when the spec is not paused). */
+  paused?: PauseInfo;
+}
+
+/** The pause of a spec, from the `paused` field of its state. */
+export interface PauseInfo {
+  at: string | null;
+  note: string | null;
+}
+
+/** The pause of a spec that is not merged, or null. A merged stage wins over the pause. */
+export function pauseOf(state: Record<string, unknown> | null): PauseInfo | null {
+  if (!state || !isPaused(state) || mirrorFields(state).stage === "merged") return null;
+  const paused = state.paused as { at?: unknown; note?: unknown };
+  const at = typeof paused.at === "string" && paused.at ? paused.at : null;
+  const note = typeof paused.note === "string" && paused.note.trim() ? paused.note.trim() : null;
+  return { at, note };
 }
 
 // ---- relay-config workflow ----
@@ -322,6 +355,12 @@ export interface RelayConfigState {
   refresh: Record<string, StoredToken>;
   /** The repos from the agent's last hello, and its time. */
   repos: { repos: string[]; at: string } | null;
+  /**
+   * The archived repos (paths) from the agent's last desks frame or hello
+   * that had `archivedRepos`, and its time. Null (or missing, in a state from
+   * an older relay) when no agent sent the list: then no repo counts as archived.
+   */
+  archivedRepos?: { repos: string[]; at: string } | null;
   updateLimit: number;
 }
 
@@ -338,6 +377,7 @@ export function initialRelayConfigState(deployId: string, pairCode: { hash: stri
     access: {},
     refresh: {},
     repos: null,
+    archivedRepos: null,
     updateLimit: DEFAULT_CONFIG_UPDATE_LIMIT,
   };
 }
@@ -403,6 +443,15 @@ export interface DeskMemo {
  * user removed or moved the repo). The same text as the agent's.
  */
 export const DESK_GONE_TEXT = "The repo is not in Spec Studio on this Mac.";
+
+/**
+ * The reason of a desk whose repo is not in the Mac's last desks frame because
+ * the user archived it (the repo is in the frame's `archivedRepos`).
+ */
+export const DESK_ARCHIVED_TEXT = "The repo is archived.";
+
+/** The refusal of send_message to the desk of an archived repo. */
+export const DESK_ARCHIVED_REFUSAL = "The repo is archived. Unarchive it in Spec Studio to message its desk.";
 
 /** The refusal when Claude AI cannot message a desk and the agent gave no reason. */
 export const DESK_OFF_TEXT =

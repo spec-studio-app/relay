@@ -39,6 +39,7 @@ test("R1.S1: a relay on the JSON store pairs, syncs, reads offline and carries m
         push: (spec, message) => hub.pushMessage(spec, message),
         pushDesk: (desk, message) => hub.pushDeskMessage(desk, message),
         waitMs: 1000,
+        archivedRepos: async () => (await store.config.archivedRepos())?.repos ?? null,
       }),
   });
   try {

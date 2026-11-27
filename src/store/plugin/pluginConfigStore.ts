@@ -98,6 +98,14 @@ export class PluginConfigStore implements RelayConfigStore {
     return (await this.current()).repos;
   }
 
+  setArchivedRepos(repos: string[], at: Date): Promise<void> {
+    return this.change((s) => rules.setArchivedRepos(s, { repos, at: at.toISOString() }));
+  }
+
+  async archivedRepos(): Promise<{ repos: string[]; at: string } | null> {
+    return (await this.current()).archivedRepos ?? null;
+  }
+
   async getClient(id: string): Promise<StoredClient | null> {
     return rules.client(await this.current(), id);
   }

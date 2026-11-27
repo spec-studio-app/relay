@@ -576,3 +576,25 @@ test("R4.S4: upload-url with a desk gives an object key in the desk's own prefix
     await h.close();
   }
 });
+
+test("the hub keeps a valid archivedRepos list of a desks frame and ignores one that is not valid", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskEntry()], archivedRepos: ["/Users/me/code/old", "/Users/me/code/old"] });
+    const kept = await eventually(() => h.configStore.archivedRepos());
+    assert.deepEqual(kept.repos, ["/Users/me/code/old"]);
+    // Not a list of paths: the relay keeps the last list.
+    agent.send({ type: "desks", desks: [deskEntry()], archivedRepos: [42] });
+    agent.send({ type: "desks", desks: [deskEntry()], archivedRepos: "/x" });
+    await sleep(300);
+    assert.deepEqual((await h.configStore.archivedRepos())?.repos, ["/Users/me/code/old"]);
+    await agent.close();
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

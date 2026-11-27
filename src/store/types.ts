@@ -107,6 +107,10 @@ export interface RelayConfigStore {
   unpair(secretHash: string): Promise<boolean>;
   setRepos(repos: string[], at: Date): Promise<void>;
   repos(): Promise<RelayConfigState["repos"]>;
+  /** Keep the archived repos (paths) that the agent sent, and the time. */
+  setArchivedRepos(repos: string[], at: Date): Promise<void>;
+  /** The archived repos that the agent sent last, or null when no agent sent a list. */
+  archivedRepos(): Promise<{ repos: string[]; at: string } | null>;
   getClient(id: string): Promise<StoredClient | null>;
   registerClient(client: StoredClient["client"]): Promise<boolean>;
   markSignedIn(clientId: string): Promise<void>;

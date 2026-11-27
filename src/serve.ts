@@ -45,6 +45,7 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
         lastSyncAt: () => lastSyncAt(store.specs),
         macTakesDesks: () => hub.macTakesDesks(),
         helloRepos: async () => (await store.config.repos())?.repos ?? null,
+        archivedRepos: async () => (await store.config.archivedRepos())?.repos ?? null,
       }),
   });
   const server = createServer(relay.app);
