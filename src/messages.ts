@@ -7,7 +7,7 @@ import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
 import type { ReadResult } from "./workflows/specRules.js";
-import { DESK_GONE_TEXT, pauseOf } from "./workflows/types.js";
+import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, pauseOf } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
 export const READ_WAIT_MS = 20_000;
@@ -41,7 +41,12 @@ function str(value: unknown): string | undefined {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The line of a send_message answer and an offline read_spec for a spec of an archived repo. */
-export const ARCHIVED_REPO_TEXT = "The repo is archived.";
+export const ARCHIVED_REPO_TEXT = DESK_ARCHIVED_TEXT;
+
+/** The refusal text of a desk: an archived desk says how to message it again. */
+function deskRefusal(reason: string): string {
+  return reason === DESK_ARCHIVED_TEXT ? DESK_ARCHIVED_REFUSAL : reason;
+}
 
 /** The tool's text when the relay has no desk for the repo. */
 export function noDeskText(repo: string): string {
@@ -123,7 +128,7 @@ export class MessageTools {
       if (error instanceof SpecNotFoundError) {
         return { ok: false, text: `The relay has no synced spec with this repo and slug. ${await this.lastSyncText()} Check them with list_specs.` };
       }
-      if (error instanceof DeskRefusedError) return { ok: false, text: error.message };
+      if (error instanceof DeskRefusedError) return { ok: false, text: deskRefusal(error.message) };
       if (error instanceof DeskNotFoundError) return { ok: false, text: await this.noDesk(str(args.repo) ?? "") };
       return { ok: false, text: "The relay cannot reach its store now. Try again later." };
     }
@@ -161,7 +166,7 @@ export class MessageTools {
     if (byPath) return byPath;
     if (repo.includes("/")) return null;
     // Desk records stay after a repo moves or leaves Spec Studio: a name
-    // matches only the desks of the Mac's last desks frame.
+    // matches only the desks of the Mac's last desks frame, and the archived desks.
     const named = (await desks.list()).filter(
       (d) => d.memo.repo && repoName(d.memo.repo) === repo && d.memo.reason !== DESK_GONE_TEXT,
     );

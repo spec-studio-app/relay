@@ -5,7 +5,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn } from "./helpers.js";
 import { repoKeyOf, specAddress } from "../src/mirror.js";
-import { effectiveTurn } from "../src/workflows/types.js";
+import { DESK_ARCHIVED_TEXT, effectiveTurn } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -448,14 +448,21 @@ test("R11.S2: offline list_repos with archived true lists the archived repos tha
     assert.deepEqual(JSON.parse(njson), [REPO]);
 
     await h.configStore.setArchivedRepos([OTHER], new Date("2026-11-20T10:00:00Z"));
+    // The desk of the archived repo, as a desks frame that leaves the repo out marks it.
+    await h.desks.report({ repoKey: repoKeyOf(OTHER), repo: OTHER, open: false, turn: null, canMessage: false, reason: DESK_ARCHIVED_TEXT });
     const r = await callTool(t.base, accessToken, "list_repos", { archived: true });
     const lines = r.content[0].text.split("\n");
     assert.deepEqual(JSON.parse(lines[1]), [REPO]);
     assert.equal(lines[2], "The archived repos, from the list that the Mac sent at 2026-11-20T10:00:00.000Z:");
     assert.deepEqual(JSON.parse(lines[3]), [OTHER]);
-    // Without archived, the list has no archived repos.
+    // With archived, the desks show the archived desk with its reason.
+    const archivedDesk = (JSON.parse(lines[5]) as Array<Record<string, unknown>>).find((d) => d.repo === OTHER);
+    assert.equal(archivedDesk?.reason, DESK_ARCHIVED_TEXT);
+    assert.equal(archivedDesk?.canMessage, false);
+    // Without archived, the list has no archived repos and no archived desk.
     const plain = await callTool(t.base, accessToken, "list_repos", {});
     assert.ok(!plain.content[0].text.includes("archived repos"));
+    assert.ok(!plain.content[0].text.includes(OTHER));
   } finally {
     await t.close();
     await h.close();

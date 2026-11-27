@@ -437,6 +437,15 @@ export interface DeskMemo {
  */
 export const DESK_GONE_TEXT = "The repo is not in Spec Studio on this Mac.";
 
+/**
+ * The reason of a desk whose repo is not in the Mac's last desks frame because
+ * the user archived it (the repo is in the frame's `archivedRepos`).
+ */
+export const DESK_ARCHIVED_TEXT = "The repo is archived.";
+
+/** The refusal of send_message to the desk of an archived repo. */
+export const DESK_ARCHIVED_REFUSAL = "The repo is archived. Unarchive it in Spec Studio to message its desk.";
+
 /** The refusal when Claude AI cannot message a desk and the agent gave no reason. */
 export const DESK_OFF_TEXT =
   "Claude AI cannot message this desk. The user can turn it on in Spec Studio, Settings, Remote Relay.";

@@ -79,7 +79,9 @@ export class OfflineTools implements OfflineReader {
     if (!this.deps.desks) return { ok: true, text };
     // The desk of each repo, as the Mac last sent it, with the time of that state.
     // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
+    // With archived, the desks of the archived repos too (each one says that the repo is archived).
     const keys = new Set(repos.repos.map((path) => repoKeyOf(path)));
+    if (args.archived === true) for (const key of await this.archivedKeys()) keys.add(key);
     const desks = (await this.deps.desks.list())
       .filter((d) => keys.has(d.repoKey) && d.memo.reason !== DESK_GONE_TEXT)
       .map((d) => ({

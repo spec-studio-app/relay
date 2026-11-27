@@ -5,7 +5,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, mcpRequest, signIn } from "./helpers.js";
 import { repoKeyOf, specAddress } from "../src/mirror.js";
-import { DESK_OFF_TEXT } from "../src/workflows/types.js";
+import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, DESK_OFF_TEXT } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -316,6 +316,64 @@ test("R2.S2, R2.S5: send_message to a desk that Claude AI cannot message fails w
     assert.equal(sync.isError, true);
     assert.equal(sync.content[0].text, "Sync is off for this repo on the Mac.");
     assert.equal((await h.desks.get({ repoKey: repoKeyOf(REPO) }))?.mac.messages.length, 0);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("a desks frame that leaves out an archived repo marks its desk archived, and send_message says how to message it again", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  const gone = `${REPO}-gone`;
+  try {
+    await h.startConfig();
+    const { accessToken } = await signIn(t.base);
+    let agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, gone], archivedRepos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskOf(REPO), deskOf(gone)], archivedRepos: [] });
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(gone) }))?.canMessage === true);
+
+    // The user archives the repo: the Mac leaves it out of the desks and sends it in archivedRepos.
+    // The other repo left Spec Studio: it is gone.
+    agent.send({ type: "desks", desks: [], archivedRepos: [REPO] });
+    const archived = await eventually(async () => {
+      const state = await h.desks.get({ repoKey: repoKeyOf(REPO) });
+      return state?.reason === DESK_ARCHIVED_TEXT ? state : null;
+    });
+    assert.equal(archived.canMessage, false);
+    assert.equal(archived.open, false);
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(gone) }))?.reason === DESK_GONE_TEXT);
+
+    // Online, by the path and by the name: the archived refusal, not the gone text.
+    const byPath = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Hello" });
+    assert.equal(byPath.isError, true);
+    assert.equal(byPath.content[0].text, DESK_ARCHIVED_REFUSAL);
+    const name = REPO.split("/").pop()!;
+    const byName = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Hello" });
+    assert.equal(byName.isError, true);
+    assert.equal(byName.content[0].text, DESK_ARCHIVED_REFUSAL);
+    // A gone desk keeps its own text.
+    const toGone = await callTool(t.base, accessToken, "send_message", { repo: gone, text: "Hello" });
+    assert.equal(toGone.content[0].text, DESK_GONE_TEXT);
+
+    // Offline: the same refusal.
+    await agent.close();
+    await eventually(async () => !t.relay.hub.connected);
+    const offline = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Hello" });
+    assert.equal(offline.isError, true);
+    assert.equal(offline.content[0].text, DESK_ARCHIVED_REFUSAL);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(REPO) }))?.mac.messages.length, 0);
+
+    // The user unarchives the repo: its desk takes messages again.
+    agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO], archivedRepos: [] });
+    await agent.next("welcome");
+    agent.send({ type: "desks", desks: [deskOf(REPO)], archivedRepos: [] });
+    await eventually(async () => (await h.desks.get({ repoKey: repoKeyOf(REPO) }))?.canMessage === true);
+    const again = await callTool(t.base, accessToken, "send_message", { repo: REPO, text: "Back again." });
+    assert.equal(again.isError, undefined, again.content[0].text);
+    assert.equal(json(again).seq, 1);
+    await agent.close();
   } finally {
     await t.close();
     await h.close();

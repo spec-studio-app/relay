@@ -65,7 +65,8 @@ import type { Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
 import { INCOMPATIBLE_CLOSE_CODE, MIN_APP_VERSION_FOR_WIRE, RELAY_VERSION, SUPPORTED_WIRES, WIRE_VERSION } from "./version.js";
 import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress } from "./workflows/types.js";
-import { DESK_GONE_TEXT } from "./workflows/types.js";
+import { DESK_ARCHIVED_TEXT, DESK_GONE_TEXT } from "./workflows/types.js";
+import { repoKeyOf } from "./store/address.js";
 
 export interface CallResult {
   ok: boolean;
@@ -200,6 +201,8 @@ export class AgentHub {
   private readonly welcomedAt = new WeakMap<WebSocket, number>();
   /** The repo keys of the newest desks frame. A gone write of an older frame checks it, so it cannot undo a newer frame. */
   private lastDesksListed = new Set<string>();
+  /** The repo keys of the newest archivedRepos list. A desk that a desks frame leaves out is archived when its repo is in it. */
+  private lastArchivedKeys = new Set<string>();
 
   constructor(private readonly options: AgentHubOptions) {
     this.startedAt = options.now();
@@ -663,6 +666,7 @@ export class AgentHub {
       this.options.log({ event: "agent_bad_archived_repos" });
       return;
     }
+    this.lastArchivedKeys = new Set(repos.map((path) => repoKeyOf(path)));
     const at = this.options.now();
     this.chain(ARCHIVED_CHAIN_KEY, async () => {
       try {
@@ -671,6 +675,14 @@ export class AgentHub {
         this.options.log({ event: "archived_repos_failed" });
       }
     });
+  }
+
+  /**
+   * The reason of a desk that the newest desks frame leaves out: archived when
+   * its repo is in the newest archivedRepos list, else gone.
+   */
+  private leftOutReason(repoKey: string): string {
+    return this.lastArchivedKeys.has(repoKey) ? DESK_ARCHIVED_TEXT : DESK_GONE_TEXT;
   }
 
   /** The agent's desks frame: save each desk, then push the waiting desk messages. */
@@ -695,10 +707,12 @@ export class AgentHub {
         new Promise<boolean>((resolve) =>
           this.chain(deskChainKey(report), async () => {
             try {
-              // A newer desks frame left the repo out: the desk is gone, not open.
+              // A newer desks frame left the repo out: the desk is gone or archived, not open.
               const listed = this.lastDesksListed.has(report.repoKey);
               await desks.report([
-                listed ? report : { repoKey: report.repoKey, repo: report.repo, open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
+                listed
+                  ? report
+                  : { repoKey: report.repoKey, repo: report.repo, open: false, turn: null, canMessage: false, reason: this.leftOutReason(report.repoKey) },
               ]);
               resolve(true);
             } catch {
@@ -709,10 +723,11 @@ export class AgentHub {
     );
     // A desk record that the frame does not list belongs to a repo that left
     // Spec Studio or moved: it takes no more messages, and a name does not find it.
+    // When the repo is in the frame's archivedRepos, the desk is archived, not gone.
     const listed = new Set(reports.map((report) => report.repoKey));
     this.lastDesksListed = listed;
     const gone = (desks.list ? desks.list() : Promise.resolve([]))
-      .then((all) => all.filter((d) => !listed.has(d.repoKey) && d.reason !== DESK_GONE_TEXT))
+      .then((all) => all.filter((d) => !listed.has(d.repoKey) && d.reason !== this.leftOutReason(d.repoKey)))
       .catch(() => [])
       .then((stale) =>
         Promise.all(
@@ -725,10 +740,13 @@ export class AgentHub {
                     resolve(true);
                     return;
                   }
+                  const reason = this.leftOutReason(d.repoKey);
+                  if (d.reason === reason) {
+                    resolve(true);
+                    return;
+                  }
                   try {
-                    await desks.report([
-                      { repoKey: d.repoKey, repo: d.repo ?? "", open: false, turn: null, canMessage: false, reason: DESK_GONE_TEXT },
-                    ]);
+                    await desks.report([{ repoKey: d.repoKey, repo: d.repo ?? "", open: false, turn: null, canMessage: false, reason }]);
                     resolve(true);
                   } catch {
                     resolve(false);
