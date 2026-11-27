@@ -380,6 +380,48 @@ test("a desks frame that leaves out an archived repo marks its desk archived, an
   }
 });
 
+test("review: by name, an active desk wins over an archived desk with the same name", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  const suffix = randomBytes(4).toString("hex");
+  const name = `twin-${suffix}`;
+  const archivedPath = `/Users/me/old/${name}`;
+  const activePath = `/Users/me/new/${name}`;
+  const otherPath = `/Users/me/other/${name}`;
+  try {
+    const { accessToken } = await signIn(t.base);
+    const archived = { open: false, turn: null, canMessage: false, reason: DESK_ARCHIVED_TEXT };
+
+    // Only an archived desk has the name: the archived answer.
+    await h.desks.report(deskOf(archivedPath, archived));
+    await eventually(async () =>
+      (await h.desks.list()).some((d) => d.memo.repo === archivedPath && d.memo.reason === DESK_ARCHIVED_TEXT),
+    );
+    const onlyArchived = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Hello" });
+    assert.equal(onlyArchived.isError, true);
+    assert.equal(onlyArchived.content[0].text, DESK_ARCHIVED_REFUSAL);
+
+    // An active desk with the same name: the message goes to the active desk.
+    await h.desks.report(deskOf(activePath));
+    await eventually(async () => (await h.desks.list()).some((d) => d.memo.repo === activePath && d.memo.canMessage));
+    const sent = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Is CI green?" });
+    assert.equal(sent.isError, undefined, sent.content[0].text);
+    assert.equal(json(sent).desk.repo, activePath);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(activePath) }))?.mac.messages.length, 1);
+    assert.equal((await h.desks.get({ repoKey: repoKeyOf(archivedPath) }))?.mac.messages.length, 0);
+
+    // Two active desks with the name: the name still needs the path.
+    await h.desks.report(deskOf(otherPath));
+    await eventually(async () => (await h.desks.list()).some((d) => d.memo.repo === otherPath && d.memo.canMessage));
+    const both = await callTool(t.base, accessToken, "send_message", { repo: name, text: "Again?" });
+    assert.equal(both.isError, true);
+    assert.match(both.content[0].text, /More than one repo has the name/);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
 test("R4.S1, R4.S3: read_messages gives the desk's replies by repo, and with the replies of specs when no repo is given", async () => {
   const h = await harness(env);
   const t = await h.relay();

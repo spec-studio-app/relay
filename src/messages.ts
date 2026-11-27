@@ -158,7 +158,8 @@ export class MessageTools {
 
   /**
    * The desk of a repo: by its path, or by its name when one desk has that
-   * name. Null when the relay has no desk for the repo.
+   * name. By name, an active desk wins over an archived desk. Null when the
+   * relay has no desk for the repo.
    */
   private async findDesk(repo: string): Promise<DeskState | null> {
     const desks = this.o.desks!;
@@ -170,10 +171,14 @@ export class MessageTools {
     const named = (await desks.list()).filter(
       (d) => d.memo.repo && repoName(d.memo.repo) === repo && d.memo.reason !== DESK_GONE_TEXT,
     );
-    if (named.length > 1) {
+    // An archived desk matches only when no active desk has the name, so that
+    // its archived answer still works by name.
+    const active = named.filter((d) => d.memo.reason !== DESK_ARCHIVED_TEXT);
+    const matches = active.length > 0 ? active : named;
+    if (matches.length > 1) {
       throw new DeskRefusedError(`More than one repo has the name "${repo}". Give the repo path from list_repos.`);
     }
-    return named.length === 1 ? desks.get({ repoKey: named[0].repoKey }) : null;
+    return matches.length === 1 ? desks.get({ repoKey: matches[0].repoKey }) : null;
   }
 
   /** The attachments of a message, from their object keys. A string is the tool's error. */
