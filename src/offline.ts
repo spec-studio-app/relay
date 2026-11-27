@@ -4,6 +4,7 @@
 // old it is.
 import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
+import { StoreUnavailableError } from "./store/errors.js";
 import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields } from "./workflows/types.js";
 
 export interface ToolText {
@@ -45,7 +46,8 @@ export class OfflineTools implements OfflineReader {
       if (tool === "list_repos") return await this.listRepos(args, offlineText);
       if (tool === "list_specs") return await this.listSpecs(args, offlineText);
       if (tool === "read_spec") return await this.readSpec(args, offlineText);
-    } catch {
+    } catch (error) {
+      if (error instanceof StoreUnavailableError) return { ok: false, text: `${offlineText} ${error.message}` };
       return { ok: false, text: `${offlineText} The relay cannot read its copy of the specs now.` };
     }
     return { ok: false, text: offlineText };
