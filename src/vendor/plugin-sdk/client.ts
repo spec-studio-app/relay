@@ -23,6 +23,8 @@ import {
   type Json,
   type NewEvent,
   type PingResult,
+  type StateCommitParams,
+  type StateCommitResult,
   type StateDeleteParams,
   type StateGetParams,
   type StateGetResult,
@@ -384,6 +386,15 @@ export class PluginClient {
   }
 
   /**
+   * True when the handshake chose this protocol version or a later minor
+   * version of the same major version. Example: speaks("1.1") before a call
+   * of state.commit.
+   */
+  speaks(version: string): boolean {
+    return atLeast(this.info.protocolVersion, version);
+  }
+
+  /**
    * Make any call. Prefer the typed calls. Over HTTP, when the plugin lost
    * the session (it restarted), the client sends the handshake again and
    * retries the call once.
@@ -427,6 +438,12 @@ export class PluginClient {
     put: (p: StatePutParams): Promise<StatePutResult> => this.call("state.put", p),
     delete: (p: StateDeleteParams): Promise<{ deleted: true }> => this.call("state.delete", p),
     list: (p: StateListParams): Promise<StateListResult> => this.call("state.list", p),
+    /**
+     * Protocol 1.1: check the expected version, write the document and append
+     * the events in one atomic step. A false check is a conflict error, and
+     * the plugin writes no document and no event.
+     */
+    commit: (p: StateCommitParams): Promise<StateCommitResult> => this.call("state.commit", p),
     /** Every document of the list, page by page. */
     listAll: async (p: Omit<StateListParams, "cursor">): Promise<Document[]> => {
       const out: Document[] = [];
@@ -498,6 +515,17 @@ export class PluginClient {
   readonly test = {
     continueStream: (stream: string): Promise<{ run: string }> => this.call("test.continueStream", { stream }),
   };
+}
+
+/** True when version v is want or a later minor version of the same major version. */
+export function atLeast(v: string, want: string): boolean {
+  const parse = (x: string): [number, number] | null => {
+    const m = /^(\d+)\.(\d+)$/.exec(x);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  };
+  const a = parse(v);
+  const b = parse(want);
+  return a !== null && b !== null && a[0] === b[0] && a[1] >= b[1];
 }
 
 function helloOf(o: ConnectOptions): HandshakeParams {

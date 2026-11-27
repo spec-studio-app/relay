@@ -1,10 +1,10 @@
-// The messages of the Spec Studio backend plugin protocol, version 1.0.
+// The messages of the Spec Studio backend plugin protocol, version 1.1.
 // PROTOCOL.md at the root of the repo defines them.
 
-export const PROTOCOL_VERSION = "1.0";
-export const PROTOCOL_VERSIONS = ["1.0"];
+export const PROTOCOL_VERSION = "1.1";
+export const PROTOCOL_VERSIONS = ["1.0", "1.1"];
 
-export type HostKind = "app" | "relay" | "test";
+export type HostKind = "app" | "relay" | "cli" | "test";
 export type Capability = "state" | "events" | "blobs" | "watch";
 export type TestHook = "continueStream";
 
@@ -58,8 +58,8 @@ export interface HandshakeResult {
   /** Over HTTP only. */
   session?: string;
   /**
-   * Protocol 1.1, optional. Two plugin processes that read and write the
-   * same data give the same storeId.
+   * Protocol 1.1, optional. Names the data that the plugin reads and writes:
+   * two plugin processes on the same data give the same storeId.
    */
   storeId?: string;
 }
@@ -118,6 +118,26 @@ export interface Document {
 export interface StateListResult {
   items: Document[];
   cursor: string | null;
+}
+
+/** The params of state.commit (protocol 1.1). */
+export interface StateCommitParams {
+  collection: string;
+  key: string;
+  value: Json;
+  attributes?: Attributes;
+  /** null: the document must not exist. */
+  expectedVersion: string | null;
+  stream: string;
+  /** Can be empty: then the commit writes only the document. */
+  events: NewEvent[];
+}
+
+export interface StateCommitResult {
+  version: string;
+  updatedAt: string;
+  /** One cursor for each event, in order. */
+  cursors: string[];
 }
 
 export interface NewEvent {

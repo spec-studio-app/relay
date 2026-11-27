@@ -319,6 +319,19 @@ test("R3.S4: a finished spec closes after its grace period, and stays in a list 
   }
 });
 
+test("R10: the memory plugin of plugin-sdk chooses protocol 1.1 with the relay, and gives its storeId", { skip }, async () => {
+  const s = await memoryStore("stdio");
+  try {
+    assert.equal(s.store.client.info.protocolVersion, "1.1");
+    const identity = s.store.identity();
+    assert.ok(identity, "a 1.1 handshake gives the storeId");
+    assert.equal(identity.plugin, "memory");
+    assert.match(identity.storeId, /\S/);
+  } finally {
+    await s.close();
+  }
+});
+
 test("R3.S5: the grace period survives a restart of the relay", { skip }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-plugin-grace-"));
   const dataFile = join(dir, "memory.json");

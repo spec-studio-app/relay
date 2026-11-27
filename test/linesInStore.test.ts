@@ -39,24 +39,24 @@ async function openShared(flags: string[] = ["--events", "--store-id", STORE_ID]
   return store;
 }
 
-/** The Mac writes its state and its activity lines to the shared store, as the app's state.commit does. */
-async function macCommit(store: PluginRelayStore, slug: string, state: Record<string, unknown>, lines: Array<Record<string, unknown>>): Promise<void> {
+/** The Mac writes its state and its activity lines to the shared store with state.commit (protocol 1.1), as the app does. */
+async function macCommit(store: PluginRelayStore, slug: string, state: Record<string, unknown>, lines: Array<unknown>): Promise<void> {
   const spec = address(slug);
   const key = specKey(spec);
   const doc = await store.client.state.get({ collection: APP_SPECS, key });
-  await store.client.state.put({
+  await store.client.state.commit({
     collection: APP_SPECS,
     key,
     value: state as never,
     attributes: { repoKey: spec.repoKey, stage: String(state.stage), status: String(state.status), repo: REPO },
     expectedVersion: doc.exists ? doc.version : null,
+    stream: specStream(spec),
+    events: lines.map((data) => ({
+      type: ACTIVITY_EVENT,
+      data: data as never,
+      ...(typeof data === "object" && data !== null && "t" in data ? { at: String((data as { t: unknown }).t) } : {}),
+    })),
   });
-  if (lines.length > 0) {
-    await store.client.events.append(
-      specStream(spec),
-      lines.map((data) => ({ type: ACTIVITY_EVENT, data: data as never, at: String(data.t) })),
-    );
-  }
 }
 
 async function streamOf(store: PluginRelayStore, slug: string) {
@@ -186,6 +186,32 @@ test("R10.S1: the welcome carries the store, and a linesInStore frame gets synce
     assert.deepEqual(normal, { type: "synced", spec: { repoKey: other.repoKey, slug: "normal" }, line: 1 });
     assert.deepEqual((await store.specs.state(other))?.events.map((e) => e.line), [1]);
     assert.deepEqual((await streamOf(store, "normal")).map((e) => e.type), ["sync"]);
+    await agent.close();
+  } finally {
+    await t.close();
+    await store.close();
+  }
+});
+
+test("R10.S1: the relay offers protocol 1.1, so a plugin that speaks it chooses 1.1 and gives its storeId", async () => {
+  const store = await openShared();
+  try {
+    assert.equal(store.client.info.protocolVersion, "1.1");
+    assert.deepEqual(store.identity(), { plugin: "fake", storeId: STORE_ID });
+  } finally {
+    await store.close();
+  }
+});
+
+test("R10.S2: a plugin that speaks only 1.0 chooses 1.0 and gives no storeId: no store in the welcome", async () => {
+  const store = await openShared(["--events", "--store-id", STORE_ID, "--only-1.0"]);
+  assert.equal(store.client.info.protocolVersion, "1.0");
+  assert.equal(store.identity(), null);
+  const t = await relayOn(store);
+  try {
+    const agent = await connectAgent(t.base, AGENT_SECRET, HELLO);
+    const welcome = await agent.next("welcome");
+    assert.equal("store" in welcome, false);
     await agent.close();
   } finally {
     await t.close();

@@ -4,12 +4,15 @@
 // events unless --events), and does what its flags say:
 //   --refuse-settings     the handshake fails with bad_settings
 //   --version2            it speaks only protocol 2.0
+//   --only-1.0            it speaks only protocol 1.0 (an SDK before 1.1: no storeId, no state.commit)
 //   --conflict            every state.put answers conflict
 //   --exit-file <path>    when the file exists at a call, remove it and exit with code 3
 //   --record <path>       append each method name to the file
 //   --echo-settings       plugin.repo in the handshake result holds the settings it got (as JSON)
 //   --events              it gives events (in memory): append, read and delete
-//   --store-id <id>       the handshake result has this storeId (protocol 1.1)
+//   --store-id <id>       the handshake result has this storeId, only when the handshake chose 1.1 or later
+// By default it speaks 1.0 and 1.1 (with state.commit when --events), and the
+// handshake chooses the highest version that both speak, as PROTOCOL.md says.
 import { appendFileSync, existsSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -21,7 +24,7 @@ const option = (name) => {
 };
 const exitFile = option("--exit-file");
 const record = option("--record");
-const versions = flag("--version2") ? ["2.0"] : ["1.0"];
+const versions = flag("--version2") ? ["2.0"] : flag("--only-1.0") ? ["1.0"] : ["1.0", "1.1"];
 const storeId = option("--store-id");
 const docs = new Map();
 /** The events of each stream: { cursor, type, at, data }. A cursor is a number, as text, over all streams. */
@@ -29,6 +32,13 @@ const streams = new Map();
 let eventSeq = 0;
 let version = 0;
 let shook = false;
+/** The protocol version that the handshake chose. */
+let chosen = null;
+
+/** The version as [major, minor]. */
+const parts = (v) => v.split(".").map(Number);
+/** True when version v is want or a later minor version of the same major version. */
+const atLeast = (v, want) => parts(v)[0] === parts(want)[0] && parts(v)[1] >= parts(want)[1];
 
 const info = (settings) => ({
   name: "fake",
@@ -54,21 +64,24 @@ function call(id, method, params) {
   if (method === "plugin.handshake") {
     if (shook) return error(id, -32005, "refused", "The handshake was done already.");
     if (flag("--refuse-settings")) return error(id, -32007, "bad_settings", "The setting address is required.");
-    const shared = (params.protocolVersions ?? []).filter((v) => v.split(".")[0] === versions[0].split(".")[0]);
+    const shared = (params.protocolVersions ?? []).filter((v) => versions.includes(v));
     if (shared.length === 0) {
       return error(id, -32005, "refused", `No shared protocol version. The host speaks ${params.protocolVersions.join(", ")}; the plugin speaks ${versions.join(", ")}.`);
     }
+    // The highest version that both speak.
+    chosen = shared.sort((a, b) => parts(b)[0] - parts(a)[0] || parts(b)[1] - parts(a)[1])[0];
     shook = true;
     return send({
       id,
       result: {
         plugin: info(params.settings ?? {}),
-        protocolVersion: versions[0],
+        protocolVersion: chosen,
         capabilities: flag("--events") ? ["state", "events"] : ["state"],
         testHooks: [],
         durable: false,
         limits: { maxMessageBytes: 2097152, maxChunkBytes: 1048576, maxPageSize: 1000, maxWaitMs: 60000 },
-        ...(storeId ? { storeId } : {}),
+        // A plugin gives storeId only when the handshake chose 1.1 or later (PROTOCOL.md, plugin.handshake).
+        ...(storeId && atLeast(chosen, "1.1") ? { storeId } : {}),
       },
     });
   }
@@ -108,6 +121,24 @@ function call(id, method, params) {
         if (match) items.push({ key: rest.join("/"), attributes: d.attributes, version: d.version, updatedAt: d.updatedAt, ...(params.withValues ? { value: d.value } : {}) });
       }
       return send({ id, result: { items, cursor: null } });
+    }
+    case "state.commit": {
+      // Protocol 1.1: the version check, the document and the events in one step.
+      if (!atLeast(chosen, "1.1") || !flag("--events")) break;
+      const d = docs.get(k);
+      const stored = d ? d.version : null;
+      if (flag("--conflict") || stored !== params.expectedVersion) return error(id, -32002, "conflict", "The version is not the stored version.", { version: stored });
+      const next = { value: params.value, attributes: params.attributes ?? {}, version: String(++version), updatedAt: new Date().toISOString() };
+      docs.set(k, next);
+      const list = streams.get(params.stream) ?? [];
+      const cursors = [];
+      for (const e of params.events ?? []) {
+        const cursor = String(++eventSeq);
+        list.push({ cursor, type: e.type, at: e.at ?? new Date().toISOString(), data: e.data });
+        cursors.push(cursor);
+      }
+      streams.set(params.stream, list);
+      return send({ id, result: { version: next.version, updatedAt: next.updatedAt, cursors } });
     }
     case "events.append": {
       if (!flag("--events")) break;
