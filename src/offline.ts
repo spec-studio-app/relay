@@ -5,7 +5,7 @@
 import type { DeskStore, RelayConfigStore, SpecStore } from "./store/types.js";
 import { repoKeyOf } from "./store/address.js";
 import { ARCHIVED_REPO_TEXT } from "./messages.js";
-import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields, pauseOf } from "./workflows/types.js";
+import { DESK_GONE_TEXT, EVENT_LIMIT, effectiveTurn, mirrorFields, pauseOf, type Turn } from "./workflows/types.js";
 
 export interface ToolText {
   ok: boolean;
@@ -105,6 +105,13 @@ export class OfflineTools implements OfflineReader {
     return new Set((archived?.repos ?? []).map((path) => repoKeyOf(path)));
   }
 
+  /** The turn of a spec of an archived repo, from its mirrored state. Without the state, the memo's turn with needsYou false. */
+  private async archivedTurn(repoKey: string, slug: string, memoTurn: Turn | null): Promise<Turn | null> {
+    const state = await this.deps.specs.state({ repoKey, slug });
+    if (state) return effectiveTurn(state.turn, state.state, true);
+    return memoTurn ? { turn: memoTurn.turn, needsYou: false } : { turn: "archived", needsYou: false };
+  }
+
   private async listSpecs(args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     const repo = str(args.repo);
     const all = args.all === true;
@@ -114,10 +121,15 @@ export class OfflineTools implements OfflineReader {
     // Only the repos that the Mac says are archived. With no list (an older Mac), nothing is filtered.
     const archivedKeys = await this.archivedKeys();
     const isArchived = (repoKey: string) => archivedKeys.has(repoKey);
-    const specs = listed
+    const shown = listed
       .filter((s) => s.memo !== null && (all || (s.memo.stage !== "merged" && !s.memo.dropped)))
-      .filter((s) => archived || !isArchived(s.repoKey))
-      .map((s) => ({
+      .filter((s) => archived || !isArchived(s.repoKey));
+    // The memo's turn does not know the archived list: a spec of an archived repo never needs the user.
+    const turns = await Promise.all(
+      shown.map(async (s) => (isArchived(s.repoKey) ? this.archivedTurn(s.repoKey, s.slug, s.memo!.turn) : s.memo!.turn)),
+    );
+    const specs = shown
+      .map((s, i) => ({
         repo: s.memo!.repo,
         slug: s.slug,
         title: s.memo!.title,
@@ -125,8 +137,8 @@ export class OfflineTools implements OfflineReader {
         stage: s.memo!.stage,
         status: s.memo!.status,
         note: s.memo!.note,
-        turn: s.memo!.turn?.turn ?? null,
-        needsYou: s.memo!.turn?.needsYou ?? false,
+        turn: turns[i]?.turn ?? null,
+        needsYou: turns[i]?.needsYou ?? false,
         syncedAt: s.memo!.syncedAt,
         messagesForMac: s.memo!.waitingForMac,
         unreadMessages: s.memo!.unreadForCoordinator,
@@ -159,7 +171,8 @@ export class OfflineTools implements OfflineReader {
     }
     const fields = mirrorFields(state.state);
     const waiting = state.mac.messages.length;
-    const turn = effectiveTurn(state.turn, state.state);
+    const archived = (await this.archivedKeys()).has(repoKeyOf(repo));
+    const turn = effectiveTurn(state.turn, state.state, archived);
     const parts = [
       `${offlineText} This copy of the spec is from its last sync at ${state.syncedAt ?? "an unknown time"}.`,
       NO_SPEC_TEXT,
@@ -168,7 +181,7 @@ export class OfflineTools implements OfflineReader {
       `## Summary\n\nStage: ${fields.stage || "unknown"}. Status: ${fields.status || "unknown"}.` +
         (fields.note ? ` Note: ${fields.note}` : "") +
         pausedSummary(state.state) +
-        ((await this.archivedKeys()).has(repoKeyOf(repo)) ? ` ${ARCHIVED_REPO_TEXT}` : "") +
+        (archived ? ` ${ARCHIVED_REPO_TEXT}` : "") +
         (state.dropped ? " The spec no longer exists on the Mac." : ""),
       `## Messages\n\n${waiting === 1 ? "1 message waits" : `${waiting} messages wait`} for the Mac.`,
       `## The last ${EVENT_LIMIT} activity events\n\n` +

@@ -7,7 +7,7 @@ import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
 import type { ReadResult } from "./workflows/specRules.js";
-import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, pauseOf } from "./workflows/types.js";
+import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, effectiveTurn, pauseOf } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
 export const READ_WAIT_MS = 20_000;
@@ -224,6 +224,22 @@ export class MessageTools {
     };
   }
 
+  /**
+   * The freshness of a read. The workflow's turn does not know the archived
+   * list: a spec of an archived repo never needs the user.
+   */
+  private async freshness(spec: { repoKey: string; slug: string }, result: ReadResult): Promise<ReturnType<typeof freshness>> {
+    const fresh = freshness(result);
+    if (!(await this.isArchived(spec.repoKey))) return fresh;
+    try {
+      const state = await this.o.specs.state({ repoKey: spec.repoKey, slug: spec.slug });
+      if (state) return { ...fresh, turn: effectiveTurn(state.turn, state.state, true) };
+    } catch {
+      // The turn of the read, with needsYou false.
+    }
+    return { ...fresh, turn: fresh.turn ? { turn: fresh.turn.turn, needsYou: false } : { turn: "archived", needsYou: false } };
+  }
+
   /** True when the repo is in the archived list that the Mac sent last. A store error gives false: the message is stored. */
   private async isArchived(repoKey: string): Promise<boolean> {
     try {
@@ -288,7 +304,7 @@ export class MessageTools {
       return {
         ok: true,
         text: JSON.stringify(
-          { spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, ...freshness(result), cursor, messages },
+          { spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, ...(await this.freshness(spec, result)), cursor, messages },
           null,
           2,
         ),
@@ -394,7 +410,7 @@ export class MessageTools {
           repo: path ?? null,
           slug: item.slug,
           stage: result.stage,
-          ...freshness(result),
+          ...(await this.freshness(item, result)),
           cursor: result.messages[result.messages.length - 1].seq,
         });
       }

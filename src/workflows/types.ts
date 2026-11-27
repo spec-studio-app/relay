@@ -201,13 +201,20 @@ export function isPaused(state: Record<string, unknown> | null): boolean {
  * `studio specs` does it: blocked and awaiting-approval need the user.
  * A merged spec is merged, also when it is paused. A paused spec never needs
  * the user, whatever its status.
+ *
+ * `archived`: the repo of the spec is in the archived list that the Mac sent
+ * last. Such a spec never needs the user: a turn from the app keeps its kind
+ * with needsYou false, and with no turn the kind is archived (merged and
+ * paused still win). The spec workflows do not know the list, so only the
+ * relay's tools pass it.
  */
-export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null): Turn | null {
-  if (turn) return turn;
-  if (!state) return null;
+export function effectiveTurn(turn: Turn | null, state: Record<string, unknown> | null, archived = false): Turn | null {
+  if (turn) return archived && turn.needsYou ? { turn: turn.turn, needsYou: false } : turn;
+  if (!state) return archived ? { turn: "archived", needsYou: false } : null;
   const { stage, status } = mirrorFields(state);
   if (stage === "merged") return { turn: "merged", needsYou: false };
   if (isPaused(state)) return { turn: "paused", needsYou: false };
+  if (archived) return { turn: "archived", needsYou: false };
   switch (status) {
     case "blocked":
       return { turn: "blocked", needsYou: true };

@@ -645,3 +645,79 @@ test("offline read_spec of a spec of an archived repo says that the repo is arch
     await h.close();
   }
 });
+
+test("the turn of a spec of an archived repo never needs the user; merged and paused still win", () => {
+  const paused = { at: "2026-11-01T10:00:00Z", by: "ross" };
+  assert.deepEqual(effectiveTurn(null, show("a", { status: "awaiting-approval" }), true), { turn: "archived", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("b", { status: "blocked" }), true), { turn: "archived", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("c", { stage: "merged", status: "idle" }), true), { turn: "merged", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("d", { status: "awaiting-approval", paused }), true), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, null, true), { turn: "archived", needsYou: false });
+  // A turn from the Mac keeps its kind, with needsYou false.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("e"), true), { turn: "yours", needsYou: false });
+  assert.deepEqual(effectiveTurn({ turn: "working", needsYou: false }, show("f"), true), { turn: "working", needsYou: false });
+  // Not archived: as before.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("g")), { turn: "yours", needsYou: true });
+  assert.deepEqual(effectiveTurn(null, show("h", { status: "awaiting-approval" })), { turn: "yours", needsYou: true });
+});
+
+test("offline list_specs, read_spec and read_messages give no spec of an archived repo as needing the user", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    // The last sync before the archive: the app's turn needs the user.
+    await h.mirror.sync(specAddress(REPO, "asked"), {
+      line: 1,
+      event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "plan", id: "s-1", text: "Approve the plan?" },
+      state: show("asked", { stage: "plan", status: "awaiting-approval" }),
+      turn: { turn: "yours", needsYou: true },
+    });
+    // No turn from the app: the status rule would say yours.
+    await h.mirror.sync(specAddress(REPO, "waiting"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("waiting", { status: "awaiting-approval" }),
+      turn: null,
+    });
+    // The pause line still arrived before the sync stopped.
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { status: "awaiting-approval", paused: { at: "2026-11-24T14:00:00Z", by: "ross" } }),
+      turn: null,
+    });
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+    const listed = async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO, archived: true });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 3 ? Object.fromEntries(l.specs.map((s: any) => [s.slug, s])) : null;
+    };
+    const bySlug = await eventually(listed);
+    assert.deepEqual([bySlug.asked.turn, bySlug.asked.needsYou, bySlug.asked.archived], ["yours", false, true]);
+    assert.deepEqual([bySlug.waiting.turn, bySlug.waiting.needsYou], ["archived", false]);
+    assert.deepEqual([bySlug.held.turn, bySlug.held.needsYou], ["paused", false]);
+
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "waiting" });
+    assert.match(read.content[0].text, /## Turn\n\narchived\. Needs the user: no\./);
+    const asked = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "asked" });
+    assert.match(asked.content[0].text, /## Turn\n\nyours\. Needs the user: no\./);
+
+    // With no slug first: the message is still unread.
+    const all = JSON.parse((await callTool(t.base, accessToken, "read_messages", {})).content[0].text);
+    assert.deepEqual(all.specs.find((s: any) => s.slug === "asked")?.turn, { turn: "yours", needsYou: false });
+    const messages = JSON.parse((await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "asked" })).content[0].text);
+    assert.deepEqual(messages.turn, { turn: "yours", needsYou: false });
+
+    // The user unarchives the repo: the turns need the user again.
+    await h.configStore.setArchivedRepos([], new Date());
+    const back = await eventually(listed);
+    assert.deepEqual([back.asked.turn, back.asked.needsYou], ["yours", true]);
+    assert.deepEqual([back.waiting.turn, back.waiting.needsYou], ["yours", true]);
+    assert.deepEqual([back.held.turn, back.held.needsYou], ["paused", false]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
