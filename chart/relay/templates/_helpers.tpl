@@ -39,10 +39,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       optional: {{ not .required }}
 {{- end -}}
 
-{{/* The store: .Values.store, else temporal when temporal.address is set, else json (the relay's own rule). */}}
+{{/* The store: plugin when plugin.command or plugin.sidecar is set, else .Values.store, else temporal when temporal.address is set, else json (the relay's own rule). */}}
 {{- define "relay.store" -}}
-{{- $store := .Values.store | default (ternary "temporal" "json" (not (empty .Values.temporal.address))) -}}
-{{- if not (has $store (list "json" "temporal")) -}}
+{{- $plugin := or .Values.plugin.command .Values.plugin.sidecar.enabled -}}
+{{- if and .Values.plugin.command .Values.plugin.sidecar.enabled -}}
+{{- fail "set plugin.command or plugin.sidecar.enabled, not both" -}}
+{{- end -}}
+{{- if and $plugin .Values.store -}}
+{{- fail "set store or a plugin (plugin.command, plugin.sidecar), not both: a plugin is the relay's store" -}}
+{{- end -}}
+{{- $store := ternary "plugin" (.Values.store | default (ternary "temporal" "json" (not (empty .Values.temporal.address)))) (not (empty $plugin)) -}}
+{{- if not (has $store (list "json" "temporal" "plugin")) -}}
 {{- fail "store must be json or temporal" -}}
 {{- end -}}
 {{- $store -}}
@@ -50,4 +57,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "relay.claimName" -}}
 {{- default (printf "%s-data" (include "relay.fullname" .)) .Values.persistence.existingClaim -}}
+{{- end -}}
+
+
+{{/* True when the pod has the data volume: the JSON store, or a plugin command in the image (it keeps its files in /data). */}}
+{{- define "relay.dataVolume" -}}
+{{- $store := include "relay.store" . -}}
+{{- if or (eq $store "json") (and (eq $store "plugin") .Values.plugin.command) -}}true{{- end -}}
 {{- end -}}

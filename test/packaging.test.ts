@@ -83,3 +83,42 @@ test("pluggable-relay-store R5.S2: the chart with Temporal has no data volume an
   const inferred = helm(["--set", "temporal.address=t:7233", "--set", "secrets.payloadKeys=k"]);
   assert.match(inferred!, /- name: RELAY_STORE\n\s+value: "temporal"/);
 });
+
+test("relay-plugin-host R5.S1: Compose has the plugin settings, empty, and a commented sidecar example", () => {
+  const compose = readFileSync(`${root}compose.yaml`, "utf8");
+  assert.match(compose, /^\s*RELAY_PLUGIN: \$\{RELAY_PLUGIN:-\}$/m);
+  assert.match(compose, /^\s*RELAY_PLUGIN_URL: \$\{RELAY_PLUGIN_URL:-\}$/m);
+  assert.match(compose, /^\s*RELAY_PLUGIN_TOKEN: \$\{RELAY_PLUGIN_TOKEN:-\}$/m);
+  // The example service is in comments, so a plain `docker compose up` runs no plugin.
+  assert.match(compose, /^\s*# plugin:$/m);
+  assert.match(compose, /^\s*#\s+RELAY_PLUGIN_URL=http:\/\/plugin:7070\/rpc$/m);
+  assert.match(compose, /^\s*#\s+command: \["--listen", "0\.0\.0\.0:7070"\]$/m);
+  assert.doesNotMatch(compose, /^  plugin:$/m);
+});
+
+test("relay-plugin-host R5.S2: the chart's defaults have no plugin; plugin.sidecar adds a container, the URL and the token", (t) => {
+  const plain = helm([]);
+  if (plain === null) return t.skip("helm is not installed");
+  assert.doesNotMatch(plain, /RELAY_PLUGIN|PLUGIN_TOKEN|name: plugin$/m);
+  assert.equal([...plain.matchAll(/^          image: /gm)].length, 1, "one container");
+  const out = helm([
+    "--set", "plugin.sidecar.enabled=true",
+    "--set", "plugin.sidecar.image=ghcr.io/me/plugin-mine:1.0.0",
+    "--set", "secrets.pluginToken=tok-123",
+    "--set", "plugin.settings.address=temporal:7233",
+  ])!;
+  assert.deepEqual([...out.matchAll(/^        - name: (\w+)\n          image: /gm)].map((m) => m[1]), ["relay", "plugin"]);
+  assert.match(out, /- name: RELAY_PLUGIN_URL\n\s+value: "http:\/\/127\.0\.0\.1:7070\/rpc"/);
+  assert.match(out, /- name: RELAY_PLUGIN_TOKEN\n\s+valueFrom:\n\s+secretKeyRef:\n\s+name: t-relay\n\s+key: PLUGIN_TOKEN/);
+  assert.match(out, /- name: RELAY_PLUGIN_ADDRESS\n\s+value: "temporal:7233"/);
+  assert.match(out, /PLUGIN_TOKEN: "tok-123"/);
+  assert.match(out, /- --listen\n\s+- "127\.0\.0\.1:7070"/);
+  assert.doesNotMatch(out, /RELAY_STORE|PersistentVolumeClaim/);
+  // A command in the image: RELAY_PLUGIN, and the data volume for its files.
+  const command = helm(["--set", "plugin.command=/usr/local/bin/plugin-mine --data /data"])!;
+  assert.match(command, /- name: RELAY_PLUGIN\n\s+value: "\/usr\/local\/bin\/plugin-mine --data \/data"/);
+  assert.match(command, /mountPath: \/data/);
+  assert.doesNotMatch(command, /RELAY_STORE/);
+  // A plugin and a store at once is an error.
+  assert.throws(() => helm(["--set", "plugin.command=x", "--set", "store=json"]), /not both/);
+});

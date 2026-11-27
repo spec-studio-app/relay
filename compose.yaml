@@ -7,6 +7,10 @@
 #   A local dev Temporal:          set TEMPORAL_ADDRESS=temporal:7233 and
 #                                  PAYLOAD_KEYS in .env, then
 #                                  docker compose --profile dev up
+#   A backend plugin:              set RELAY_PLUGIN (a command in the image)
+#                                  or RELAY_PLUGIN_URL and RELAY_PLUGIN_TOKEN
+#                                  (a sidecar, see the plugin service below),
+#                                  and leave RELAY_STORE empty
 #
 # Put the settings in a .env file next to this file (see README.md). Quote the
 # password hash in single quotes: it holds `$` characters.
@@ -42,6 +46,13 @@ services:
       UI_ORIGIN: ${UI_ORIGIN:-}
       EXTRA_REDIRECT_URIS: ${EXTRA_REDIRECT_URIS:-}
       CALL_TIMEOUT_MS: ${CALL_TIMEOUT_MS:-}
+      # A backend plugin as the store (optional; leave RELAY_STORE empty). A
+      # command that the relay starts, or the URL of a plugin sidecar and its
+      # token. Each plugin setting is RELAY_PLUGIN_<NAME>; add the ones that
+      # your plugin needs here, for example RELAY_PLUGIN_ADDRESS.
+      RELAY_PLUGIN: ${RELAY_PLUGIN:-}
+      RELAY_PLUGIN_URL: ${RELAY_PLUGIN_URL:-}
+      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN:-}
     volumes:
       # The JSON store's files. The volume takes the owner of /data in the image.
       - relay-data:/data
@@ -49,6 +60,21 @@ services:
       temporal:
         condition: service_healthy
         required: false
+
+  # A backend plugin as a sidecar (an example). Remove the comments, set the
+  # image, and in .env set:
+  #   RELAY_PLUGIN_URL=http://plugin:7070/rpc
+  #   RELAY_PLUGIN_TOKEN=<a long random string, for example from openssl rand -hex 32>
+  # The plugin listens on the Compose network only, with the token.
+  #
+  # plugin:
+  #   image: ghcr.io/me/plugin-mine:1.0.0
+  #   restart: unless-stopped
+  #   command: ["--listen", "0.0.0.0:7070"]
+  #   environment:
+  #     PLUGIN_TOKEN: "${RELAY_PLUGIN_TOKEN:?Set RELAY_PLUGIN_TOKEN}"
+  #   volumes:
+  #     - plugin-data:/data
 
   # A local Temporal dev server (data in a volume), with the Web UI on port 8233.
   # The Web UI has no sign-in, so it listens on this machine (127.0.0.1) only.
