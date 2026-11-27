@@ -37,7 +37,8 @@ export const TOOLS: ToolDefinition[] = [
       "Each repo also shows its desk: open or closed, its turn, and whether Claude AI can message the desk. " +
       "When the Mac is offline, the list comes from the last connection of the Mac, and the result gives its time. " +
       "Each desk then shows the time of its last state. " +
-      "Each repo also shows its area.",
+      "Each repo also shows its area. " +
+      "The area filter needs the Mac online: when the Mac is offline, the list shows all repos and says so.",
     inputSchema: {
       area: z.string().min(1).optional().describe("Show only the repos of this area. Give the name of the area."),
     },
