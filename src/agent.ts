@@ -50,6 +50,18 @@
 //   agent -> relay: {"type":"desk-sync","desk":{...},"lines":[{"line":<n>,"event":{...}}]}
 //   relay -> agent: {"type":"desk-synced","desk":{...},"line":<n>,"error"?}
 //   agent -> relay: upload-url with "desk" in place of "spec".
+// The shared store (the app's specs/plugins-are-the-backend, contract 4; the
+// wire version stays 3). When the relay's plugin gave a storeId in its
+// handshake, the welcome has "store": {"plugin":"<name>","storeId":"<id>"}.
+// When the app's store has the same storeId, the agent sends sync frames with
+// no lines and no state:
+//   agent -> relay: {"type":"sync","spec":{...},"linesInStore":true,"first":true?,"turn":{...}|null?}
+//     The relay reads the Mac's state from document app-specs/<repoKey>:<slug>
+//     and the Mac's activity events from stream spec:<repoKey>:<slug> after
+//     its cursor, and applies them as a sync. It does not append them again.
+//   relay -> agent: {"type":"synced","spec":{...},"linesInStore":true,"line":<last line>}
+//     With an "error" field when the relay did not apply them. A relay with
+//     no "store" in its welcome refuses such a frame.
 // Archived repos (the app's specs/pause-and-archive; the wire version stays 3).
 // The desks frame, which the agent sends again on each change, and the hello
 // may carry "archivedRepos": the paths of the repos that the user archived.
@@ -516,6 +528,7 @@ export class AgentHub {
       relayVersion: this.options.relayVersion ?? RELAY_VERSION,
       wires: [...SUPPORTED_WIRES],
       ...(backend.desks ? { desks: true } : {}),
+      ...(this.storeOf(backend) ? { store: this.storeOf(backend) } : {}),
     });
     const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
     this.options.log({ event: "agent_hello", version, appVersion: appVersion ?? undefined, repos: repos.length });
@@ -899,7 +912,58 @@ export class AgentHub {
     backend.ack(spec, m.seq, error).catch(() => this.options.log({ event: "ack_failed" }));
   }
 
+  /** The store for the welcome, or null. A failed read counts as none. */
+  private storeOf(backend: AgentBackend): { plugin: string; storeId: string } | null {
+    try {
+      const store = backend.store?.() ?? null;
+      return store ? { plugin: store.plugin, storeId: store.storeId } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A sync frame with "linesInStore": the relay reads the state and the lines from its store. */
+  private syncFromStore(ws: WebSocket, m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    const spec = parseSpec(m.spec);
+    const refused =
+      this.notWelcomed(ws) ??
+      (!spec
+        ? "The sync frame is not valid."
+        : "lines" in m || "state" in m
+          ? "A sync frame with linesInStore has no lines and no state."
+          : !backend?.syncFromStore || !this.storeOf(backend)
+            ? "This relay does not read the Mac's lines from a shared store (its welcome has no store). Send the sync frame with its lines."
+            : null);
+    if (!backend?.syncFromStore || !spec || refused !== null) {
+      const text = refused ?? "The sync frame is not valid.";
+      this.options.log({ event: "agent_frame_refused", frame: "sync", reason: text });
+      if (spec) this.send(ws, { type: "synced", spec: wireSpec(spec), linesInStore: true, line: 0, error: text });
+      else this.send(ws, { type: "error", frame: "sync", text });
+      return;
+    }
+    const syncFromStore = backend.syncFromStore.bind(backend);
+    // The store's state is the newest: a failed state frame before it is old now.
+    this.forgetState(specKey(spec));
+    this.chain(spec, async () => {
+      try {
+        const result = await syncFromStore(spec, {
+          ...(m.first === true ? { first: true } : {}),
+          ...("turn" in m ? { turn: parseTurn(m.turn) } : {}),
+        });
+        this.send(ws, { type: "synced", spec: wireSpec(spec), linesInStore: true, line: result.line });
+      } catch {
+        this.options.log({ event: "sync_failed" });
+        this.send(ws, { type: "synced", spec: wireSpec(spec), linesInStore: true, line: 0, error: "The relay cannot read the lines from the store now." });
+      }
+    });
+  }
+
   private sync(ws: WebSocket, m: Record<string, unknown>): void {
+    if (m.linesInStore === true) {
+      this.syncFromStore(ws, m);
+      return;
+    }
     const backend = this.options.backend;
     const notWelcomed = this.notWelcomed(ws);
     const spec = parseSpec(m.spec);

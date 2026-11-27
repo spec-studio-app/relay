@@ -5,7 +5,7 @@ import type { OAuthStore } from "../oauth.js";
 import type { AgentBackend } from "../backend.js";
 import type { Attachments } from "../attachments.js";
 import type { DeskAddress, DeskMessage, Message, SpecAddress, StoredClient } from "../workflows/types.js";
-import type { DeskStore, RelayConfigStore, SpecStore } from "./types.js";
+import type { DeskStore, RelayConfigStore, SpecStore, StoreIdentity } from "./types.js";
 
 /** The OAuth provider's store in the relay's config store (R9.S4 of studio-relay). */
 export function storeOAuthStore(store: RelayConfigStore): OAuthStore {
@@ -30,9 +30,19 @@ export function storeAgentBackend(deps: {
   attachments: Attachments;
   /** The desks. Without it the relay does not say that it knows desks. */
   desks?: DeskStore;
+  /** The store's plugin and storeId (the plugin store). Without it the relay refuses linesInStore frames. */
+  identity?: () => StoreIdentity | null;
 }): AgentBackend {
   const desks = deps.desks;
+  const identity = deps.identity;
+  const specs = deps.specs;
   return {
+    ...(identity && specs.syncFromStore
+      ? {
+          store: identity,
+          syncFromStore: (spec, input) => specs.syncFromStore!(spec, input),
+        }
+      : {}),
     ...(desks
       ? {
           desks: {

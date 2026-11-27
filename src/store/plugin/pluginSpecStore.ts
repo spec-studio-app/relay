@@ -4,6 +4,13 @@
 // as in the JSON store. The grace period of a finished spec is a timer in
 // this process; the time of the last call is in the document, so a restart
 // keeps it.
+//
+// When the Mac's store is the same store (the same storeId), the Mac sends
+// sync frames with "linesInStore" (syncFromStore): the relay reads the Mac's
+// state from `app-specs` and the Mac's `activity` events from the spec's
+// stream after its cursor (`app` in the spec document). It does not append
+// them to the stream again.
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../../log.js";
 import type { Attributes, NewEvent } from "../../vendor/plugin-sdk/index.js";
@@ -30,22 +37,45 @@ import {
   type RuleEnv,
   type StateInput,
   type SyncInput,
+  type SyncLine,
   type SyncResult,
 } from "../../workflows/specRules.js";
 import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors.js";
 import { CLOSED_KEEP_MS } from "../json/jsonSpecStore.js";
-import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
-import { KeyQueue, OTHER_DEPLOY_TEXT, guard, waitForChange, type Doc, type Docs } from "./docs.js";
-import { StoreRefusedError } from "../errors.js";
+import type { ListedSpec, SpecRef, SpecStore, StoreSyncInput } from "../types.js";
+import { KeyQueue, MAX_TRIES, OTHER_DEPLOY_TEXT, guard, waitForChange, type Doc, type Docs } from "./docs.js";
+import { StoreRefusedError, StoreUnavailableError } from "../errors.js";
 
 export const SPECS = "specs";
 export const CLOSED_SPECS = "closed-specs";
+/** The Mac's spec documents, when the Mac uses the same store (contract 4). */
+export const APP_SPECS = "app-specs";
+/** The event type of the Mac's activity lines in a spec's stream (contract 3). */
+export const ACTIVITY_EVENT = "activity";
+
+/** The text when a linesInStore sync comes to a store that cannot read the Mac's lines. */
+export const NO_LINES_IN_STORE_TEXT =
+  "The relay's plugin has no events, so the relay cannot read the Mac's lines from the store. Send the sync frame with its lines.";
+
+/** The spec document changed after the read of the cursor: read the stream again. */
+class CursorMoved extends Error {}
 
 interface SpecDoc {
   version: 1;
   state: SpecWorkflowState;
   /** The time of the last call to the spec (ms since the epoch): the grace period starts here. */
   lastActivityAt: number;
+  /**
+   * The Mac's lines in the stream (linesInStore): the cursor of the last
+   * event that the relay read, and the number of activity events up to it.
+   * The stream then holds the Mac's history, so the close keeps it.
+   */
+  app?: AppCursor;
+}
+
+interface AppCursor {
+  cursor: string | null;
+  line: number;
 }
 
 interface ClosedDoc {
@@ -159,7 +189,7 @@ export class PluginSpecStore implements SpecStore {
           after = doc.value;
           return { result: out.result };
         }
-        after = { version: 1, state, lastActivityAt: this.nowDate().getTime() };
+        after = { version: 1, state, lastActivityAt: this.nowDate().getTime(), ...(doc.value.app ? { app: doc.value.app } : {}) };
         return { write: { value: after, attributes: attributesOf(state) }, result: out.result };
       });
       const kept = after as SpecDoc | null;
@@ -225,7 +255,8 @@ export class PluginSpecStore implements SpecStore {
           result: undefined,
         }));
         await this.docs.remove(SPECS, key, doc.version);
-        if (this.docs.client.has("events")) await guard(() => this.docs.client.events.delete(specStream(spec)));
+        // A stream with the Mac's lines is the Mac's history too: it stays.
+        if (this.docs.client.has("events") && !doc.value.app) await guard(() => this.docs.client.events.delete(specStream(spec)));
         this.o.log({ event: "spec_closed" });
         await this.pruneClosed().catch(() => this.o.log({ event: "closed_prune_failed" }));
       } catch {
@@ -282,7 +313,7 @@ export class PluginSpecStore implements SpecStore {
           after = mine.value;
           return { result: out.result };
         }
-        after = { version: 1, state, lastActivityAt: this.nowDate().getTime() };
+        after = { version: 1, state, lastActivityAt: this.nowDate().getTime(), ...(mine?.value.app ? { app: mine.value.app } : {}) };
         return { write: { value: after, attributes: attributesOf(state) }, result: out.result };
       });
       if (closed) await this.docs.remove(CLOSED_SPECS, key).catch(() => this.o.log({ event: "closed_record_remove_failed" }));
@@ -291,6 +322,98 @@ export class PluginSpecStore implements SpecStore {
       if (result.applied) await this.append(spec, events);
       return result;
     });
+  }
+
+  /**
+   * A sync frame with "linesInStore" (contract 4): read the Mac's state from
+   * `app-specs` and the Mac's activity events after the spec's cursor, apply
+   * them with applySync, and keep the new cursor in the same write. The
+   * events are in the stream already, so nothing is appended. A first sync
+   * reads the stream from its start; applySync skips the lines that the spec
+   * has.
+   */
+  async syncFromStore(spec: SpecAddress, input: StoreSyncInput): Promise<SyncResult> {
+    const key = specKey(spec);
+    return this.queue.run(key, async () => {
+      if (!this.docs.client.has("events")) throw new StoreRefusedError(NO_LINES_IN_STORE_TEXT);
+      const first = input.first === true;
+      if (this.closing.has(key)) {
+        if (first) throw new SpecClosingError();
+        return { line: 0, applied: false };
+      }
+      let doc = await this.readDoc(spec);
+      let closed: Doc<ClosedDoc> | null = null;
+      if (!doc) {
+        // A spec that closed takes no late line: only a first sync starts it again.
+        closed = await this.docs.get<ClosedDoc>(CLOSED_SPECS, key);
+        if (closed && (closed.attributes.deployId !== this.o.deployId || this.nowDate().getTime() - closed.value.closedAt >= CLOSED_KEEP_MS)) closed = null;
+        if (closed && !first) return { line: 0, applied: false };
+      }
+      for (let tries = 0; tries < MAX_TRIES; tries++) {
+        if (tries > 0) doc = await this.readDoc(spec);
+        const from: AppCursor = first || !doc?.value.app ? { cursor: null, line: 0 } : doc.value.app;
+        const read = await this.readAppLines(spec, from);
+        const appDoc = await this.docs.get<Record<string, unknown>>(APP_SPECS, key);
+        const appState = appDoc && typeof appDoc.value === "object" && appDoc.value !== null && !Array.isArray(appDoc.value) ? appDoc.value : null;
+        let after: SpecDoc | null = null;
+        try {
+          const result = await this.docs.update<SpecDoc, SyncResult>(SPECS, key, (cur) => {
+            if (cur && cur.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
+            // Another write moved the cursor after this read: read the stream again.
+            if (!first && !isDeepStrictEqual(cur?.value.app ?? null, doc?.value.app ?? null)) throw new CursorMoved();
+            const state = cur
+              ? structuredClone(cur.value.state)
+              : initialSpecState(this.o.deployId, { repoKey: spec.repoKey, slug: spec.slug, ...(spec.repo ? { repo: spec.repo } : {}) }, undefined, this.graceMs);
+            // The state and the turn go in only when they changed, so a sync with nothing new changes nothing.
+            const stateChanged = appState !== null && (first || !isDeepStrictEqual(appState, state.state));
+            const turnChanged = input.turn !== undefined && !isDeepStrictEqual(input.turn, state.turn);
+            const sync: SyncInput = {
+              lines: read.lines,
+              ...(first ? { first: true } : {}),
+              ...(stateChanged || turnChanged ? { state: appState ?? state.state } : {}),
+              ...(input.turn !== undefined ? { turn: input.turn } : {}),
+              ...(spec.repo ? { repo: spec.repo } : {}),
+              at: this.env.now(),
+            };
+            const out = applySync(state, sync, this.env);
+            const moved = !isDeepStrictEqual(read.to, cur?.value.app ?? null);
+            if (!out.changed && (!cur || !moved)) {
+              after = cur?.value ?? null;
+              return { result: out.result };
+            }
+            const lastActivityAt = out.changed || !cur ? this.nowDate().getTime() : cur.value.lastActivityAt;
+            after = { version: 1, state, lastActivityAt, app: read.to };
+            return { write: { value: after, attributes: attributesOf(state) }, result: out.result };
+          });
+          if (closed) await this.docs.remove(CLOSED_SPECS, key).catch(() => this.o.log({ event: "closed_record_remove_failed" }));
+          const kept = after as SpecDoc | null;
+          if (kept) this.schedule(kept.state, kept.lastActivityAt);
+          return result;
+        } catch (error) {
+          if (error instanceof CursorMoved) continue;
+          throw error;
+        }
+      }
+      throw new StoreUnavailableError();
+    });
+  }
+
+  /** The Mac's activity events after the cursor, as sync lines: the n-th activity event of the stream is line n. */
+  private async readAppLines(spec: SpecRef, from: AppCursor): Promise<{ lines: SyncLine[]; to: AppCursor }> {
+    const limit = this.docs.client.info.limits.maxPageSize;
+    const events = await guard(() => this.docs.client.events.readAll({ stream: specStream(spec), after: from.cursor, limit }));
+    const lines: SyncLine[] = [];
+    let line = from.line;
+    for (const event of events) {
+      // The relay's own events in the stream (sync, message) are not lines of the Mac.
+      if (event.type !== ACTIVITY_EVENT) continue;
+      line += 1;
+      const data = event.data;
+      const isLine = typeof data === "object" && data !== null && !Array.isArray(data);
+      lines.push({ line, event: isLine ? (data as Record<string, unknown>) : { value: data } });
+    }
+    const last = events.length > 0 ? events[events.length - 1].cursor : from.cursor;
+    return { lines, to: { cursor: last, line } };
   }
 
   async state(spec: SpecRef): Promise<SpecWorkflowState | null> {

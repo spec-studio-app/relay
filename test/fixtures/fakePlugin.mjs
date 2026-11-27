@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // A fake backend plugin for the relay's tests (relay-plugin-host). It speaks
-// the protocol over stdio, keeps documents in memory, gives no watch and no
-// events, and does what its flags say:
+// the protocol over stdio, keeps documents in memory, gives no watch (and no
+// events unless --events), and does what its flags say:
 //   --refuse-settings     the handshake fails with bad_settings
 //   --version2            it speaks only protocol 2.0
 //   --conflict            every state.put answers conflict
 //   --exit-file <path>    when the file exists at a call, remove it and exit with code 3
 //   --record <path>       append each method name to the file
 //   --echo-settings       plugin.repo in the handshake result holds the settings it got (as JSON)
+//   --events              it gives events (in memory): append, read and delete
+//   --store-id <id>       the handshake result has this storeId (protocol 1.1)
 import { appendFileSync, existsSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -20,7 +22,11 @@ const option = (name) => {
 const exitFile = option("--exit-file");
 const record = option("--record");
 const versions = flag("--version2") ? ["2.0"] : ["1.0"];
+const storeId = option("--store-id");
 const docs = new Map();
+/** The events of each stream: { cursor, type, at, data }. A cursor is a number, as text, over all streams. */
+const streams = new Map();
+let eventSeq = 0;
 let version = 0;
 let shook = false;
 
@@ -58,10 +64,11 @@ function call(id, method, params) {
       result: {
         plugin: info(params.settings ?? {}),
         protocolVersion: versions[0],
-        capabilities: ["state"],
+        capabilities: flag("--events") ? ["state", "events"] : ["state"],
         testHooks: [],
         durable: false,
         limits: { maxMessageBytes: 2097152, maxChunkBytes: 1048576, maxPageSize: 1000, maxWaitMs: 60000 },
+        ...(storeId ? { storeId } : {}),
       },
     });
   }
@@ -102,9 +109,41 @@ function call(id, method, params) {
       }
       return send({ id, result: { items, cursor: null } });
     }
-    default:
-      return error(id, -32601, "", `No method ${method}.`);
+    case "events.append": {
+      if (!flag("--events")) break;
+      if (!Array.isArray(params.events) || params.events.length === 0) return error(id, -32005, "refused", "The event list is empty.");
+      const list = streams.get(params.stream) ?? [];
+      const cursors = [];
+      for (const e of params.events) {
+        const cursor = String(++eventSeq);
+        list.push({ cursor, type: e.type, at: e.at ?? new Date().toISOString(), data: e.data });
+        cursors.push(cursor);
+      }
+      streams.set(params.stream, list);
+      return send({ id, result: { cursors } });
+    }
+    case "events.read": {
+      if (!flag("--events")) break;
+      const list = streams.get(params.stream) ?? [];
+      let start = 0;
+      if (params.after) {
+        const i = list.findIndex((e) => e.cursor === params.after);
+        if (i < 0) return error(id, -32005, "refused", "The plugin did not make this cursor.");
+        start = i + 1;
+      }
+      const limit = Math.min(params.limit ?? 100, 1000);
+      const events = list.slice(start, start + limit);
+      const cursor = events.length > 0 ? events[events.length - 1].cursor : (params.after ?? null);
+      return send({ id, result: { events, cursor, more: start + limit < list.length } });
+    }
+    case "events.delete": {
+      if (!flag("--events")) break;
+      const had = (streams.get(params.stream) ?? []).length > 0;
+      streams.delete(params.stream);
+      return send({ id, result: { deleted: had } });
+    }
   }
+  return error(id, -32601, "", `No method ${method}.`);
 }
 
 createInterface({ input: process.stdin }).on("line", (line) => {

@@ -2,6 +2,7 @@
 // no backend: the hub then speaks wire version 1 only.
 import type { Attachments, UploadUrlAnswer } from "./attachments.js";
 import type { SyncInput, SyncResult } from "./workflows/spec.js";
+import type { StoreIdentity, StoreSyncInput } from "./store/types.js";
 import type { DeskSyncLine, DeskSyncResult } from "./workflows/deskRules.js";
 import type { DeskAddress, DeskMessage, DeskReport, Message, SpecAddress, Turn } from "./workflows/types.js";
 
@@ -29,6 +30,13 @@ export interface AgentBackend {
   /** The archived repos (paths) from a desks frame or a hello with `archivedRepos`: keep them and the time. */
   archivedRepos?(repos: string[], at: Date): Promise<void>;
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
+  /**
+   * The store's plugin and its storeId, for the welcome. Null or missing: the
+   * welcome has no "store", so the agent sends its lines.
+   */
+  store?(): StoreIdentity | null;
+  /** A sync frame with "linesInStore": read the state and the lines from the store. Missing: the relay refuses the frame. */
+  syncFromStore?(spec: SpecAddress, input: StoreSyncInput): Promise<SyncResult>;
   /** The agent's state frame: a new state and turn with no new line. True when applied. */
   state(spec: SpecAddress, state: Record<string, unknown>, turn: Turn | null): Promise<boolean>;
   /** The agent's gone frame: the spec no longer exists on the Mac. */

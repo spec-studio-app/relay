@@ -34,6 +34,20 @@ export interface SpecRef {
   slug: string;
 }
 
+/** A sync frame with "linesInStore": no lines and no state. */
+export interface StoreSyncInput {
+  /** The agent had no cursor for the spec. */
+  first?: boolean;
+  /** The turn of the frame. Missing: keep the spec's turn. */
+  turn?: SpecWorkflowState["turn"];
+}
+
+/** The store that the relay uses, for the welcome: the plugin's name and its storeId. */
+export interface StoreIdentity {
+  plugin: string;
+  storeId: string;
+}
+
 export interface ListedSpec {
   repoKey: string;
   slug: string;
@@ -48,6 +62,12 @@ export interface ListedSpec {
 export interface SpecStore {
   /** Apply a batch of activity lines. The first sync of a spec makes it. */
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
+  /**
+   * A sync frame with "linesInStore": the Mac's store is this store. Read the
+   * Mac's state and its new activity lines from the store, and apply them as
+   * a sync. Only the plugin store has it.
+   */
+  syncFromStore?(spec: SpecAddress, input: StoreSyncInput): Promise<SyncResult>;
   /** The spec's state, or null when the store has no such spec. */
   state(spec: SpecRef): Promise<SpecWorkflowState | null>;
   /** The agent's state frame. True when the store applied it. */
@@ -136,6 +156,11 @@ export interface RelayStore {
   specs: SpecStore;
   desks: DeskStore;
   config: RelayConfigStore;
+  /**
+   * The plugin's name and storeId, from its last handshake. Null when the
+   * plugin gave no storeId. Only the plugin store has it.
+   */
+  identity?(): StoreIdentity | null;
   /** The data keys for the codec endpoints (Temporal only). */
   codecDataKeys?: PayloadKey[];
   /** The checks at start, the first pairing code, and the background work (workers, timers). */
