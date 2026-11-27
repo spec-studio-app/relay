@@ -37,6 +37,8 @@ export interface PluginRelayStore extends RelayStore {
   config: PluginConfigStore;
   /** The plugin client (tests). */
   client: PluginClient;
+  /** The plugin settings that the store uses. */
+  plugin: PluginSettings;
 }
 
 /** The client's log entries in the relay's log: a list becomes one string. */
@@ -126,6 +128,7 @@ export async function openPluginStore(
   return {
     kind: "plugin",
     client,
+    plugin,
     specs,
     desks,
     config: configStore,
