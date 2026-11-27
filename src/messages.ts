@@ -197,10 +197,34 @@ export class MessageTools {
       ...(attachments.length > 0 ? { attachments } : {}),
     });
     this.o.push(spec, message);
+    const paused = await this.pausedText(spec);
     return {
       ok: true,
-      text: JSON.stringify({ seq, id: message.id, spec: { repo, slug }, createdAt: message.createdAt }),
+      text:
+        JSON.stringify({
+          seq,
+          id: message.id,
+          spec: { repo, slug },
+          createdAt: message.createdAt,
+          ...(paused ? { paused: true } : {}),
+        }) + (paused ? `\n${paused}` : ""),
     };
+  }
+
+  /**
+   * "The spec is paused: <note>" when the mirrored state of the spec has a
+   * `paused` field, else null. A store error gives null: the message is stored.
+   */
+  private async pausedText(spec: SpecAddress): Promise<string | null> {
+    try {
+      const state = await this.o.specs.state({ repoKey: spec.repoKey, slug: spec.slug });
+      const paused = (state?.state as { paused?: unknown } | null | undefined)?.paused;
+      if (!paused || typeof paused !== "object") return null;
+      const note = (paused as { note?: unknown }).note;
+      return typeof note === "string" && note.trim() ? `The spec is paused: ${note.trim()}` : "The spec is paused.";
+    } catch {
+      return null;
+    }
   }
 
   /** send_message with no slug: the message goes to the repo's desk. */

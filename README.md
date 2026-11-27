@@ -200,14 +200,24 @@ The tools:
 
 | Tool | Mac online | Mac offline |
 |---|---|---|
-| `list_repos` | The Mac answers. Each repo shows its desk and its area. The optional `area` argument shows only the repos of that area. | The repos from the last connection of the Mac, with its time, and the last state of each desk, with its time. The `area` filter needs the Mac online: the list shows all repos and says so. |
-| `list_specs` | The Mac answers. Each spec shows the area of its repo and its project. The optional `area` and `project` arguments filter the list. | The relay's copy of each spec, with the time of its last sync. The relay has no areas and no projects, so it shows all specs and says that the `area` or `project` filter needs the Mac online. |
-| `list_projects` | The Mac answers with each project: its status, its progress (shipped specs of all specs), its target date and its newest update (health and note). With an older Spec Studio, the result says: "Update Spec Studio on the Mac to list projects." | Fails at once. |
-| `read_spec` | The Mac answers. | The state, the turn and the last 20 events. No `spec.md` or `plan.md` text. |
+| `list_repos` | The Mac answers. Each repo shows its desk and its area. The optional `area` argument shows only the repos of that area. The list leaves out archived repos. The optional `archived` argument (`true`) also shows them, marked `archived`. | The repos from the last connection of the Mac, with its time, and the last state of each desk, with its time. The Mac leaves archived repos out of this list. The `area` filter needs the Mac online: the list shows all repos and says so. |
+| `list_specs` | The Mac answers. Each spec shows the area of its repo and its project. The optional `area` and `project` arguments filter the list. The list leaves out the specs of archived repos. The optional `archived` argument (`true`) also shows them, marked `archived`. | The relay's copy of each spec, with the time of its last sync. The relay has no areas and no projects, so it shows all specs and says that the `area` or `project` filter needs the Mac online. The relay leaves out the specs of a repo that is not in the last repo list of the Mac. With `archived` set to `true`, it shows them, marked `archived`. With no repo list, it leaves out nothing. |
+| `list_projects` | The Mac answers with each project: its status, its progress (shipped specs of all specs), its target date and its newest update (health and note). The list leaves out archived projects. The optional `archived` argument (`true`) also shows them, marked `archived`. With an older Spec Studio, the result says: "Update Spec Studio on the Mac to list projects." | Fails at once. |
+| `read_spec` | The Mac answers. When the spec is paused, the result says "The spec is paused", with the reason and the time. | The state, the turn and the last 20 events. No `spec.md` or `plan.md` text. When the spec is paused, the summary says "The spec is paused", with the reason and the time. |
 | `make_spec`, `start_spec` | The Mac answers. `make_spec` takes an optional `project` (the name of a project): the new spec goes into it. | Fails at once. |
-| `send_message` | The relay keeps the message and sends it to the Mac. With a repo and no slug, the message goes to the desk of the repo. | The relay keeps the message until the Mac connects. |
+| `send_message` | The relay keeps the message and sends it to the Mac. With a repo and no slug, the message goes to the desk of the repo. When the spec is paused, the message stays in the inbox of the spec until the user resumes it. The answer then has `"paused": true` and a second line: `The spec is paused: <reason>`, or `The spec is paused.` when there is no reason. | The relay keeps the message until the Mac connects. |
 | `read_messages` | The messages that the sessions and the desks sent with `studio message`, and the user's answers in a spec's terminal that Spec Studio copied (`from: user`). Each spec also gets its latest status change (stage, status, note, time), its turn, and `stale` when the spec changed after the last message. | The same. |
 | `upload_attachment` | Stores a file for `send_message`, for a spec or a desk. | The same. |
+
+### Paused specs and archived repos
+
+The user can pause a spec in Spec Studio. The Mac then sets a `paused` field in `state.json`, and the relay copies it.
+
+- `send_message` to a paused spec keeps the message in the inbox. Spec Studio types it after the user resumes the spec.
+- The answer of `send_message` has `"paused": true`. It also has the line `The spec is paused: <reason>`. A pause with no reason gives `The spec is paused.`
+- A spec with no `paused` field gives the same answer as before.
+- The Mac leaves archived repos out of the repo list that it sends to the relay. Offline, `list_specs` leaves out the specs of a repo that is not in that list. With no repo list, it leaves out nothing.
+- `list_repos`, `list_specs` and `list_projects` take the optional argument `archived`. With `archived: true`, the list also shows the archived items, marked `archived`. Offline, the relay cannot list archived repos or projects.
 
 ### Messages to a desk
 

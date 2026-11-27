@@ -559,3 +559,53 @@ test("R4.S3: without a slug, each spec has its status change, and only the spec 
     await h.close();
   }
 });
+
+test("R7.S1: send_message to a paused spec stores the message and says that the spec is paused", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: {
+        slug: "held",
+        title: "held",
+        stage: "build",
+        status: "working",
+        paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" },
+      },
+      turn: null,
+    });
+    await synced(h, "free");
+    await h.mirror.sync(specAddress(REPO, "nonote"), {
+      line: 1,
+      event: { kind: "note" },
+      state: { slug: "nonote", title: "nonote", stage: "build", status: "working", paused: { at: "2026-11-01T10:00:00Z", by: "ross" } },
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+
+    const sent = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "held", text: "Hello." });
+    assert.equal(sent.isError, undefined, sent.content[0].text);
+    const [first, ...rest] = sent.content[0].text.split("\n");
+    const body = JSON.parse(first);
+    assert.equal(body.seq, 1);
+    assert.equal(body.paused, true);
+    assert.equal(rest.join("\n"), "The spec is paused: Waiting for the API");
+    // The message is in the inbox.
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(read.content[0].text, /1 message waits for the Mac/);
+
+    const noNote = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "nonote", text: "Hello." });
+    assert.match(noNote.content[0].text, /\nThe spec is paused\.$/);
+
+    // A spec with no paused field: the answer is the JSON alone, as before.
+    const free = await callTool(t.base, accessToken, "send_message", { repo: REPO, slug: "free", text: "Hello." });
+    assert.ok(!free.content[0].text.includes("\n"));
+    assert.equal(json(free).paused, undefined);
+    assert.equal(json(free).seq, 1);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});

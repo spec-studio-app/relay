@@ -33,6 +33,15 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** " The spec is paused" with the note and the time, or "" when the state has no `paused`. */
+function pausedSummary(state: unknown): string {
+  const paused = (state as { paused?: { at?: unknown; note?: unknown } } | null | undefined)?.paused;
+  if (!paused || typeof paused !== "object") return "";
+  const note = typeof paused.note === "string" && paused.note.trim() ? `: ${paused.note.trim()}` : "";
+  const at = typeof paused.at === "string" && paused.at ? ` Paused at ${paused.at}.` : "";
+  return ` The spec is paused${note}.${at}`;
+}
+
 export class OfflineTools implements OfflineReader {
   constructor(private readonly deps: { specs: SpecStore; config: RelayConfigStore; desks?: DeskStore }) {}
 
@@ -58,7 +67,11 @@ export class OfflineTools implements OfflineReader {
     const notice = str(args.area)
       ? " The relay does not know the area of a repo, so this list shows all repos. The area filter needs the Mac online."
       : "";
-    const text = `${offlineText} This list of repos is from ${repos.at}.${notice}\n${JSON.stringify(repos.repos)}`;
+    const archivedNotice =
+      args.archived === true
+        ? " The Mac leaves archived repos out of this list, so the relay cannot show them. The archived filter needs the Mac online."
+        : "";
+    const text = `${offlineText} This list of repos is from ${repos.at}.${notice}${archivedNotice}\n${JSON.stringify(repos.repos)}`;
     if (!this.deps.desks) return { ok: true, text };
     // The desk of each repo, as the Mac last sent it, with the time of that state.
     // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
@@ -84,9 +97,15 @@ export class OfflineTools implements OfflineReader {
     const repo = str(args.repo);
     const all = args.all === true;
     // Like `studio specs`: a merged spec shows only with all.
+    const archived = args.archived === true;
     const listed = await this.deps.specs.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
+    // The Mac leaves archived repos out of its repo list. With no list, nothing is filtered.
+    const known = await this.deps.config.repos();
+    const keys = known ? new Set(known.repos.map((path) => repoKeyOf(path))) : null;
+    const isArchived = (repoKey: string) => keys !== null && !keys.has(repoKey);
     const specs = listed
       .filter((s) => s.memo !== null && (all || (s.memo.stage !== "merged" && !s.memo.dropped)))
+      .filter((s) => archived || !isArchived(s.repoKey))
       .map((s) => ({
         repo: s.memo!.repo,
         slug: s.slug,
@@ -101,6 +120,7 @@ export class OfflineTools implements OfflineReader {
         messagesForMac: s.memo!.waitingForMac,
         unreadMessages: s.memo!.unreadForCoordinator,
         ...(s.memo!.dropped ? { dropped: true } : {}),
+        ...(isArchived(s.repoKey) ? { archived: true } : {}),
       }));
     const times = specs.map((s) => s.syncedAt).filter((t): t is string => !!t).sort();
     const asOf = times.length > 0 ? times[times.length - 1] : null;
@@ -135,6 +155,7 @@ export class OfflineTools implements OfflineReader {
       `## Turn\n\n${turn ? `${turn.turn}. Needs the user: ${turn.needsYou ? "yes" : "no"}.` : "Not known."}`,
       `## Summary\n\nStage: ${fields.stage || "unknown"}. Status: ${fields.status || "unknown"}.` +
         (fields.note ? ` Note: ${fields.note}` : "") +
+        pausedSummary(state.state) +
         (state.dropped ? " The spec no longer exists on the Mac." : ""),
       `## Messages\n\n${waiting === 1 ? "1 message waits" : `${waiting} messages wait`} for the Mac.`,
       `## The last ${EVENT_LIMIT} activity events\n\n` +

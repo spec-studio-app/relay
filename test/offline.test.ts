@@ -344,3 +344,81 @@ test("R5.S3: offline list_repos also lists each desk with the time of its last s
     await h.close();
   }
 });
+
+test("R11.S2: offline list_specs leaves out the specs of a repo that the Mac's list does not have, unless archived is true", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    await h.startConfig();
+    // The Mac's list has REPO only: OTHER (with beta) is archived.
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    await eventually(() => h.configStore.repos());
+    await agent.close();
+    const { accessToken } = await signIn(t.base);
+    const slugs = async (args: Record<string, unknown>) => {
+      const r = await eventually(async () => {
+        const x = await callTool(t.base, accessToken, "list_specs", args);
+        return x.isError || !x.content[0].text.includes('"alpha"') ? null : x;
+      });
+      const [, ...body] = r.content[0].text.split("\n");
+      return JSON.parse(body.join("\n")).specs as Array<Record<string, unknown>>;
+    };
+    const plain = await slugs({});
+    assert.deepEqual(plain.map((s) => s.slug), ["alpha"]);
+    assert.equal(plain[0].archived, undefined);
+
+    const withArchived = await slugs({ archived: true });
+    const bySlug = Object.fromEntries(withArchived.map((s) => [s.slug, s]));
+    assert.deepEqual(Object.keys(bySlug).sort(), ["alpha", "beta"]);
+    assert.equal(bySlug.beta.archived, true);
+    assert.equal(bySlug.alpha.archived, undefined);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_specs filters nothing when the relay has no repo list", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    const { accessToken } = await signIn(t.base);
+    const r = await eventually(async () => {
+      const x = await callTool(t.base, accessToken, "list_specs", {});
+      return x.content[0].text.includes('"beta"') && x.content[0].text.includes('"alpha"') ? x : null;
+    });
+    const [, ...body] = r.content[0].text.split("\n");
+    const specs = JSON.parse(body.join("\n")).specs as Array<Record<string, unknown>>;
+    assert.deepEqual(specs.map((s) => s.slug).sort(), ["alpha", "beta"]);
+    assert.ok(specs.every((s) => s.archived === undefined));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R7.S2: offline read_spec of a paused spec says that the spec is paused, with the note and the time", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const paused = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.equal(paused.isError, undefined);
+    assert.match(paused.content[0].text, /The spec is paused: Waiting for the API\. Paused at 2026-11-01T10:00:00Z\./);
+    const free = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "free" });
+    assert.ok(!/The spec is paused/.test(free.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
