@@ -1,4 +1,4 @@
-// Open the relay's store from the config: the JSON store (default) or Temporal.
+// Open the relay's store from the config: the JSON store (default), Temporal, or a backend plugin.
 import type { Config } from "../config.js";
 import type { Bucket } from "../bucket.js";
 import type { Logger } from "../log.js";
@@ -20,6 +20,10 @@ export function storeReasonText(config: Pick<Config, "store" | "storeReason"> & 
  * store then runs no worker (the running relay's worker applies the updates).
  */
 export async function openStore(config: Config, deps: { bucket: Bucket | null; log: Logger; worker?: boolean }): Promise<RelayStore> {
+  if (config.store === "plugin") {
+    const { openPluginStore } = await import("./plugin/index.js");
+    return openPluginStore(config, { bucket: deps.bucket, log: deps.log });
+  }
   if (config.store === "temporal") {
     // Loaded only for the Temporal store, so a JSON relay never loads the Temporal SDK.
     const { openTemporalStore } = await import("./temporal.js");

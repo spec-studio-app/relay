@@ -1,6 +1,7 @@
 // The relay's store: every read and write of relay state goes through these
-// interfaces. Two stores implement them: the JSON store (files on a volume,
-// the default) and the Temporal store (one workflow per spec).
+// interfaces. Three stores implement them: the JSON store (files on a volume,
+// the default), the Temporal store (one workflow per spec), and the plugin
+// store (a backend plugin, store/plugin/).
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { Logger } from "../log.js";
 import type { PayloadKey } from "../config.js";
