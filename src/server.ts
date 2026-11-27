@@ -23,6 +23,10 @@ export interface LocalTools {
 }
 
 import { DEFAULT_CALL_TIMEOUT_MS } from "./config.js";
+import { STORE_UNAVAILABLE_TEXT, StoreUnavailableError } from "./store/errors.js";
+
+/** The mark of a request whose token the relay could not check: the store was down. */
+const STORE_DOWN = "relayStoreUnavailable";
 
 export const DEFAULT_PING_INTERVAL_MS = 20_000;
 /** R6.S1: a call to a sleeping Mac answers "offline" in 5 seconds or less. */
@@ -228,12 +232,30 @@ export function createRelay(config: RelayConfig): Relay {
     });
   }
 
+  // While the store is down, the token check cannot read the tokens. The SDK
+  // would answer HTTP 500; the verifier marks the request instead, and the
+  // routes below answer 503 with the store's text before any tool runs.
   const bearer = requireBearerAuth({
-    verifier: provider,
+    verifier: {
+      async verifyAccessToken(token) {
+        try {
+          return await provider.verifyAccessToken(token);
+        } catch (error) {
+          if (!(error instanceof StoreUnavailableError)) throw error;
+          // The SDK needs an expiry; the mark stops the request before any tool.
+          return { token: "", clientId: "", scopes: [], expiresAt: Math.floor(Date.now() / 1000) + 60, extra: { [STORE_DOWN]: true } };
+        }
+      },
+    },
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
   });
+  const storeDown = (req: Request, res: Response, next: NextFunction) => {
+    if (!(req as Request & { auth?: { extra?: Record<string, unknown> } }).auth?.extra?.[STORE_DOWN]) return next();
+    log({ event: "mcp_store_unavailable", path: req.path, status: 503 });
+    res.status(503).set("Retry-After", "60").json({ jsonrpc: "2.0", error: { code: -32000, message: STORE_UNAVAILABLE_TEXT }, id: null });
+  };
 
-  app.post("/mcp", bearer, express.json({ limit: config.mcpBodyLimit ?? 1024 * 1024 }), async (req: Request, res: Response) => {
+  app.post("/mcp", bearer, storeDown, express.json({ limit: config.mcpBodyLimit ?? 1024 * 1024 }), async (req: Request, res: Response) => {
     // Stateless: one server and one transport for each request.
     const server = buildMcpServer(hub, log, config.offline, localTools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -259,8 +281,8 @@ export function createRelay(config: RelayConfig): Relay {
       .set("Allow", "POST")
       .json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
   };
-  app.get("/mcp", bearer, methodNotAllowed);
-  app.delete("/mcp", bearer, methodNotAllowed);
+  app.get("/mcp", bearer, storeDown, methodNotAllowed);
+  app.delete("/mcp", bearer, storeDown, methodNotAllowed);
 
   const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (!hub.handleUpgrade(req, socket, head)) {
