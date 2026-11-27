@@ -141,7 +141,13 @@ test("list_repos offline gives the repos of the last hello with its time", async
     });
     const [head, json] = result.content[0].text.split("\n");
     assert.match(head, /^The Mac is offline\. .*This list of repos is from \d{4}-/);
+    assert.ok(!/filter needs the Mac online/.test(head));
     assert.deepEqual(JSON.parse(json), [REPO, OTHER]);
+    // R17.S4: the relay does not know areas, so an area filter shows all repos and says so.
+    const filtered = await callTool(t.base, accessToken, "list_repos", { area: "Vendgogh" });
+    const [fhead, fjson] = filtered.content[0].text.split("\n");
+    assert.match(fhead, /The area filter needs the Mac online\./);
+    assert.deepEqual(JSON.parse(fjson), [REPO, OTHER]);
   } finally {
     await t.close();
     await h.close();

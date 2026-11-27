@@ -42,7 +42,7 @@ export class OfflineTools implements OfflineReader {
 
   async answer(tool: string, args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     try {
-      if (tool === "list_repos") return await this.listRepos(offlineText);
+      if (tool === "list_repos") return await this.listRepos(args, offlineText);
       if (tool === "list_specs") return await this.listSpecs(args, offlineText);
       if (tool === "read_spec") return await this.readSpec(args, offlineText);
     } catch {
@@ -51,10 +51,14 @@ export class OfflineTools implements OfflineReader {
     return { ok: false, text: offlineText };
   }
 
-  private async listRepos(offlineText: string): Promise<ToolText> {
+  private async listRepos(args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     const repos = await this.deps.config.repos();
     if (!repos) return { ok: false, text: `${offlineText} The relay has no list of repos from the Mac.` };
-    const text = `${offlineText} This list of repos is from ${repos.at}.\n${JSON.stringify(repos.repos)}`;
+    // The relay does not know the area of a repo, so it cannot filter by it.
+    const notice = str(args.area)
+      ? " The relay does not know the area of a repo, so this list shows all repos. The area filter needs the Mac online."
+      : "";
+    const text = `${offlineText} This list of repos is from ${repos.at}.${notice}\n${JSON.stringify(repos.repos)}`;
     if (!this.deps.desks) return { ok: true, text };
     // The desk of each repo, as the Mac last sent it, with the time of that state.
     // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
