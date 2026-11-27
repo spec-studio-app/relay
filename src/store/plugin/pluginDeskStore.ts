@@ -23,7 +23,8 @@ import {
 } from "../../workflows/deskRules.js";
 import { DeskNotFoundError, DeskRefusedError } from "../errors.js";
 import type { DeskStore, ListedDesk } from "../types.js";
-import { KeyQueue, guard, waitForChange, type Doc, type Docs } from "./docs.js";
+import { KeyQueue, OTHER_DEPLOY_TEXT, guard, waitForChange, type Doc, type Docs } from "./docs.js";
+import { StoreRefusedError } from "../errors.js";
 
 export const DESKS = "desks";
 
@@ -76,7 +77,8 @@ export class PluginDeskStore implements DeskStore {
   private change<T>(desk: { repoKey: string }, fn: (s: DeskState) => { result: T; changed: boolean }, make?: DeskAddress): Promise<T> {
     return this.queue.run(desk.repoKey, () =>
       this.docs.update<DeskDoc, T>(DESKS, desk.repoKey, (doc) => {
-        const mine = doc && doc.value.state.deployId === this.o.deployId ? doc : null;
+        if (doc && doc.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
+        const mine = doc;
         if (!mine && !make) throw new DeskNotFoundError();
         const state = mine ? structuredClone(mine.value.state) : initialDeskState(this.o.deployId, make!);
         const out = fn(state);
@@ -97,12 +99,14 @@ export class PluginDeskStore implements DeskStore {
   }
 
   async sync(desk: DeskAddress, lines: DeskSyncLine[]): Promise<DeskSyncResult> {
+    const events = [{ type: "sync", data: { lines } as never }];
+    this.docs.checkEvents(events);
     const result = await this.change(
       desk,
       (s) => applyDeskSync(s, { lines, at: this.env.now(), ...(desk.repo ? { repo: desk.repo } : {}) }, this.env),
       desk,
     );
-    if (result.applied) await this.append(desk.repoKey, [{ type: "sync", data: { lines } as never }]);
+    if (result.applied) await this.append(desk.repoKey, events);
     return result;
   }
 
@@ -112,6 +116,7 @@ export class PluginDeskStore implements DeskStore {
 
   async send(desk: { repoKey: string }, input: { text: string; replyTo?: string; attachments?: Attachment[] }): Promise<{ seq: number; message: DeskMessage }> {
     const id = randomUUID();
+    this.docs.checkEvents([{ type: "message", data: { ...input, id } as never }]);
     const sent = await this.change(desk, (s) => {
       const refusal = deskRefusal(s);
       if (refusal) throw new DeskRefusedError(refusal);

@@ -7,7 +7,8 @@ import type { TokenPair } from "../../workflows/configRules.js";
 import { initialRelayConfigState, type RelayConfigState, type StoredClient, type StoredToken } from "../../workflows/types.js";
 import { ConfigMissingError } from "../json/jsonConfigStore.js";
 import type { RelayConfigStore } from "../types.js";
-import type { Docs } from "./docs.js";
+import { OTHER_DEPLOY_TEXT, type Docs } from "./docs.js";
+import { StoreRefusedError } from "../errors.js";
 
 export const CONFIG_COLLECTION = "relay";
 export const CONFIG_KEY = "config";
@@ -38,6 +39,7 @@ export class PluginConfigStore implements RelayConfigStore {
   /** The config, or null when the plugin has none. */
   async read(): Promise<RelayConfigState | null> {
     const doc = await this.docs.get<ConfigDoc>(CONFIG_COLLECTION, CONFIG_KEY);
+    if (doc && doc.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
     return doc?.value.state ?? null;
   }
 
@@ -55,6 +57,7 @@ export class PluginConfigStore implements RelayConfigStore {
   private change<T>(fn: (s: RelayConfigState) => { result: T; changed: boolean }): Promise<T> {
     return this.docs.update<ConfigDoc, T>(CONFIG_COLLECTION, CONFIG_KEY, (doc) => {
       if (!doc) throw new PluginConfigMissingError();
+      if (doc.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
       const state = structuredClone(doc.value.state);
       const out = fn(state);
       if (!out.changed) return { result: out.result };

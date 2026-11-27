@@ -2,7 +2,7 @@
 // read version (PROTOCOL.md section 14). On a conflict the relay reads again
 // and applies the rule again, at most MAX_TRIES times. The plugin's errors
 // become the relay's store errors here, in one place.
-import { isPluginError, type Attributes, type Json, type PluginClient } from "../../vendor/plugin-sdk/index.js";
+import { PluginError, isPluginError, type Attributes, type Json, type NewEvent, type PluginClient } from "../../vendor/plugin-sdk/index.js";
 import { StoreRefusedError, StoreUnavailableError } from "../errors.js";
 
 /** A read, apply, write that lost this many races in a row fails as "not available". */
@@ -24,8 +24,14 @@ export type Outcome<T, R> =
 export function storeError(error: unknown): unknown {
   if (isPluginError(error, "unavailable")) return new StoreUnavailableError();
   if (isPluginError(error, "refused") || isPluginError(error, "bad_settings")) return new StoreRefusedError(error.message);
+  // Any other plugin error (an internal error, a call the plugin does not know): the store cannot do the call now.
+  if (error instanceof PluginError) return new StoreUnavailableError();
   return error;
 }
+
+/** The text when a document of another deploy is in the way. */
+export const OTHER_DEPLOY_TEXT =
+  "The plugin's storage holds the data of another relay deploy (another DEPLOY_ID). Give each deploy its own plugin storage.";
 
 /** Run a plugin call, and give the relay's store error when it fails. */
 export async function guard<T>(fn: () => Promise<T>): Promise<T> {
@@ -100,10 +106,37 @@ export class Docs {
     throw new StoreUnavailableError();
   }
 
-  /** Every document of the collection that matches the filter, with its value. */
+  /**
+   * Every document of the collection that matches the filter, with its value.
+   * The list has keys only, and each document comes with its own get: a page
+   * of values could pass the plugin's message limit, but one document cannot
+   * (the plugin refuses a write that large).
+   */
   async list<T>(collection: string, filter: Attributes): Promise<Array<{ key: string; value: T; version: string; attributes: Attributes }>> {
-    const items = await guard(() => this.client.state.listAll({ collection, filter, withValues: true }));
-    return items.map((item) => ({ key: item.key, value: item.value as T, version: item.version, attributes: item.attributes }));
+    const pageSize = this.client.info.limits.maxPageSize;
+    const items = await guard(() => this.client.state.listAll({ collection, filter, withValues: false, pageSize }));
+    const out: Array<{ key: string; value: T; version: string; attributes: Attributes }> = [];
+    for (let i = 0; i < items.length; i += 8) {
+      const docs = await Promise.all(items.slice(i, i + 8).map((item) => this.get<T>(collection, item.key).then((doc) => ({ key: item.key, doc }))));
+      // A document that went away between the list and the get is not listed.
+      for (const { key, doc } of docs) if (doc) out.push({ key, value: doc.value, version: doc.version, attributes: doc.attributes });
+    }
+    return out;
+  }
+
+  /**
+   * Refuse events that the plugin could not take, before the state changes:
+   * so a call fails whole, with the reason, and a retry does not apply it twice.
+   */
+  checkEvents(events: NewEvent[]): void {
+    if (!this.client.has("events")) return;
+    const limit = this.client.info.limits.maxMessageBytes - 4096;
+    for (const event of events) {
+      const size = Buffer.byteLength(JSON.stringify(event), "utf8");
+      if (size > limit) {
+        throw new StoreRefusedError(`An event of ${size} bytes is larger than the plugin's limit of ${limit} bytes. Send less text, or put it in an attachment.`);
+      }
+    }
   }
 }
 

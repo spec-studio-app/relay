@@ -137,8 +137,12 @@ export async function openPluginStore(
       const code = newPairCode();
       let made: boolean;
       try {
-        made = await configStore.create({ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS });
+        // Another deploy's data stops the start before anything is written.
+        await configStore.read();
+        // The timers first: a failure there stops the start before a new
+        // config makes a pairing code that would never be printed.
         await specs.startTimers();
+        made = await configStore.create({ hash: pairCodeHash(code), expiresAt: Date.now() + PAIR_CODE_TTL_MS });
       } catch (error) {
         if (error instanceof StoreUnavailableError || error instanceof StoreRefusedError) throw new StartupError(pluginStartText(plugin, error));
         throw error;

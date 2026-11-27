@@ -35,7 +35,8 @@ import {
 import { SpecClosingError, SpecDroppedError, SpecNotFoundError } from "../errors.js";
 import { CLOSED_KEEP_MS } from "../json/jsonSpecStore.js";
 import type { ListedSpec, SpecRef, SpecStore } from "../types.js";
-import { KeyQueue, guard, waitForChange, type Doc, type Docs } from "./docs.js";
+import { KeyQueue, OTHER_DEPLOY_TEXT, guard, waitForChange, type Doc, type Docs } from "./docs.js";
+import { StoreRefusedError } from "../errors.js";
 
 export const SPECS = "specs";
 export const CLOSED_SPECS = "closed-specs";
@@ -120,6 +121,11 @@ export class PluginSpecStore implements SpecStore {
     this.timersOn = true;
     const done = await this.docs.list<SpecDoc>(SPECS, { deployId: this.o.deployId, done: true });
     for (const item of done) this.schedule(item.value.state, item.value.lastActivityAt);
+    await this.pruneClosed();
+  }
+
+  /** Remove the closed records older than CLOSED_KEEP_MS: at start and after each close. */
+  private async pruneClosed(): Promise<void> {
     const now = this.nowDate().getTime();
     for (const item of await this.docs.list<ClosedDoc>(CLOSED_SPECS, { deployId: this.o.deployId })) {
       if (now - item.value.closedAt >= CLOSED_KEEP_MS) await this.docs.remove(CLOSED_SPECS, item.key, item.version);
@@ -145,7 +151,8 @@ export class PluginSpecStore implements SpecStore {
       if (this.closing.has(key)) throw new SpecClosingError();
       let after: SpecDoc | null = null;
       const result = await this.docs.update<SpecDoc, T>(SPECS, key, (doc) => {
-        if (!doc || doc.value.state.deployId !== this.o.deployId) throw new SpecNotFoundError();
+        if (!doc) throw new SpecNotFoundError();
+        if (doc.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
         const state = structuredClone(doc.value.state);
         const out = fn(state);
         if (!out.changed && !read) {
@@ -220,6 +227,7 @@ export class PluginSpecStore implements SpecStore {
         await this.docs.remove(SPECS, key, doc.version);
         if (this.docs.client.has("events")) await guard(() => this.docs.client.events.delete(specStream(spec)));
         this.o.log({ event: "spec_closed" });
+        await this.pruneClosed().catch(() => this.o.log({ event: "closed_prune_failed" }));
       } catch {
         // Try again later; the spec takes calls again meanwhile.
         this.o.log({ event: "spec_close_failed" });
@@ -256,11 +264,16 @@ export class PluginSpecStore implements SpecStore {
       if (!(await this.readDoc(spec))) {
         // A spec that closed takes no late line: only a first sync starts it again.
         closed = await this.docs.get<ClosedDoc>(CLOSED_SPECS, key);
+        // A closed record of another deploy, or one past its time, does not count.
+        if (closed && (closed.attributes.deployId !== this.o.deployId || this.nowDate().getTime() - closed.value.closedAt >= CLOSED_KEEP_MS)) closed = null;
         if (closed && !startsSpec(input)) return { line: lastSyncLine(input), applied: false };
       }
       let after: SpecDoc | null = null;
+      const events = [{ type: "sync", data: { lines: syncLines(sync) } as never }];
+      this.docs.checkEvents(events);
       const result = await this.docs.update<SpecDoc, SyncResult>(SPECS, key, (doc) => {
-        const mine = doc && doc.value.state.deployId === this.o.deployId ? doc : null;
+        if (doc && doc.value.state.deployId !== this.o.deployId) throw new StoreRefusedError(OTHER_DEPLOY_TEXT);
+        const mine = doc;
         const state = mine
           ? structuredClone(mine.value.state)
           : initialSpecState(this.o.deployId, { repoKey: spec.repoKey, slug: spec.slug, ...(spec.repo ? { repo: spec.repo } : {}) }, undefined, this.graceMs);
@@ -275,7 +288,7 @@ export class PluginSpecStore implements SpecStore {
       if (closed) await this.docs.remove(CLOSED_SPECS, key).catch(() => this.o.log({ event: "closed_record_remove_failed" }));
       const kept = after as SpecDoc | null;
       if (kept) this.schedule(kept.state, kept.lastActivityAt);
-      if (result.applied) await this.append(spec, [{ type: "sync", data: { lines: syncLines(sync) } as never }]);
+      if (result.applied) await this.append(spec, events);
       return result;
     });
   }
@@ -305,6 +318,7 @@ export class PluginSpecStore implements SpecStore {
 
   async send(spec: SpecRef, input: { text: string; replyTo?: string; attachments?: Attachment[] }): Promise<{ seq: number; message: Message }> {
     const id = randomUUID();
+    this.docs.checkEvents([{ type: "message", data: { ...input, id } as never }]);
     const sent = await this.change(spec, (s) => {
       try {
         checkSend(s);

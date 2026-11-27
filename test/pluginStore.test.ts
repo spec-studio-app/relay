@@ -15,7 +15,11 @@ import { attachmentPrefix } from "../src/activities.js";
 import { MessageTools } from "../src/messages.js";
 import { openStore } from "../src/store/index.js";
 import { openPluginStore, type PluginRelayStore } from "../src/store/plugin/index.js";
-import { StoreUnavailableError, STORE_UNAVAILABLE_TEXT } from "../src/store/errors.js";
+import { StoreRefusedError, StoreUnavailableError, STORE_UNAVAILABLE_TEXT } from "../src/store/errors.js";
+import { storeError } from "../src/store/plugin/docs.js";
+import { PluginError } from "../src/vendor/plugin-sdk/index.js";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { StartupError } from "../src/startupCommon.js";
 import { newPairCodeIn } from "../src/startupCommon.js";
 import { pairCodeHash } from "../src/pairing.js";
@@ -455,5 +459,72 @@ test("R4.S2: while the store is down, a call to /mcp answers 503 with the store'
     assert.equal((await mcpRequest(relay.base, "wrong-token", "tools/list")).status, 401);
   } finally {
     await relay.close();
+  }
+});
+
+// ---- review round 1 ----
+
+test("review: lists work when the specs together pass the plugin's message limit", { skip }, async () => {
+  const s = await memoryStore("stdio");
+  try {
+    const path = repo();
+    const big = "x".repeat(900_000);
+    for (const slug of ["big-a", "big-b", "big-c"]) {
+      await s.store.specs.sync(specAddress(path, slug), { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show(slug, { note: big }), turn: null });
+    }
+    const listed = await s.store.specs.list({ repoKey: specAddress(path, "big-a").repoKey });
+    assert.deepEqual(listed.map((l) => l.slug).sort(), ["big-a", "big-b", "big-c"]);
+  } finally {
+    await s.close();
+  }
+});
+
+test("review: a message over the plugin's event limit fails whole, with the reason, and changes nothing", { skip }, async () => {
+  const s = await memoryStore("stdio");
+  try {
+    const spec = specAddress(repo(), "huge");
+    await s.store.specs.sync(spec, { lines: [{ line: 1, event: { kind: "status" } }], first: true, state: show("huge"), turn: null });
+    await assert.rejects(s.store.specs.send(spec, { text: "y".repeat(2_200_000) }), (e: Error) => e instanceof StoreRefusedError && /larger than the plugin's limit/.test(e.message));
+    assert.equal((await s.store.specs.state(spec))?.mac.messages.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test("review: a relay with another DEPLOY_ID on the same plugin storage does not start", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-plugin-deploy-"));
+  const dataFile = join(dir, "memory.json");
+  const first = await memoryStore("stdio", { dataFile });
+  await first.close();
+  const plugin: PluginSettings = { transport: "stdio", command: memoryPlugin()!, args: ["--data", dataFile], settings: {}, from: "RELAY_PLUGIN" };
+  const other = await openPluginStore({ deployId: "other", publicUrl: "https://relay.example.com", plugin }, { bucket: null, log: () => {} });
+  try {
+    await assert.rejects(other.start({ log: () => {}, print: () => {} }), (e: Error) => e instanceof StartupError && /another relay deploy/.test(e.message));
+  } finally {
+    await other.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("review: a plugin error with no store code is 'not available'", () => {
+  assert.ok(storeError(new PluginError(null, "internal", -32603)) instanceof StoreUnavailableError);
+  assert.ok(storeError(new PluginError("refused", "too big")) instanceof StoreRefusedError);
+});
+
+test("review: relay pair-code next to a relay that holds a stdio plugin's storage says what to do", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-plugin-paircode-"));
+  const dataFile = join(dir, "memory.json");
+  const relay = await memoryStore("stdio", { dataFile });
+  try {
+    const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+    const out = spawnSync(process.execPath, [cli, "pair-code"], {
+      env: { PATH: process.env.PATH, PUBLIC_URL: "https://relay.example.com", OWNER_PASSWORD_HASH: BCRYPT, RELAY_PLUGIN: `${memoryPlugin()} --data ${dataFile}` },
+      encoding: "utf8",
+    });
+    assert.equal(out.status, 1);
+    assert.match(out.stderr, /stop the relay, run the command, and start the relay again, or run the plugin as a sidecar/);
+  } finally {
+    await relay.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
