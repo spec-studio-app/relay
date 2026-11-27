@@ -5,6 +5,7 @@ import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { eventually, harness, startTestServer } from "./temporal.js";
 import { AGENT_SECRET, callTool, connectAgent, signIn } from "./helpers.js";
 import { repoKeyOf, specAddress } from "../src/mirror.js";
+import { DESK_ARCHIVED_TEXT, effectiveTurn } from "../src/workflows/types.js";
 
 let env: TestWorkflowEnvironment;
 before(async () => {
@@ -339,6 +340,382 @@ test("R5.S3: offline list_repos also lists each desk with the time of its last s
     // R5.S4: list_specs shows no desk.
     const specs = await callTool(t.base, accessToken, "list_specs");
     assert.deepEqual(JSON.parse(specs.content[0].text.split("\n").slice(1).join("\n")).specs, []);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_specs leaves out only the specs of the repos that the Mac says are archived, unless archived is true", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    // A third repo that is not in the hello list (added after the hello, or removed): its specs still show.
+    const NEW = `${REPO}-new`;
+    await h.mirror.sync(specAddress(NEW, "fresh"), { line: 1, event: { kind: "note" }, state: show("fresh"), turn: null });
+    await h.startConfig();
+    // The hello list has REPO only. The desks frame says that OTHER (with beta) is archived.
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    agent.send({
+      type: "desks",
+      desks: [{ repoKey: repoKeyOf(REPO), repo: REPO, open: true, turn: null, canMessage: true, reason: null }],
+      archivedRepos: [OTHER],
+    });
+    await eventually(() => h.configStore.archivedRepos());
+    await agent.close();
+    const { accessToken } = await signIn(t.base);
+    const slugs = async (args: Record<string, unknown>) => {
+      const r = await eventually(async () => {
+        const x = await callTool(t.base, accessToken, "list_specs", args);
+        return x.isError || !x.content[0].text.includes('"alpha"') || !x.content[0].text.includes('"fresh"') ? null : x;
+      });
+      const [, ...body] = r.content[0].text.split("\n");
+      return JSON.parse(body.join("\n")).specs as Array<Record<string, unknown>>;
+    };
+    const plain = await slugs({});
+    assert.deepEqual(plain.map((s) => s.slug).sort(), ["alpha", "fresh"]);
+    assert.ok(plain.every((s) => s.archived === undefined));
+
+    const withArchived = await slugs({ archived: true });
+    const bySlug = Object.fromEntries(withArchived.map((s) => [s.slug, s]));
+    assert.deepEqual(Object.keys(bySlug).sort(), ["alpha", "beta", "fresh"]);
+    assert.equal(bySlug.beta.archived, true);
+    assert.equal(bySlug.alpha.archived, undefined);
+    assert.equal(bySlug.fresh.archived, undefined);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: a newer archived list replaces the last one: an unarchived repo's specs show again offline", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    await h.startConfig();
+    // The hello carries the list too.
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO], archivedRepos: [OTHER] });
+    await agent.next("welcome");
+    await eventually(async () => (await h.configStore.archivedRepos())?.repos.includes(OTHER));
+    const { accessToken } = await signIn(t.base);
+    const list = async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", {});
+      return JSON.parse(r.content[0].text.split("\n").slice(1).join("\n")).specs.map((s: any) => s.slug).sort();
+    };
+    await agent.close();
+    assert.deepEqual(await eventually(async () => {
+      const l = await list();
+      return l.includes("alpha") ? l : null;
+    }), ["alpha"]);
+
+    // The user unarchives OTHER: the next desks frame has an empty list. A frame with no field keeps the list.
+    const again = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, OTHER] });
+    await again.next("welcome");
+    assert.deepEqual((await h.configStore.archivedRepos())?.repos, [OTHER]);
+    again.send({ type: "desks", desks: [], archivedRepos: [] });
+    await eventually(async () => (await h.configStore.archivedRepos())?.repos.length === 0);
+    await again.close();
+    assert.deepEqual(await eventually(async () => {
+      const l = await list();
+      return l.includes("beta") ? l : null;
+    }), ["alpha", "beta"]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_repos with archived true lists the archived repos that the Mac sent", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    await eventually(() => h.configStore.repos());
+    const { accessToken } = await signIn(t.base);
+    // No archived list yet (an older Mac): the answer says so.
+    await agent.close();
+    const none = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_repos", { archived: true });
+      return r.isError ? null : r;
+    });
+    const [nhead, njson] = none.content[0].text.split("\n");
+    assert.match(nhead, /The Mac sent no list of archived repos/);
+    assert.deepEqual(JSON.parse(njson), [REPO]);
+
+    await h.configStore.setArchivedRepos([OTHER], new Date("2026-11-20T10:00:00Z"));
+    // The desk of the archived repo, as a desks frame that leaves the repo out marks it.
+    await h.desks.report({ repoKey: repoKeyOf(OTHER), repo: OTHER, open: false, turn: null, canMessage: false, reason: DESK_ARCHIVED_TEXT });
+    const r = await callTool(t.base, accessToken, "list_repos", { archived: true });
+    const lines = r.content[0].text.split("\n");
+    assert.deepEqual(JSON.parse(lines[1]), [REPO]);
+    assert.equal(lines[2], "The archived repos, from the list that the Mac sent at 2026-11-20T10:00:00.000Z:");
+    assert.deepEqual(JSON.parse(lines[3]), [OTHER]);
+    // With archived, the desks show the archived desk with its reason.
+    const archivedDesk = (JSON.parse(lines[5]) as Array<Record<string, unknown>>).find((d) => d.repo === OTHER);
+    assert.equal(archivedDesk?.reason, DESK_ARCHIVED_TEXT);
+    assert.equal(archivedDesk?.canMessage, false);
+    // Without archived, the list has no archived repos and no archived desk.
+    const plain = await callTool(t.base, accessToken, "list_repos", {});
+    assert.ok(!plain.content[0].text.includes("archived repos"));
+    assert.ok(!plain.content[0].text.includes(OTHER));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_specs filters nothing when the Mac sent no archived list", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    // An older Mac: a hello with a repo list that leaves OTHER out, and no archived list.
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    await eventually(() => h.configStore.repos());
+    await agent.close();
+    const { accessToken } = await signIn(t.base);
+    const r = await eventually(async () => {
+      const x = await callTool(t.base, accessToken, "list_specs", {});
+      return x.content[0].text.includes('"beta"') && x.content[0].text.includes('"alpha"') ? x : null;
+    });
+    const [, ...body] = r.content[0].text.split("\n");
+    const specs = JSON.parse(body.join("\n")).specs as Array<Record<string, unknown>>;
+    assert.deepEqual(specs.map((s) => s.slug).sort(), ["alpha", "beta"]);
+    assert.ok(specs.every((s) => s.archived === undefined));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R7.S2: offline read_spec of a paused spec says that the spec is paused, with the note and the time", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const paused = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.equal(paused.isError, undefined);
+    assert.match(paused.content[0].text, /The spec is paused: Waiting for the API\. Paused at 2026-11-01T10:00:00Z\./);
+    const free = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "free" });
+    assert.ok(!/The spec is paused/.test(free.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("the fallback turn of a paused spec is paused and needs no user; a merged stage wins over the pause", () => {
+  const paused = { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting" };
+  assert.deepEqual(effectiveTurn(null, show("a", { status: "awaiting-approval", paused })), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("b", { status: "blocked", paused })), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("c", { stage: "merged", status: "idle", paused })), { turn: "merged", needsYou: false });
+  // A turn from the Mac still wins.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("d", { paused })), { turn: "yours", needsYou: true });
+  // No paused object: the status rule as before.
+  assert.deepEqual(effectiveTurn(null, show("e", { status: "awaiting-approval", paused: null })), { turn: "yours", needsYou: true });
+});
+
+test("with no turn from the app, a paused spec needs no user in list_specs, read_spec and the NeedsYou attribute", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    const paused = { at: "2026-11-01T10:00:00Z", by: "ross", note: "Waiting for the API" };
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "status", to: "awaiting-approval" },
+      state: show("held", { status: "awaiting-approval", paused }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "stuck"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("stuck", { status: "blocked", paused }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "waiting"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("waiting", { status: "awaiting-approval" }),
+      turn: null,
+    });
+    const { accessToken } = await signIn(t.base);
+    const list = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 3 ? l : null;
+    });
+    const bySlug = Object.fromEntries(list.specs.map((s: any) => [s.slug, s]));
+    assert.deepEqual([bySlug.held.turn, bySlug.held.needsYou], ["paused", false]);
+    assert.deepEqual([bySlug.stuck.turn, bySlug.stuck.needsYou], ["paused", false]);
+    assert.deepEqual([bySlug.waiting.turn, bySlug.waiting.needsYou], ["yours", true]);
+    // Only the spec that is not paused needs the user in the search attribute.
+    const needing = await eventually(async () => {
+      const found: string[] = [];
+      for await (const wf of h.clients.data.workflow.list({ query: `RelayDeployId = '${h.deployId}' AND NeedsYou = true` })) found.push(wf.workflowId);
+      return found.length === 1 ? found : null;
+    });
+    assert.ok(needing[0].endsWith("-waiting"));
+
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(read.content[0].text, /## Turn\n\npaused\. Needs the user: no\./);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("offline list_specs shows the pause of a paused spec, and no pause for a merged one", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: " Waiting for the API " } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "bare"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("bare", { paused: { at: "2026-11-02T10:00:00Z", by: "ross" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "shipped"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("shipped", { stage: "merged", status: "idle", paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Old" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(REPO, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    const { accessToken } = await signIn(t.base);
+    const list = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO, all: true });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 4 ? l : null;
+    });
+    const bySlug = Object.fromEntries(list.specs.map((s: any) => [s.slug, s]));
+    assert.deepEqual(bySlug.held.paused, { at: "2026-11-01T10:00:00Z", note: "Waiting for the API" });
+    assert.deepEqual(bySlug.bare.paused, { at: "2026-11-02T10:00:00Z", note: null });
+    assert.equal(bySlug.shipped.paused, undefined);
+    assert.equal(bySlug.free.paused, undefined);
+
+    // read_spec of the merged spec does not say that it is paused.
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "shipped" });
+    assert.ok(!/The spec is paused/.test(read.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("offline read_spec of a spec of an archived repo says that the repo is archived", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { paused: { at: "2026-11-01T10:00:00Z", by: "ross", note: "Later" } }),
+      turn: null,
+    });
+    await h.mirror.sync(specAddress(OTHER, "free"), { line: 1, event: { kind: "note" }, state: show("free"), turn: null });
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+    const held = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "held" });
+    assert.match(held.content[0].text, /The spec is paused: Later\. Paused at 2026-11-01T10:00:00Z\. The repo is archived\./);
+    const free = await callTool(t.base, accessToken, "read_spec", { repo: OTHER, slug: "free" });
+    assert.ok(!/The repo is archived/.test(free.content[0].text));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("the turn of a spec of an archived repo never needs the user; merged and paused still win", () => {
+  const paused = { at: "2026-11-01T10:00:00Z", by: "ross" };
+  assert.deepEqual(effectiveTurn(null, show("a", { status: "awaiting-approval" }), true), { turn: "archived", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("b", { status: "blocked" }), true), { turn: "archived", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("c", { stage: "merged", status: "idle" }), true), { turn: "merged", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, show("d", { status: "awaiting-approval", paused }), true), { turn: "paused", needsYou: false });
+  assert.deepEqual(effectiveTurn(null, null, true), { turn: "archived", needsYou: false });
+  // A turn from the Mac keeps its kind, with needsYou false.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("e"), true), { turn: "yours", needsYou: false });
+  assert.deepEqual(effectiveTurn({ turn: "working", needsYou: false }, show("f"), true), { turn: "working", needsYou: false });
+  // Not archived: as before.
+  assert.deepEqual(effectiveTurn({ turn: "yours", needsYou: true }, show("g")), { turn: "yours", needsYou: true });
+  assert.deepEqual(effectiveTurn(null, show("h", { status: "awaiting-approval" })), { turn: "yours", needsYou: true });
+});
+
+test("offline list_specs, read_spec and read_messages give no spec of an archived repo as needing the user", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    // The last sync before the archive: the app's turn needs the user.
+    await h.mirror.sync(specAddress(REPO, "asked"), {
+      line: 1,
+      event: { t: "2026-11-24T14:27:00Z", kind: "message", stage: "plan", id: "s-1", text: "Approve the plan?" },
+      state: show("asked", { stage: "plan", status: "awaiting-approval" }),
+      turn: { turn: "yours", needsYou: true },
+    });
+    // No turn from the app: the status rule would say yours.
+    await h.mirror.sync(specAddress(REPO, "waiting"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("waiting", { status: "awaiting-approval" }),
+      turn: null,
+    });
+    // The pause line still arrived before the sync stopped.
+    await h.mirror.sync(specAddress(REPO, "held"), {
+      line: 1,
+      event: { kind: "note" },
+      state: show("held", { status: "awaiting-approval", paused: { at: "2026-11-24T14:00:00Z", by: "ross" } }),
+      turn: null,
+    });
+    await h.configStore.setArchivedRepos([REPO], new Date());
+    const { accessToken } = await signIn(t.base);
+    const listed = async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", { repo: REPO, archived: true });
+      const l = JSON.parse(r.content[0].text.split("\n").slice(1).join("\n"));
+      return l.specs.length === 3 ? Object.fromEntries(l.specs.map((s: any) => [s.slug, s])) : null;
+    };
+    const bySlug = await eventually(listed);
+    assert.deepEqual([bySlug.asked.turn, bySlug.asked.needsYou, bySlug.asked.archived], ["yours", false, true]);
+    assert.deepEqual([bySlug.waiting.turn, bySlug.waiting.needsYou], ["archived", false]);
+    assert.deepEqual([bySlug.held.turn, bySlug.held.needsYou], ["paused", false]);
+
+    const read = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "waiting" });
+    assert.match(read.content[0].text, /## Turn\n\narchived\. Needs the user: no\./);
+    const asked = await callTool(t.base, accessToken, "read_spec", { repo: REPO, slug: "asked" });
+    assert.match(asked.content[0].text, /## Turn\n\nyours\. Needs the user: no\./);
+
+    // With no slug first: the message is still unread.
+    const all = JSON.parse((await callTool(t.base, accessToken, "read_messages", {})).content[0].text);
+    assert.deepEqual(all.specs.find((s: any) => s.slug === "asked")?.turn, { turn: "yours", needsYou: false });
+    const messages = JSON.parse((await callTool(t.base, accessToken, "read_messages", { repo: REPO, slug: "asked" })).content[0].text);
+    assert.deepEqual(messages.turn, { turn: "yours", needsYou: false });
+
+    // The user unarchives the repo: the turns need the user again.
+    await h.configStore.setArchivedRepos([], new Date());
+    const back = await eventually(listed);
+    assert.deepEqual([back.asked.turn, back.asked.needsYou], ["yours", true]);
+    assert.deepEqual([back.waiting.turn, back.waiting.needsYou], ["yours", true]);
+    assert.deepEqual([back.held.turn, back.held.needsYou], ["paused", false]);
   } finally {
     await t.close();
     await h.close();

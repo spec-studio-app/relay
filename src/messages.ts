@@ -7,7 +7,7 @@ import type { DeskStore, SpecStore } from "./store/types.js";
 import type { ToolText } from "./offline.js";
 import type { Attachment, DeskAddress, DeskMessage, DeskState, Message, SpecAddress, StatusChange, Turn } from "./workflows/types.js";
 import type { ReadResult } from "./workflows/specRules.js";
-import { DESK_GONE_TEXT } from "./workflows/types.js";
+import { DESK_ARCHIVED_REFUSAL, DESK_ARCHIVED_TEXT, DESK_GONE_TEXT, effectiveTurn, pauseOf } from "./workflows/types.js";
 import { limitText, NO_BUCKET_TEXT, type AttachmentOwner, type Attachments } from "./attachments.js";
 
 export const READ_WAIT_MS = 20_000;
@@ -25,6 +25,8 @@ export interface MessageToolsOptions {
   macTakesDesks?: () => boolean | null;
   /** The repo paths of the Mac's last hello, or null. */
   helloRepos?: () => Promise<string[] | null>;
+  /** The archived repo paths that the Mac sent last, or null when it sent no list. */
+  archivedRepos?: () => Promise<string[] | null>;
   attachments: Attachments;
   /** How long read_messages waits for a new message (tests set less). */
   waitMs?: number;
@@ -37,6 +39,14 @@ function str(value: unknown): string | undefined {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The line of a send_message answer and an offline read_spec for a spec of an archived repo. */
+export const ARCHIVED_REPO_TEXT = DESK_ARCHIVED_TEXT;
+
+/** The refusal text of a desk: an archived desk says how to message it again. */
+function deskRefusal(reason: string): string {
+  return reason === DESK_ARCHIVED_TEXT ? DESK_ARCHIVED_REFUSAL : reason;
+}
 
 /** The tool's text when the relay has no desk for the repo. */
 export function noDeskText(repo: string): string {
@@ -118,7 +128,7 @@ export class MessageTools {
       if (error instanceof SpecNotFoundError) {
         return { ok: false, text: `The relay has no synced spec with this repo and slug. ${await this.lastSyncText()} Check them with list_specs.` };
       }
-      if (error instanceof DeskRefusedError) return { ok: false, text: error.message };
+      if (error instanceof DeskRefusedError) return { ok: false, text: deskRefusal(error.message) };
       if (error instanceof DeskNotFoundError) return { ok: false, text: await this.noDesk(str(args.repo) ?? "") };
       return { ok: false, text: "The relay cannot reach its store now. Try again later." };
     }
@@ -148,7 +158,8 @@ export class MessageTools {
 
   /**
    * The desk of a repo: by its path, or by its name when one desk has that
-   * name. Null when the relay has no desk for the repo.
+   * name. By name, an active desk wins over an archived desk. Null when the
+   * relay has no desk for the repo.
    */
   private async findDesk(repo: string): Promise<DeskState | null> {
     const desks = this.o.desks!;
@@ -156,14 +167,18 @@ export class MessageTools {
     if (byPath) return byPath;
     if (repo.includes("/")) return null;
     // Desk records stay after a repo moves or leaves Spec Studio: a name
-    // matches only the desks of the Mac's last desks frame.
+    // matches only the desks of the Mac's last desks frame, and the archived desks.
     const named = (await desks.list()).filter(
       (d) => d.memo.repo && repoName(d.memo.repo) === repo && d.memo.reason !== DESK_GONE_TEXT,
     );
-    if (named.length > 1) {
+    // An archived desk matches only when no active desk has the name, so that
+    // its archived answer still works by name.
+    const active = named.filter((d) => d.memo.reason !== DESK_ARCHIVED_TEXT);
+    const matches = active.length > 0 ? active : named;
+    if (matches.length > 1) {
       throw new DeskRefusedError(`More than one repo has the name "${repo}". Give the repo path from list_repos.`);
     }
-    return named.length === 1 ? desks.get({ repoKey: named[0].repoKey }) : null;
+    return matches.length === 1 ? desks.get({ repoKey: matches[0].repoKey }) : null;
   }
 
   /** The attachments of a message, from their object keys. A string is the tool's error. */
@@ -197,10 +212,63 @@ export class MessageTools {
       ...(attachments.length > 0 ? { attachments } : {}),
     });
     this.o.push(spec, message);
+    const paused = await this.pausedText(spec);
+    const archived = await this.isArchived(spec.repoKey);
+    const lines = [paused, archived ? ARCHIVED_REPO_TEXT : null].filter((line): line is string => line !== null);
     return {
       ok: true,
-      text: JSON.stringify({ seq, id: message.id, spec: { repo, slug }, createdAt: message.createdAt }),
+      text:
+        JSON.stringify({
+          seq,
+          id: message.id,
+          spec: { repo, slug },
+          createdAt: message.createdAt,
+          ...(paused ? { paused: true } : {}),
+          ...(archived ? { archived: true } : {}),
+        }) + lines.map((line) => `\n${line}`).join(""),
     };
+  }
+
+  /**
+   * The freshness of a read. The workflow's turn does not know the archived
+   * list: a spec of an archived repo never needs the user.
+   */
+  private async freshness(spec: { repoKey: string; slug: string }, result: ReadResult): Promise<ReturnType<typeof freshness>> {
+    const fresh = freshness(result);
+    if (!(await this.isArchived(spec.repoKey))) return fresh;
+    try {
+      const state = await this.o.specs.state({ repoKey: spec.repoKey, slug: spec.slug });
+      if (state) return { ...fresh, turn: effectiveTurn(state.turn, state.state, true) };
+    } catch {
+      // The turn of the read, with needsYou false.
+    }
+    return { ...fresh, turn: fresh.turn ? { turn: fresh.turn.turn, needsYou: false } : { turn: "archived", needsYou: false } };
+  }
+
+  /** True when the repo is in the archived list that the Mac sent last. A store error gives false: the message is stored. */
+  private async isArchived(repoKey: string): Promise<boolean> {
+    try {
+      const archived = (await this.o.archivedRepos?.()) ?? [];
+      return archived.some((path) => repoKeyOf(path) === repoKey);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * "The spec is paused: <note>" when the mirrored state of the spec has a
+   * `paused` field and the spec is not merged, else null. A store error gives
+   * null: the message is stored.
+   */
+  private async pausedText(spec: SpecAddress): Promise<string | null> {
+    try {
+      const state = await this.o.specs.state({ repoKey: spec.repoKey, slug: spec.slug });
+      const paused = pauseOf(state?.state ?? null);
+      if (!paused) return null;
+      return paused.note ? `The spec is paused: ${paused.note}` : "The spec is paused.";
+    } catch {
+      return null;
+    }
   }
 
   /** send_message with no slug: the message goes to the repo's desk. */
@@ -241,7 +309,7 @@ export class MessageTools {
       return {
         ok: true,
         text: JSON.stringify(
-          { spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, ...freshness(result), cursor, messages },
+          { spec: { repo, slug }, stage: result.stage, syncedAt: result.syncedAt, ...(await this.freshness(spec, result)), cursor, messages },
           null,
           2,
         ),
@@ -347,7 +415,7 @@ export class MessageTools {
           repo: path ?? null,
           slug: item.slug,
           stage: result.stage,
-          ...freshness(result),
+          ...(await this.freshness(item, result)),
           cursor: result.messages[result.messages.length - 1].seq,
         });
       }

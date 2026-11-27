@@ -10,6 +10,8 @@ import {
   pairedQuery,
   registerClientUpdate,
   reposQuery,
+  archivedReposQuery,
+  setArchivedReposUpdate,
   revokeUpdate,
   rotateRefreshUpdate,
   setPairCodeUpdate,
@@ -74,6 +76,14 @@ export class ConfigStore implements RelayConfigStore {
 
   repos(): Promise<RelayConfigState["repos"]> {
     return this.handle.query(reposQuery);
+  }
+
+  async setArchivedRepos(repos: string[], at: Date): Promise<void> {
+    await this.handle.executeUpdate(setArchivedReposUpdate, { args: [{ repos, at: at.toISOString() }, this.bound()] });
+  }
+
+  archivedRepos(): Promise<{ repos: string[]; at: string } | null> {
+    return this.handle.query(archivedReposQuery);
   }
 
   getClient(id: string): Promise<StoredClient | null> {

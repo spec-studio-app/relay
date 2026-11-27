@@ -41,6 +41,7 @@ export const TOOLS: ToolDefinition[] = [
       "The area filter needs the Mac online: when the Mac is offline, the list shows all repos and says so.",
     inputSchema: {
       area: z.string().min(1).optional().describe("Show only the repos of this area. Give the name of the area."),
+      archived: z.boolean().optional().describe("Also show archived repos, marked archived."),
     },
   },
   {
@@ -52,12 +53,14 @@ export const TOOLS: ToolDefinition[] = [
       "When Spec Studio does not run, the turn comes from state.json, and the result says so. " +
       "Each spec also shows the area of its repo and its project. " +
       "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync. " +
-      "The relay has no areas and no projects, so an offline list shows all specs and says that the filter needs the Mac online.",
+      "The relay has no areas and no projects, so an offline list shows all specs and says that the filter needs the Mac online. " +
+      "A list shows no spec of an archived repo, unless you set archived to true. A paused spec shows its pause.",
     inputSchema: {
       repo: repo.optional().describe("Show only the specs of this repo. Give the path of the repo on the Mac."),
       all: z.boolean().optional().describe("Also show the specs that are merged or closed."),
       area: z.string().min(1).optional().describe("Show only the specs of the repos of this area. Give the name of the area."),
       project: z.string().min(1).optional().describe("Show only the specs of this project. Give the name of the project."),
+      archived: z.boolean().optional().describe("Also show the specs of archived repos, marked archived."),
     },
   },
   {
@@ -67,8 +70,11 @@ export const TOOLS: ToolDefinition[] = [
       "List the projects of Spec Studio. A project is a goal with specs in one or more repos. " +
       "Each project shows its status, its progress (the specs that shipped of all its specs) and its target date. " +
       "Each project also shows its newest update, with its health and its note. " +
+      "A list shows no archived project, unless you set archived to true. " +
       "This tool fails at once when the Mac is offline.",
-    inputSchema: {},
+    inputSchema: {
+      archived: z.boolean().optional().describe("Also show archived projects, marked archived."),
+    },
   },
   {
     name: "read_spec",
@@ -78,7 +84,9 @@ export const TOOLS: ToolDefinition[] = [
       "It also shows the turn of the spec and whether the spec needs the user. " +
       "It also shows spec.md, plan.md when it exists, and the last 20 events of the activity. " +
       "When the Mac is offline, the result comes from the relay and shows the time of the last sync. " +
-      "Then spec.md and plan.md are not available.",
+      "Then spec.md and plan.md are not available. " +
+      "When the user paused the spec, the result says that the spec is paused, with the reason and the time. " +
+      "When the user archived the repo of the spec, the result says that the repo is archived.",
     inputSchema: { repo, slug },
   },
   {
@@ -144,7 +152,9 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
       "Spec Studio then types the message into the terminal at a safe point. " +
       "The user must let Claude AI message a desk in Spec Studio, Settings, Remote Relay. " +
       "The result gives the sequence number of the message at once, also when the Mac is offline. " +
-      "A message does not answer a question or a permission prompt of the session.",
+      "A message does not answer a question or a permission prompt of the session. " +
+      "A paused spec keeps the message in its inbox until the user resumes the spec. The result then says that the spec is paused. " +
+      "When the user archived the repo of the spec, the message still goes into the inbox, and the result says that the repo is archived.",
     inputSchema: {
       repo,
       slug: specOrDesk,
