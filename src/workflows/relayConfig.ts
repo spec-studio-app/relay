@@ -1,5 +1,6 @@
 // One workflow per deploy: the agent secret hashes, the pairing code hash, the
-// OAuth clients and the token hashes, and the repos from the agent's last hello.
+// OAuth clients and the token hashes, the repos from the agent's last hello,
+// and the archived repos that the agent sent last.
 // It keeps only hashes. Its payloads use the config key of the codec.
 import {
   allHandlersFinished,
@@ -29,11 +30,14 @@ export const rotateRefreshUpdate = defineUpdate<StoredToken | null, [{ oldHash: 
 );
 export const revokeUpdate = defineUpdate<void, [{ hash: string; clientId: string }, Bound]>("revoke");
 export const setReposUpdate = defineUpdate<void, [{ repos: string[]; at: string }, Bound]>("setRepos");
+/** The archived repos from the agent (desks frame or hello with `archivedRepos`). */
+export const setArchivedReposUpdate = defineUpdate<void, [{ repos: string[]; at: string }, Bound]>("setArchivedRepos");
 
 export const verifyAgentQuery = defineQuery<boolean, [string]>("verifyAgent");
 export const tokenQuery = defineQuery<StoredToken | null, ["access" | "refresh", string]>("token");
 export const clientQuery = defineQuery<StoredClient | null, [string]>("client");
 export const reposQuery = defineQuery<RelayConfigState["repos"]>("repos");
+export const archivedReposQuery = defineQuery<NonNullable<RelayConfigState["archivedRepos"]> | null>("archivedRepos");
 export const pairedQuery = defineQuery<number>("paired");
 /** True when the hash is the live pairing code. It does not use the code. */
 export const pairCodeQuery = defineQuery<boolean, [string]>("pairCodeValid");
@@ -61,6 +65,7 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
   setHandler(tokenQuery, (kind, hash) => rules.token(s, kind, hash, Date.now()));
   setHandler(clientQuery, (id) => rules.client(s, id));
   setHandler(reposQuery, () => s.repos);
+  setHandler(archivedReposQuery, () => s.archivedRepos ?? null);
   setHandler(pairedQuery, () => s.agents.length);
   setHandler(pairCodeQuery, (hash) => rules.pairCodeValid(s, hash, Date.now()));
 
@@ -81,6 +86,7 @@ export async function relayConfigWorkflow(input: RelayConfigState): Promise<void
   setHandler(rotateRefreshUpdate, (input) => counted(rules.rotateRefresh(s, input, Date.now())), bound);
   setHandler(revokeUpdate, (input) => counted(rules.revoke(s, input)), bound);
   setHandler(setReposUpdate, (repos) => counted(rules.setRepos(s, repos)), bound);
+  setHandler(setArchivedReposUpdate, (archived) => counted(rules.setArchivedRepos(s, archived)), bound);
 
   await condition(() => updates >= s.updateLimit || workflowInfo().continueAsNewSuggested);
   await condition(allHandlersFinished);

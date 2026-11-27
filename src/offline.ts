@@ -67,11 +67,16 @@ export class OfflineTools implements OfflineReader {
     const notice = str(args.area)
       ? " The relay does not know the area of a repo, so this list shows all repos. The area filter needs the Mac online."
       : "";
-    const archivedNotice =
-      args.archived === true
-        ? " The Mac leaves archived repos out of this list, so the relay cannot show them. The archived filter needs the Mac online."
-        : "";
-    const text = `${offlineText} This list of repos is from ${repos.at}.${notice}${archivedNotice}\n${JSON.stringify(repos.repos)}`;
+    let archivedNotice = "";
+    let archivedList = "";
+    if (args.archived === true) {
+      // The Mac leaves archived repos out of the hello list. It sends them in their own list.
+      const archived = await this.deps.config.archivedRepos();
+      if (archived) archivedList = `\nThe archived repos, from the list that the Mac sent at ${archived.at}:\n${JSON.stringify(archived.repos)}`;
+      else archivedNotice = " The Mac sent no list of archived repos, so the relay cannot show them. The archived filter needs the Mac online.";
+    }
+    const text =
+      `${offlineText} This list of repos is from ${repos.at}.${notice}${archivedNotice}\n${JSON.stringify(repos.repos)}` + archivedList;
     if (!this.deps.desks) return { ok: true, text };
     // The desk of each repo, as the Mac last sent it, with the time of that state.
     // Only the desks of the repos in the list: a desk record stays after its repo moves or leaves.
@@ -93,16 +98,21 @@ export class OfflineTools implements OfflineReader {
     };
   }
 
+  /** The repo keys of the archived repos that the Mac sent last. Empty when it sent no list. */
+  private async archivedKeys(): Promise<Set<string>> {
+    const archived = await this.deps.config.archivedRepos();
+    return new Set((archived?.repos ?? []).map((path) => repoKeyOf(path)));
+  }
+
   private async listSpecs(args: Record<string, unknown>, offlineText: string): Promise<ToolText> {
     const repo = str(args.repo);
     const all = args.all === true;
     // Like `studio specs`: a merged spec shows only with all.
     const archived = args.archived === true;
     const listed = await this.deps.specs.list({ repoKey: repo ? repoKeyOf(repo) : undefined, all, openOnly: !all });
-    // The Mac leaves archived repos out of its repo list. With no list, nothing is filtered.
-    const known = await this.deps.config.repos();
-    const keys = known ? new Set(known.repos.map((path) => repoKeyOf(path))) : null;
-    const isArchived = (repoKey: string) => keys !== null && !keys.has(repoKey);
+    // Only the repos that the Mac says are archived. With no list (an older Mac), nothing is filtered.
+    const archivedKeys = await this.archivedKeys();
+    const isArchived = (repoKey: string) => archivedKeys.has(repoKey);
     const specs = listed
       .filter((s) => s.memo !== null && (all || (s.memo.stage !== "merged" && !s.memo.dropped)))
       .filter((s) => archived || !isArchived(s.repoKey))

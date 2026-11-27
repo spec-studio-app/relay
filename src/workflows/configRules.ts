@@ -140,3 +140,8 @@ export function setRepos(s: RelayConfigState, repos: { repos: string[]; at: stri
   s.repos = repos;
   return { result: undefined, changed: true };
 }
+
+export function setArchivedRepos(s: RelayConfigState, archived: { repos: string[]; at: string }): Change<void> {
+  s.archivedRepos = archived;
+  return { result: undefined, changed: true };
+}

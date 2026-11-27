@@ -331,6 +331,12 @@ export interface RelayConfigState {
   refresh: Record<string, StoredToken>;
   /** The repos from the agent's last hello, and its time. */
   repos: { repos: string[]; at: string } | null;
+  /**
+   * The archived repos (paths) from the agent's last desks frame or hello
+   * that had `archivedRepos`, and its time. Null (or missing, in a state from
+   * an older relay) when no agent sent the list: then no repo counts as archived.
+   */
+  archivedRepos?: { repos: string[]; at: string } | null;
   updateLimit: number;
 }
 
@@ -347,6 +353,7 @@ export function initialRelayConfigState(deployId: string, pairCode: { hash: stri
     access: {},
     refresh: {},
     repos: null,
+    archivedRepos: null,
     updateLimit: DEFAULT_CONFIG_UPDATE_LIMIT,
   };
 }

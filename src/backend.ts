@@ -26,6 +26,8 @@ export interface AgentBackend {
   verifyAgent(hash: string): Promise<boolean>;
   /** A hello of the current wire version: keep the repos and the time. */
   hello(repos: string[], at: Date): Promise<void>;
+  /** The archived repos (paths) from a desks frame or a hello with `archivedRepos`: keep them and the time. */
+  archivedRepos?(repos: string[], at: Date): Promise<void>;
   sync(spec: SpecAddress, input: Omit<SyncInput, "at">): Promise<SyncResult>;
   /** The agent's state frame: a new state and turn with no new line. True when applied. */
   state(spec: SpecAddress, state: Record<string, unknown>, turn: Turn | null): Promise<boolean>;

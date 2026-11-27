@@ -50,6 +50,13 @@
 //   agent -> relay: {"type":"desk-sync","desk":{...},"lines":[{"line":<n>,"event":{...}}]}
 //   relay -> agent: {"type":"desk-synced","desk":{...},"line":<n>,"error"?}
 //   agent -> relay: upload-url with "desk" in place of "spec".
+// Archived repos (the app's specs/pause-and-archive; the wire version stays 3).
+// The desks frame, which the agent sends again on each change, and the hello
+// may carry "archivedRepos": the paths of the repos that the user archived.
+//   agent -> relay: {"type":"desks","desks":[...],"archivedRepos":["/Users/me/code/old"]}
+//     The relay keeps the list and its time, and replaces it with each newer
+//     list. A frame with no "archivedRepos" keeps the last list. With no list
+//     (an older app), the relay counts no repo as archived.
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -510,6 +517,7 @@ export class AgentHub {
     const repos = Array.isArray(m.repos) ? m.repos.filter((r): r is string => typeof r === "string") : [];
     this.options.log({ event: "agent_hello", version, appVersion: appVersion ?? undefined, repos: repos.length });
     backend.hello(repos, this.options.now()).catch(() => this.options.log({ event: "agent_hello_failed" }));
+    this.archivedRepos(m);
     void this.afterWelcome(ws);
     if (!this.scanners.has(ws)) {
       const scanner = setInterval(() => {
@@ -643,6 +651,28 @@ export class AgentHub {
     return this.options.now().getTime() - welcomed > DESKS_FRAME_WAIT_MS ? false : null;
   }
 
+  /**
+   * The "archivedRepos" of a hello or a desks frame: keep the list. A frame
+   * without the field keeps the last list. The writes apply in frame order.
+   */
+  private archivedRepos(m: Record<string, unknown>): void {
+    const backend = this.options.backend;
+    if (!backend?.archivedRepos || m.archivedRepos === undefined) return;
+    const repos = parseArchivedRepos(m.archivedRepos);
+    if (!repos) {
+      this.options.log({ event: "agent_bad_archived_repos" });
+      return;
+    }
+    const at = this.options.now();
+    this.chain(ARCHIVED_CHAIN_KEY, async () => {
+      try {
+        await backend.archivedRepos!(repos, at);
+      } catch {
+        this.options.log({ event: "archived_repos_failed" });
+      }
+    });
+  }
+
   /** The agent's desks frame: save each desk, then push the waiting desk messages. */
   private desksFrame(ws: WebSocket, m: Record<string, unknown>): void {
     const desks = this.options.backend?.desks;
@@ -658,6 +688,7 @@ export class AgentHub {
     }
     this.deskCapable.add(ws);
     this.options.log({ event: "agent_desks", desks: reports.length });
+    this.archivedRepos(m);
     // Each desk's frames apply in order (the desks frame and desk-sync).
     const saved = reports.map(
       (report) =>
@@ -1072,6 +1103,19 @@ export function parseDeskReports(value: unknown): DeskReport[] | null {
     out.push({ repoKey: desk.repoKey, repo: desk.repo, open: item.open, turn: parseTurn(item.turn), canMessage: item.canMessage, reason });
   }
   return out;
+}
+
+/** The most archived repos that one frame may carry. */
+export const MAX_ARCHIVED_REPOS = 1000;
+
+/** The chain key of the archived repos list: no spec or desk key can be this. */
+const ARCHIVED_CHAIN_KEY = "archived-repos";
+
+/** The "archivedRepos" of a frame: a list of repo paths. Null when it breaks a rule. */
+export function parseArchivedRepos(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_ARCHIVED_REPOS) return null;
+  if (!value.every((path) => typeof path === "string" && path.length > 0 && path.length <= 4096)) return null;
+  return [...new Set(value as string[])];
 }
 
 /** The chain key of a desk: no spec key can be this (a spec key has a slash). */

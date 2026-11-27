@@ -346,46 +346,133 @@ test("R5.S3: offline list_repos also lists each desk with the time of its last s
   }
 });
 
-test("R11.S2: offline list_specs leaves out the specs of a repo that the Mac's list does not have, unless archived is true", async () => {
+test("R11.S2: offline list_specs leaves out only the specs of the repos that the Mac says are archived, unless archived is true", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await seed(h);
+    // A third repo that is not in the hello list (added after the hello, or removed): its specs still show.
+    const NEW = `${REPO}-new`;
+    await h.mirror.sync(specAddress(NEW, "fresh"), { line: 1, event: { kind: "note" }, state: show("fresh"), turn: null });
     await h.startConfig();
-    // The Mac's list has REPO only: OTHER (with beta) is archived.
+    // The hello list has REPO only. The desks frame says that OTHER (with beta) is archived.
     const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
     await agent.next("welcome");
-    await eventually(() => h.configStore.repos());
+    agent.send({
+      type: "desks",
+      desks: [{ repoKey: repoKeyOf(REPO), repo: REPO, open: true, turn: null, canMessage: true, reason: null }],
+      archivedRepos: [OTHER],
+    });
+    await eventually(() => h.configStore.archivedRepos());
     await agent.close();
     const { accessToken } = await signIn(t.base);
     const slugs = async (args: Record<string, unknown>) => {
       const r = await eventually(async () => {
         const x = await callTool(t.base, accessToken, "list_specs", args);
-        return x.isError || !x.content[0].text.includes('"alpha"') ? null : x;
+        return x.isError || !x.content[0].text.includes('"alpha"') || !x.content[0].text.includes('"fresh"') ? null : x;
       });
       const [, ...body] = r.content[0].text.split("\n");
       return JSON.parse(body.join("\n")).specs as Array<Record<string, unknown>>;
     };
     const plain = await slugs({});
-    assert.deepEqual(plain.map((s) => s.slug), ["alpha"]);
-    assert.equal(plain[0].archived, undefined);
+    assert.deepEqual(plain.map((s) => s.slug).sort(), ["alpha", "fresh"]);
+    assert.ok(plain.every((s) => s.archived === undefined));
 
     const withArchived = await slugs({ archived: true });
     const bySlug = Object.fromEntries(withArchived.map((s) => [s.slug, s]));
-    assert.deepEqual(Object.keys(bySlug).sort(), ["alpha", "beta"]);
+    assert.deepEqual(Object.keys(bySlug).sort(), ["alpha", "beta", "fresh"]);
     assert.equal(bySlug.beta.archived, true);
     assert.equal(bySlug.alpha.archived, undefined);
+    assert.equal(bySlug.fresh.archived, undefined);
   } finally {
     await t.close();
     await h.close();
   }
 });
 
-test("R11.S2: offline list_specs filters nothing when the relay has no repo list", async () => {
+test("R11.S2: a newer archived list replaces the last one: an unarchived repo's specs show again offline", async () => {
   const h = await harness(env);
   const t = await h.relay();
   try {
     await seed(h);
+    await h.startConfig();
+    // The hello carries the list too.
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO], archivedRepos: [OTHER] });
+    await agent.next("welcome");
+    await eventually(async () => (await h.configStore.archivedRepos())?.repos.includes(OTHER));
+    const { accessToken } = await signIn(t.base);
+    const list = async () => {
+      const r = await callTool(t.base, accessToken, "list_specs", {});
+      return JSON.parse(r.content[0].text.split("\n").slice(1).join("\n")).specs.map((s: any) => s.slug).sort();
+    };
+    await agent.close();
+    assert.deepEqual(await eventually(async () => {
+      const l = await list();
+      return l.includes("alpha") ? l : null;
+    }), ["alpha"]);
+
+    // The user unarchives OTHER: the next desks frame has an empty list. A frame with no field keeps the list.
+    const again = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO, OTHER] });
+    await again.next("welcome");
+    assert.deepEqual((await h.configStore.archivedRepos())?.repos, [OTHER]);
+    again.send({ type: "desks", desks: [], archivedRepos: [] });
+    await eventually(async () => (await h.configStore.archivedRepos())?.repos.length === 0);
+    await again.close();
+    assert.deepEqual(await eventually(async () => {
+      const l = await list();
+      return l.includes("beta") ? l : null;
+    }), ["alpha", "beta"]);
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_repos with archived true lists the archived repos that the Mac sent", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    await eventually(() => h.configStore.repos());
+    const { accessToken } = await signIn(t.base);
+    // No archived list yet (an older Mac): the answer says so.
+    await agent.close();
+    const none = await eventually(async () => {
+      const r = await callTool(t.base, accessToken, "list_repos", { archived: true });
+      return r.isError ? null : r;
+    });
+    const [nhead, njson] = none.content[0].text.split("\n");
+    assert.match(nhead, /The Mac sent no list of archived repos/);
+    assert.deepEqual(JSON.parse(njson), [REPO]);
+
+    await h.configStore.setArchivedRepos([OTHER], new Date("2026-11-20T10:00:00Z"));
+    const r = await callTool(t.base, accessToken, "list_repos", { archived: true });
+    const lines = r.content[0].text.split("\n");
+    assert.deepEqual(JSON.parse(lines[1]), [REPO]);
+    assert.equal(lines[2], "The archived repos, from the list that the Mac sent at 2026-11-20T10:00:00.000Z:");
+    assert.deepEqual(JSON.parse(lines[3]), [OTHER]);
+    // Without archived, the list has no archived repos.
+    const plain = await callTool(t.base, accessToken, "list_repos", {});
+    assert.ok(!plain.content[0].text.includes("archived repos"));
+  } finally {
+    await t.close();
+    await h.close();
+  }
+});
+
+test("R11.S2: offline list_specs filters nothing when the Mac sent no archived list", async () => {
+  const h = await harness(env);
+  const t = await h.relay();
+  try {
+    await seed(h);
+    // An older Mac: a hello with a repo list that leaves OTHER out, and no archived list.
+    await h.startConfig();
+    const agent = await connectAgent(t.base, AGENT_SECRET, { type: "hello", version: 3, repos: [REPO] });
+    await agent.next("welcome");
+    await eventually(() => h.configStore.repos());
+    await agent.close();
     const { accessToken } = await signIn(t.base);
     const r = await eventually(async () => {
       const x = await callTool(t.base, accessToken, "list_specs", {});
