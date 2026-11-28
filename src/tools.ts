@@ -51,29 +51,33 @@ export const TOOLS: ToolDefinition[] = [
       "List the open specs of Spec Studio. Each spec shows its title, slug, mode, stage, status, note and turn. " +
       "The list also shows whether the spec needs the user. " +
       "When Spec Studio does not run, the turn comes from state.json, and the result says so. " +
-      "Each spec also shows the area of its repo and its project. " +
+      "Each spec also shows the area of its repo and its collections (a spec can be in many). " +
       "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync. " +
-      "The relay has no areas and no projects, so an offline list shows all specs and says that the filter needs the Mac online. " +
+      "The relay has no areas and no collections, so an offline list shows all specs and says that the filter needs the Mac online. " +
       "A list shows no spec of an archived repo, unless you set archived to true. A paused spec shows its pause.",
     inputSchema: {
       repo: repo.optional().describe("Show only the specs of this repo. Give the path of the repo on the Mac."),
       all: z.boolean().optional().describe("Also show the specs that are merged or closed."),
       area: z.string().min(1).optional().describe("Show only the specs of the repos of this area. Give the name of the area."),
-      project: z.string().min(1).optional().describe("Show only the specs of this project. Give the name of the project."),
+      collection: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Show only the specs of this collection. Give the name of the collection."),
       archived: z.boolean().optional().describe("Also show the specs of archived repos, marked archived."),
     },
   },
   {
-    name: "list_projects",
-    title: "List the projects",
+    name: "list_collections",
+    title: "List the collections",
     description:
-      "List the projects of Spec Studio. A project is a goal with specs in one or more repos. " +
-      "Each project shows its status, its progress (the specs that shipped of all its specs) and its target date. " +
-      "Each project also shows its newest update, with its health and its note. " +
-      "A list shows no archived project, unless you set archived to true. " +
+      "List the collections of Spec Studio. A collection is a set of specs from any repo and any area, open or shipped. " +
+      "A spec can be in many collections. " +
+      "Each collection shows its color, its description, its link and its progress (the merged specs of all its specs). " +
+      "A list shows no archived collection, unless you set archived to true. " +
       "This tool fails at once when the Mac is offline.",
     inputSchema: {
-      archived: z.boolean().optional().describe("Also show archived projects, marked archived."),
+      archived: z.boolean().optional().describe("Also show archived collections, marked archived."),
     },
   },
   {
@@ -94,7 +98,7 @@ export const TOOLS: ToolDefinition[] = [
     title: "Make a spec",
     description:
       "Make a new spec in a repo with a title and a brief. The brief goes into spec.md. " +
-      "Give a project to put the new spec into that project. " +
+      "Give collections to put the new spec into those collections. " +
       "The mode is autopilot or guided. Remote Control is on when you do not give a value. " +
       "Set start to true to start the session of the spec at once. " +
       "The result gives the repo, the slug and the folder of the new spec. " +
@@ -112,11 +116,10 @@ export const TOOLS: ToolDefinition[] = [
         .optional()
         .describe("Turn Remote Control on or off for the session of the spec. On is the default."),
       start: z.boolean().optional().describe("Start the session of the spec at once. Off is the default."),
-      project: z
-        .string()
-        .min(1)
+      collections: z
+        .array(z.string().min(1))
         .optional()
-        .describe("The name of a project. The new spec goes into this project. Use a name that list_projects gives."),
+        .describe("The names of collections. The new spec goes into each. Use names that list_collections gives."),
     },
   },
   {
@@ -130,9 +133,9 @@ export const TOOLS: ToolDefinition[] = [
   },
 ];
 
-/** The start of the answer of an older agent that does not know list_projects. */
-export const UNKNOWN_LIST_PROJECTS_PREFIX = 'The tool "list_projects" does not exist';
-export const UPDATE_FOR_PROJECTS_TEXT = "Update Spec Studio on the Mac to list projects.";
+/** The start of the answer of an older agent that does not know list_collections. */
+export const UNKNOWN_LIST_COLLECTIONS_PREFIX = 'The tool "list_collections" does not exist';
+export const UPDATE_FOR_COLLECTIONS_TEXT = "Update Spec Studio on the Mac to list collections.";
 
 export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
 

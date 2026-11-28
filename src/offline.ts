@@ -150,8 +150,8 @@ export class OfflineTools implements OfflineReader {
       }));
     const times = specs.map((s) => s.syncedAt).filter((t): t is string => !!t).sort();
     const asOf = times.length > 0 ? times[times.length - 1] : null;
-    // The mirror has no areas and no projects, so it cannot filter by them.
-    const filters = [str(args.area) && "area", str(args.project) && "project"].filter(Boolean);
+    // The mirror has no areas and no collections, so it cannot filter by them.
+    const filters = [str(args.area) && "area", str(args.collection) && "collection"].filter(Boolean);
     const notice =
       filters.length > 0
         ? ` The relay does not know the ${filters.join(" and the ")} of a spec, so this list shows all specs. ` +

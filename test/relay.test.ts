@@ -180,7 +180,7 @@ test("R1-R4 happy path: a real OAuth flow, then a tool call routed to the agent"
     const list = await mcpRequest(t.base, accessToken, "tools/list");
     assert.deepEqual(
       list.message?.result.tools.map((tool: { name: string }) => tool.name),
-      ["list_repos", "list_specs", "list_projects", "read_spec", "make_spec", "start_spec"],
+      ["list_repos", "list_specs", "list_collections", "read_spec", "make_spec", "start_spec"],
     );
 
     const args = { repo: "/Users/me/code/app", title: "Dark mode", brief: "Add a dark mode.", start: true };
@@ -207,7 +207,7 @@ test("R1-R4 happy path: a real OAuth flow, then a tool call routed to the agent"
   }
 });
 
-test("R17.S4: an agent answer with no area and no project passes through, and the new arguments reach the agent", async () => {
+test("collections R11.S3, R11.S4: an agent answer with no area and no collection passes through, and the new arguments reach the agent", async () => {
   const t = await startRelay();
   try {
     const agent = await connectAgent(t.base);
@@ -216,29 +216,29 @@ test("R17.S4: an agent answer with no area and no project passes through, and th
     const plain = await callTool(t.base, accessToken, "list_specs", {});
     assert.equal(plain.isError, undefined);
     assert.equal(plain.content[0].text, "specs {}");
-    await callTool(t.base, accessToken, "list_specs", { area: "Vendgogh", project: "Backend plugins" });
+    await callTool(t.base, accessToken, "list_specs", { area: "Vendgogh", collection: "Backend plugins" });
     await callTool(t.base, accessToken, "list_repos", { area: "Vendgogh" });
-    await callTool(t.base, accessToken, "make_spec", { repo: "/r", title: "T", brief: "B", project: "Backend plugins" });
-    assert.deepEqual(agent.received.at(-3)?.arguments, { area: "Vendgogh", project: "Backend plugins" });
+    await callTool(t.base, accessToken, "make_spec", { repo: "/r", title: "T", brief: "B", collections: ["Backend plugins", "Q4"] });
+    assert.deepEqual(agent.received.at(-3)?.arguments, { area: "Vendgogh", collection: "Backend plugins" });
     assert.deepEqual(agent.received.at(-2)?.arguments, { area: "Vendgogh" });
-    assert.deepEqual(agent.received.at(-1)?.arguments, { repo: "/r", title: "T", brief: "B", project: "Backend plugins" });
+    assert.deepEqual(agent.received.at(-1)?.arguments, { repo: "/r", title: "T", brief: "B", collections: ["Backend plugins", "Q4"] });
     await agent.close();
   } finally {
     await t.close();
   }
 });
 
-test("R17.S5: list_projects against an older agent gives the update text; a newer agent answer passes through", async () => {
+test("collections R11.S5: list_collections against an older agent gives the update text; a newer agent answer passes through", async () => {
   const t = await startRelay();
   try {
     const agent = await connectAgent(t.base);
-    agent.answer = () => ({ ok: false, text: 'The tool "list_projects" does not exist. The tools are: list_repos.' });
+    agent.answer = () => ({ ok: false, text: 'The tool "list_collections" does not exist. The tools are: list_repos.' });
     const { accessToken } = await signIn(t.base);
-    const old = await callTool(t.base, accessToken, "list_projects", {});
+    const old = await callTool(t.base, accessToken, "list_collections", {});
     assert.equal(old.isError, true);
-    assert.equal(old.content[0].text, "Update Spec Studio on the Mac to list projects.");
+    assert.equal(old.content[0].text, "Update Spec Studio on the Mac to list collections.");
     agent.answer = () => ({ ok: true, text: "Backend plugins: 2 of 7" });
-    const fresh = await callTool(t.base, accessToken, "list_projects", {});
+    const fresh = await callTool(t.base, accessToken, "list_collections", {});
     assert.equal(fresh.isError, undefined);
     assert.equal(fresh.content[0].text, "Backend plugins: 2 of 7");
     await agent.close();
@@ -247,12 +247,12 @@ test("R17.S5: list_projects against an older agent gives the update text; a newe
   }
 });
 
-test("R17: the tool schemas have the optional area and project arguments", () => {
+test("collections: the tool schemas have the optional area and collection arguments", () => {
   const tool = (name: string) => TOOLS.find((x) => x.name === name)!;
   for (const [name, keys] of [
     ["list_repos", ["area"]],
-    ["list_specs", ["area", "project"]],
-    ["make_spec", ["project"]],
+    ["list_specs", ["area", "collection"]],
+    ["make_spec", ["collections"]],
   ] as const) {
     for (const key of keys) {
       const schema = tool(name).inputSchema[key];
@@ -260,7 +260,9 @@ test("R17: the tool schemas have the optional area and project arguments", () =>
       assert.ok(schema.isOptional(), `${name}.${key} is optional`);
     }
   }
-  assert.deepEqual(Object.keys(tool("list_projects").inputSchema), ["archived"]);
+  assert.deepEqual(Object.keys(tool("list_collections").inputSchema), ["archived"]);
+  assert.ok(!("project" in tool("list_specs").inputSchema));
+  assert.ok(!("project" in tool("make_spec").inputSchema));
 });
 
 test("a wrong password does not sign in", async () => {
@@ -828,8 +830,8 @@ async function fetchLoginPage(base: string): Promise<Response> {
   return postLogin(base, request, "wrong password");
 }
 
-test("R11.S2, R15.S3: list_repos, list_specs and list_projects take an optional archived boolean", () => {
-  for (const name of ["list_repos", "list_specs", "list_projects"]) {
+test("R11.S2, R15.S3: list_repos, list_specs and list_collections take an optional archived boolean", () => {
+  for (const name of ["list_repos", "list_specs", "list_collections"]) {
     const tool = TOOLS.find((t) => t.name === name)!;
     const archived = tool.inputSchema.archived;
     assert.ok(archived, `${name} has no archived argument`);
