@@ -11,7 +11,7 @@ import { checkBucket, pairingText, StartupError } from "../../startupCommon.js";
 import { RELAY_VERSION } from "../../version.js";
 import { PROTOCOL_VERSIONS, PluginClient } from "../../vendor/plugin-sdk/index.js";
 import { StoreRefusedError, StoreUnavailableError } from "../errors.js";
-import type { RelayStore } from "../types.js";
+import type { RelayStore, StoreIdentity } from "../types.js";
 import { Docs } from "./docs.js";
 import { PluginConfigStore } from "./pluginConfigStore.js";
 import { PluginDeskStore } from "./pluginDeskStore.js";
@@ -39,6 +39,7 @@ export interface PluginRelayStore extends RelayStore {
   client: PluginClient;
   /** The plugin settings that the store uses. */
   plugin: PluginSettings;
+  identity(): StoreIdentity | null;
 }
 
 /** The client's log entries in the relay's log: a list becomes one string. */
@@ -132,6 +133,11 @@ export async function openPluginStore(
     specs,
     desks,
     config: configStore,
+    identity() {
+      // The handshake after a restart can change it, so read it at each call.
+      const storeId = client.info.storeId;
+      return typeof storeId === "string" && storeId ? { plugin: client.info.plugin.name, storeId } : null;
+    },
     async start({ log, print }) {
       await checkBucket({ bucket: o.bucket, log });
       const code = newPairCode();
