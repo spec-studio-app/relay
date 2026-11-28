@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { pairCodeHash } from "./pairing.js";
 import { RELAY_VERSION, WIRE_VERSION } from "./version.js";
 import type { PayloadKey } from "./config.js";
-import { LOCAL_TOOLS, TOOLS, UNKNOWN_LIST_PROJECTS_PREFIX, UPDATE_FOR_PROJECTS_TEXT } from "./tools.js";
+import { forwardArguments, LOCAL_TOOLS, TOOLS, UNKNOWN_LIST_COLLECTIONS_PREFIX, UPDATE_FOR_COLLECTIONS_TEXT } from "./tools.js";
 import { consoleLogger, type Logger } from "./log.js";
 import type { AgentBackend } from "./backend.js";
 import { OFFLINE_READ_TOOLS, type OfflineReader, type ToolText } from "./offline.js";
@@ -357,12 +357,12 @@ function buildMcpServer(hub: AgentHub, log: Logger, offline?: OfflineReader, loc
       { title: tool.title, description: tool.description, inputSchema: tool.inputSchema },
       async (args: Record<string, unknown>) => {
         const start = Date.now();
-        let result = await hub.call(tool.name, args ?? {});
+        let result = await hub.call(tool.name, forwardArguments(tool.name, args ?? {}));
         const fromMirror = result.offline === true && offline !== undefined && OFFLINE_READ_TOOLS.has(tool.name);
         if (fromMirror) result = await offline.answer(tool.name, args ?? {}, hub.offlineText());
-        // An older Spec Studio has no list_projects: say what to do.
-        if (tool.name === "list_projects" && result.text.startsWith(UNKNOWN_LIST_PROJECTS_PREFIX)) {
-          result = { ...result, text: UPDATE_FOR_PROJECTS_TEXT };
+        // An older Spec Studio has no list_collections: say what to do.
+        if (tool.name === "list_collections" && result.text.startsWith(UNKNOWN_LIST_COLLECTIONS_PREFIX)) {
+          result = { ...result, text: UPDATE_FOR_COLLECTIONS_TEXT };
         }
         log({ event: "tool_call", tool: tool.name, ok: result.ok, offline: fromMirror || undefined, ms: Date.now() - start });
         const notice = await mismatchNotice(hub, offline);
