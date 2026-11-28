@@ -188,6 +188,8 @@ test("R17.S4: offline list_specs with an area or a collection shows all specs an
     for (const [args, word] of [
       [{ area: "Vendgogh" }, "area"],
       [{ collection: "Backend plugins" }, "collection"],
+      // project is the older name of collection.
+      [{ project: "Backend plugins" }, "collection"],
     ] as const) {
       const r = await callTool(t.base, accessToken, "list_specs", args);
       assert.equal(r.isError, undefined);
