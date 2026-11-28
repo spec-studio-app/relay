@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: spec-studio-app/plugin-sdk
-          ref: 394b06fac3b99e4255f69453ffe51eadf7b94d19
+          ref: 2834b2ad914418fb756190337517b094b945bc07
           path: .plugin-sdk
       - uses: actions/setup-go@v5
         with:

@@ -32,7 +32,13 @@ export async function serve(config: Config, log: Logger = consoleLogger, print =
     // The codec endpoints decode Temporal payloads: only the Temporal store has them.
     codecDataKeys: store.codecDataKeys,
     uiOrigin: config.uiOrigin,
-    agentBackend: storeAgentBackend({ specs: store.specs, desks: store.desks, config: store.config, attachments }),
+    agentBackend: storeAgentBackend({
+      specs: store.specs,
+      desks: store.desks,
+      config: store.config,
+      attachments,
+      ...(store.identity ? { identity: () => store.identity!() } : {}),
+    }),
     offline: new OfflineTools({ specs: store.specs, desks: store.desks, config: store.config }),
     oauthStore: storeOAuthStore(store.config),
     localTools: (hub) =>

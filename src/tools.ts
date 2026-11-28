@@ -50,7 +50,7 @@ export const TOOLS: ToolDefinition[] = [
     description:
       "List the open specs of Spec Studio. Each spec shows its title, slug, mode, stage, status, note and turn. " +
       "The list also shows whether the spec needs the user. " +
-      "When Spec Studio does not run, the turn comes from state.json, and the result says so. " +
+      "When Spec Studio does not run, the turn comes from the state in the backend, and the result says so. " +
       "Each spec also shows the area of its repo and its collections (a spec can be in many). " +
       "When the Mac is offline, the list comes from the relay. Each spec then shows the time of its last sync. " +
       "The relay has no areas and no collections, so an offline list shows all specs and says that the filter needs the Mac online. " +
