@@ -64,6 +64,7 @@ export const TOOLS: ToolDefinition[] = [
         .min(1)
         .optional()
         .describe("Show only the specs of this collection. Give the name of the collection."),
+      project: z.string().min(1).optional().describe("The older name of collection. Use collection."),
       archived: z.boolean().optional().describe("Also show the specs of archived repos, marked archived."),
     },
   },
@@ -120,6 +121,7 @@ export const TOOLS: ToolDefinition[] = [
         .array(z.string().min(1))
         .optional()
         .describe("The names of collections. The new spec goes into each. Use names that list_collections gives."),
+      project: z.string().min(1).optional().describe("The older name of one collection. Use collections."),
     },
   },
   {
@@ -138,6 +140,24 @@ export const UNKNOWN_LIST_COLLECTIONS_PREFIX = 'The tool "list_collections" does
 export const UPDATE_FOR_COLLECTIONS_TEXT = "Update Spec Studio on the Mac to list collections.";
 
 export const TOOL_NAMES = TOOLS.map((tool) => tool.name);
+
+/**
+ * The arguments that the relay sends to the Mac. An older Spec Studio knows
+ * projects, not collections: it reads `project` on list_specs and make_spec,
+ * and ignores `collection` and `collections`. So the relay also sends the
+ * older name. A newer Spec Studio reads `collection` first, and puts the
+ * spec into `project` and each of `collections` once.
+ */
+export function forwardArguments(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (tool === "list_specs" && typeof args.collection === "string" && args.project === undefined) {
+    return { ...args, project: args.collection };
+  }
+  if (tool === "make_spec" && Array.isArray(args.collections) && args.project === undefined) {
+    const first = args.collections.find((name): name is string => typeof name === "string" && name.length > 0);
+    if (first !== undefined) return { ...args, project: first };
+  }
+  return args;
+}
 
 /**
  * The tools that the relay answers itself, from its store, with the Mac online

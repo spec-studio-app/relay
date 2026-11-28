@@ -219,9 +219,12 @@ test("collections R11.S3, R11.S4: an agent answer with no area and no collection
     await callTool(t.base, accessToken, "list_specs", { area: "Vendgogh", collection: "Backend plugins" });
     await callTool(t.base, accessToken, "list_repos", { area: "Vendgogh" });
     await callTool(t.base, accessToken, "make_spec", { repo: "/r", title: "T", brief: "B", collections: ["Backend plugins", "Q4"] });
-    assert.deepEqual(agent.received.at(-3)?.arguments, { area: "Vendgogh", collection: "Backend plugins" });
+    // The relay also sends the older name, project, which an older Spec Studio reads.
+    assert.deepEqual(agent.received.at(-3)?.arguments, { area: "Vendgogh", collection: "Backend plugins", project: "Backend plugins" });
     assert.deepEqual(agent.received.at(-2)?.arguments, { area: "Vendgogh" });
-    assert.deepEqual(agent.received.at(-1)?.arguments, { repo: "/r", title: "T", brief: "B", collections: ["Backend plugins", "Q4"] });
+    assert.deepEqual(agent.received.at(-1)?.arguments, {
+      repo: "/r", title: "T", brief: "B", collections: ["Backend plugins", "Q4"], project: "Backend plugins",
+    });
     await agent.close();
   } finally {
     await t.close();
@@ -261,8 +264,8 @@ test("collections: the tool schemas have the optional area and collection argume
     }
   }
   assert.deepEqual(Object.keys(tool("list_collections").inputSchema), ["archived"]);
-  assert.ok(!("project" in tool("list_specs").inputSchema));
-  assert.ok(!("project" in tool("make_spec").inputSchema));
+  // project stays as the older name, so a client with the older schema still works.
+  for (const name of ["list_specs", "make_spec"]) assert.ok(tool(name).inputSchema.project.isOptional(), `${name}.project`);
 });
 
 test("a wrong password does not sign in", async () => {
