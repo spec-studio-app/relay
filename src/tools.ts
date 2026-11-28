@@ -100,6 +100,7 @@ export const TOOLS: ToolDefinition[] = [
     description:
       "Make a new spec in a repo with a title and a brief. The brief goes into spec.md. " +
       "Give collections to put the new spec into those collections. " +
+      "An older Spec Studio on the Mac knows projects, not collections: it puts the new spec into the first name only. " +
       "The mode is autopilot or guided. Remote Control is on when you do not give a value. " +
       "Set start to true to start the session of the spec at once. " +
       "The result gives the repo, the slug and the folder of the new spec. " +
@@ -120,7 +121,7 @@ export const TOOLS: ToolDefinition[] = [
       collections: z
         .array(z.string().min(1))
         .optional()
-        .describe("The names of collections. The new spec goes into each. Use names that list_collections gives."),
+        .describe("The names of collections. The new spec goes into each (an older Spec Studio: the first only). Use names that list_collections gives."),
       project: z.string().min(1).optional().describe("The older name of one collection. Use collections."),
     },
   },
